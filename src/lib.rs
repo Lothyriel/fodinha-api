@@ -11,7 +11,7 @@ use services::{
     repositories::{auth::AuthRepository, game::GamesRepository, get_mongo_client},
 };
 
-use tower_http::cors::{AllowOrigin, Any, CorsLayer};
+use tower_http::cors::{Any, CorsLayer};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 pub async fn start_app() {
@@ -38,10 +38,7 @@ pub async fn start_app() {
     let auth_layer = axum::middleware::from_fn(infra::auth::middleware);
 
     let cors = CorsLayer::new()
-        .allow_origin(AllowOrigin::list(vec![
-            "https://fodinha.click".parse().expect("Valid url"),
-            "http://localhost:4200".parse().expect("Valid url"),
-        ]))
+        .allow_origin(Any)
         .allow_methods(Any)
         .allow_headers(Any);
 
