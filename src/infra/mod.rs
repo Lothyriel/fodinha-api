@@ -13,11 +13,8 @@ use crate::{
 };
 
 pub async fn fallback_handler() -> (StatusCode, &'static str) {
-    NOT_FOUND_RESPONSE
+    (StatusCode::NOT_FOUND, "this resource doesn't exist")
 }
-
-const NOT_FOUND_RESPONSE: (StatusCode, &str) =
-    (StatusCode::NOT_FOUND, "this resource doesn't exist");
 
 #[derive(serde::Deserialize, serde::Serialize, Debug)]
 #[serde(tag = "type", content = "data")]
@@ -80,7 +77,6 @@ pub enum ServerMessage {
         lifes: PlayerPoints,
     },
     GameEnded {
-        winner: Option<String>,
         lifes: PlayerPoints,
     },
     PlayerJoined(UserClaims),

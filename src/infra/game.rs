@@ -42,8 +42,8 @@ async fn handle_connection(socket: WebSocket, manager: Manager) -> Result<(), Ma
     manager.store_player_connection(auth.id(), sender).await?;
 
     tokio::spawn(async move {
+        let id = auth.id().clone();
         while let Some(Ok(message)) = receiver.next().await {
-            let id = auth.id();
             match process_msg(message, manager.clone(), id.clone()).await {
                 Ok(_) => {}
                 Err(error) => {

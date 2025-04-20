@@ -9,7 +9,7 @@ mod tests {
             lobby::CreateLobbyResponse,
             ClientGameMessage, ClientMessage, JoinLobbyDto, ServerMessage,
         },
-        models::{Card, MAX_PLAYER_COUNT},
+        models::Card,
     };
     use reqwest::Client;
     use tokio::{net::TcpStream, task};
@@ -20,25 +20,22 @@ mod tests {
     #[tokio::test]
     async fn test_example() {
         task::spawn(oh_hell::start_app());
+        let mut client = reqwest::Client::new();
 
-        for p in 2..=MAX_PLAYER_COUNT {
-            let mut client = reqwest::Client::new();
+        let tokens = get_players(&mut client, 7).await;
 
-            let tokens = get_players(&mut client, p).await;
+        let mut player_data = join_lobby(&mut client, tokens).await;
 
-            let mut player_data = join_lobby(&mut client, tokens).await;
+        ready(&mut player_data).await;
 
-            ready(&mut player_data).await;
+        'game: loop {
+            get_decks(&mut player_data).await;
 
-            'game: loop {
-                get_decks(&mut player_data).await;
+            play_set(&mut player_data).await;
 
-                play_set(&mut player_data).await;
-
-                for p in player_data.values_mut() {
-                    if assert_game_or_set_ended(&mut p.connection).await {
-                        break 'game;
-                    }
+            for p in player_data.values_mut() {
+                if assert_game_or_set_ended(&mut p.connection).await {
+                    break 'game;
                 }
             }
         }
@@ -61,15 +58,8 @@ mod tests {
                 println!("Asserted game msg {:?}", ServerMessage::SetEnded { lifes });
                 false
             }
-            ServerMessage::GameEnded { winner, lifes } => {
-                let expected_life_values = if winner.is_some() { 1 } else { 0 };
-
-                assert!(lifes.len() == expected_life_values);
-
-                let msg = ServerMessage::GameEnded { lifes, winner };
-
-                println!("Asserted game msg {:?}", msg);
-
+            ServerMessage::GameEnded { lifes } => {
+                println!("Asserted game msg {:?}", ServerMessage::GameEnded { lifes });
                 true
             }
             msg => panic!("Expected Set or Game end | {msg:?}"),

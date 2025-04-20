@@ -90,12 +90,7 @@ impl Game {
             let players_alive: Vec<_> = self.alive_players().collect();
 
             let event = match players_alive.len() {
-                0 => GameEvent::Ended {
-                    winner: None,
-                    lifes: self.get_lifes(),
-                },
-                1 => GameEvent::Ended {
-                    winner: Some(players_alive[0].0.clone()),
+                0 | 1 => GameEvent::Ended {
                     lifes: self.get_lifes(),
                 },
                 _ => {

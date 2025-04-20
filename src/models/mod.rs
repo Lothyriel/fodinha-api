@@ -152,7 +152,6 @@ pub enum GameEvent {
         rounds: HashMap<String, usize>,
     },
     Ended {
-        winner: Option<String>,
         lifes: HashMap<String, usize>,
     },
     TurnPlayed {

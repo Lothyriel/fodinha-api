@@ -158,8 +158,8 @@ impl Manager {
                 let msg = ServerMessage::PlayerTurn { player_id: next };
                 self.broadcast_msg(&players, &msg).await;
             }
-            GameEvent::Ended { winner, lifes } => {
-                let msg = ServerMessage::GameEnded { winner, lifes };
+            GameEvent::Ended { lifes } => {
+                let msg = ServerMessage::GameEnded { lifes };
                 self.broadcast_msg(&players, &msg).await;
             }
         }
