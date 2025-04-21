@@ -38,9 +38,9 @@ impl Game {
     }
 
     pub fn new(player_names: &[PlayerId], initial_cards_count: usize) -> Result<Self, GameError> {
-        Self::validate_game(&player_names)?;
+        Self::validate_game(player_names)?;
 
-        let (players, upcard) = Self::init_players(&player_names, initial_cards_count);
+        let (players, upcard) = Self::init_players(player_names, initial_cards_count);
 
         Ok(Self {
             players,
@@ -456,7 +456,7 @@ mod tests {
         let player1: Arc<str> = "P1".into();
         let player2: Arc<str> = "P2".into();
 
-        let mut game = Game::new_default(&vec![player1.clone(), player2.clone()]).unwrap();
+        let mut game = Game::new_default(&[player1.clone(), player2.clone()]).unwrap();
         assert!(game.pile.is_empty());
 
         let state = game.bid(&player1, 1).unwrap();
@@ -517,7 +517,7 @@ mod tests {
         let player1: Arc<str> = "P1".into();
         let player2: Arc<str> = "P2".into();
 
-        let mut game = Game::new_default(&vec![player1.clone(), player2.clone()]).unwrap();
+        let mut game = Game::new_default(&[player1.clone(), player2.clone()]).unwrap();
 
         let possible = game.get_possible_bids();
         assert_eq!(possible, vec![0, 1]);
@@ -555,7 +555,7 @@ mod tests {
         let player1: Arc<str> = "P1".into();
         let player2: Arc<str> = "P2".into();
 
-        let mut game = Game::new(&vec![player1.clone(), player2.clone()], 2).unwrap();
+        let mut game = Game::new(&[player1.clone(), player2.clone()], 2).unwrap();
 
         let possible = game.get_possible_bids();
         assert_eq!(possible, vec![0, 1, 2]);
@@ -565,7 +565,7 @@ mod tests {
         let possible = game.get_possible_bids();
         assert_eq!(possible, vec![0, 2]);
 
-        let mut game = Game::new(&vec![player1.clone(), player2], 3).unwrap();
+        let mut game = Game::new(&[player1.clone(), player2], 3).unwrap();
 
         let possible = game.get_possible_bids();
         assert_eq!(possible, vec![0, 1, 2, 3]);
