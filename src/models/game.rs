@@ -4,7 +4,7 @@ use indexmap::IndexMap;
 
 use crate::{
     models::GameError,
-    services::{GameInfoDto, GameStageDto, PlayerInfoDto},
+    services::{manager::PlayerId, GameInfoDto, GameStageDto, PlayerInfoDto},
 };
 
 use super::{
@@ -14,7 +14,7 @@ use super::{
 
 #[derive(Debug)]
 pub struct Game {
-    players: IndexMap<String, Player>,
+    players: IndexMap<PlayerId, Player>,
     pile: BinaryHeap<(u16, Turn)>,
     dealing_mode: DealingMode,
     bidding_iter: CyclicIterator,
@@ -33,11 +33,11 @@ const MAX_AVAILABLE_CARDS: usize = 40 - 1;
 pub const MAX_PLAYER_COUNT: usize = 13;
 
 impl Game {
-    pub fn new_default(players: Vec<String>) -> Result<Self, GameError> {
+    pub fn new_default(players: &[PlayerId]) -> Result<Self, GameError> {
         Self::new(players, 1)
     }
 
-    pub fn new(player_names: Vec<String>, initial_cards_count: usize) -> Result<Self, GameError> {
+    pub fn new(player_names: &[PlayerId], initial_cards_count: usize) -> Result<Self, GameError> {
         Self::validate_game(&player_names)?;
 
         let (players, upcard) = Self::init_players(&player_names, initial_cards_count);
@@ -142,7 +142,7 @@ impl Game {
         })
     }
 
-    pub fn bid(&mut self, player_id: &String, bid: usize) -> Result<BiddingState, BiddingError> {
+    pub fn bid(&mut self, player_id: &str, bid: usize) -> Result<BiddingState, BiddingError> {
         if self.get_stage() == GameStage::Dealing {
             return Err(BiddingError::DealingStageActive);
         }
@@ -153,7 +153,7 @@ impl Game {
 
         let current_bidder = self.peek_current_bidder();
 
-        if Some(player_id) != current_bidder.as_ref() {
+        if current_bidder.filter(|c| c.as_ref() == player_id).is_none() {
             return Err(BiddingError::NotYourTurn);
         }
 
@@ -185,7 +185,7 @@ impl Game {
         Ok(state)
     }
 
-    pub fn get_bidding_player(&self) -> String {
+    pub fn get_bidding_player(&self) -> PlayerId {
         let idx = match self.bidding_iter.peek() {
             Some(i) => i,
             None => {
@@ -210,7 +210,7 @@ impl Game {
         }
     }
 
-    pub fn get_decks(&self) -> (IndexMap<String, Vec<Card>>, Card) {
+    pub fn get_decks(&self) -> (IndexMap<PlayerId, Vec<Card>>, Card) {
         let decks = self
             .alive_players()
             .map(|(id, p)| (id.clone(), p.deck.clone()))
@@ -329,12 +329,12 @@ impl Game {
         }
     }
 
-    fn init_players(players: &[String], cards: usize) -> (IndexMap<String, Player>, Card) {
+    fn init_players(players: &[PlayerId], cards: usize) -> (IndexMap<PlayerId, Player>, Card) {
         let mut deck = Card::shuffled_deck();
 
         let decks = players
             .iter()
-            .map(|p| (p.to_string(), Player::new(deck.drain(..cards).collect())))
+            .map(|p| (p.clone(), Player::new(deck.drain(..cards).collect())))
             .collect();
 
         (decks, deck[0])
@@ -382,13 +382,13 @@ impl Game {
         pile
     }
 
-    fn get_points(&self) -> HashMap<String, usize> {
+    fn get_points(&self) -> HashMap<PlayerId, usize> {
         self.alive_players()
             .map(|(id, player)| (id.clone(), player.rounds))
             .collect()
     }
 
-    fn get_lifes(&self) -> HashMap<String, usize> {
+    fn get_lifes(&self) -> HashMap<PlayerId, usize> {
         self.players
             .iter()
             .map(|(id, player)| (id.clone(), player.lifes))
@@ -405,13 +405,13 @@ impl Game {
         }
     }
 
-    fn peek_current_dealer(&self) -> Option<String> {
+    fn peek_current_dealer(&self) -> Option<PlayerId> {
         self.round_iter.peek().map(|i| self.get_player(i))
     }
 
-    fn get_player(&self, idx: usize) -> String {
+    fn get_player(&self, idx: usize) -> PlayerId {
         match self.players.get_index(idx) {
-            Some(p) => p.0.to_string(),
+            Some(p) => p.0.clone(),
             None => {
                 let msg = format!("InvalidGameState: invalid player index: {idx}");
                 tracing::error!(msg);
@@ -420,11 +420,11 @@ impl Game {
         }
     }
 
-    fn peek_current_bidder(&self) -> Option<String> {
+    fn peek_current_bidder(&self) -> Option<PlayerId> {
         self.bidding_iter.peek().map(|i| self.get_player(i))
     }
 
-    fn validate_game(players: &[String]) -> Result<(), GameError> {
+    fn validate_game(players: &[PlayerId]) -> Result<(), GameError> {
         if players.len() < 2 {
             return Err(GameError::NotEnoughPlayers);
         }
@@ -436,25 +436,27 @@ impl Game {
         Ok(())
     }
 
-    fn alive_players(&self) -> impl Iterator<Item = (&String, &Player)> {
+    fn alive_players(&self) -> impl Iterator<Item = (&PlayerId, &Player)> {
         self.players.iter().filter(|(_, p)| p.lifes > 0)
     }
 
-    fn alive_players_mut(&mut self) -> impl Iterator<Item = (&String, &mut Player)> {
+    fn alive_players_mut(&mut self) -> impl Iterator<Item = (&PlayerId, &mut Player)> {
         self.players.iter_mut().filter(|(_, p)| p.lifes > 0)
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
 
     #[test]
     fn test_game() {
-        let player1 = "P1".to_string();
-        let player2 = "P2".to_string();
+        let player1: Arc<str> = "P1".into();
+        let player2: Arc<str> = "P2".into();
 
-        let mut game = Game::new_default(vec![player1.clone(), player2.clone()]).unwrap();
+        let mut game = Game::new_default(&vec![player1.clone(), player2.clone()]).unwrap();
         assert!(game.pile.is_empty());
 
         let state = game.bid(&player1, 1).unwrap();
@@ -512,10 +514,10 @@ mod tests {
 
     #[test]
     fn test_invalid_bid() {
-        let player1 = "P1".to_string();
-        let player2 = "P2".to_string();
+        let player1: Arc<str> = "P1".into();
+        let player2: Arc<str> = "P2".into();
 
-        let mut game = Game::new_default(vec![player1.clone(), player2.clone()]).unwrap();
+        let mut game = Game::new_default(&vec![player1.clone(), player2.clone()]).unwrap();
 
         let possible = game.get_possible_bids();
         assert_eq!(possible, vec![0, 1]);
@@ -535,8 +537,8 @@ mod tests {
     #[test]
     fn test_game_max_players() {
         for p in 0..MAX_PLAYER_COUNT + 3 {
-            let players = (0..p).map(|i| i.to_string()).collect();
-            let result = Game::new_default(players);
+            let players: Vec<_> = (0..p).map(|i| i.to_string().into()).collect();
+            let result = Game::new_default(&players);
 
             match p {
                 2..=MAX_PLAYER_COUNT => assert!(matches!(result, Ok(g) if g.players.len() == p)),
@@ -550,10 +552,10 @@ mod tests {
 
     #[test]
     fn test_possible_bid() {
-        let player1 = "P1".to_string();
-        let player2 = "P2".to_string();
+        let player1: Arc<str> = "P1".into();
+        let player2: Arc<str> = "P2".into();
 
-        let mut game = Game::new(vec![player1.clone(), player2.clone()], 2).unwrap();
+        let mut game = Game::new(&vec![player1.clone(), player2.clone()], 2).unwrap();
 
         let possible = game.get_possible_bids();
         assert_eq!(possible, vec![0, 1, 2]);
@@ -563,7 +565,7 @@ mod tests {
         let possible = game.get_possible_bids();
         assert_eq!(possible, vec![0, 2]);
 
-        let mut game = Game::new(vec![player1.clone(), player2], 3).unwrap();
+        let mut game = Game::new(&vec![player1.clone(), player2], 3).unwrap();
 
         let possible = game.get_possible_bids();
         assert_eq!(possible, vec![0, 1, 2, 3]);

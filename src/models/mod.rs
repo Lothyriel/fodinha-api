@@ -12,9 +12,11 @@ use strum::IntoEnumIterator;
 use rand::seq::SliceRandom;
 use strum_macros::{Display, EnumIter};
 
+use crate::services::manager::PlayerId;
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub struct Turn {
-    pub player_id: String,
+    pub player_id: PlayerId,
     pub card: Card,
 }
 
@@ -134,28 +136,28 @@ pub enum Suit {
 
 #[derive(Debug)]
 pub enum LobbyState {
-    NotStarted(HashSet<String>),
+    NotStarted(HashSet<PlayerId>),
     Playing(Game),
 }
 
 #[derive(Debug)]
 pub enum GameEvent {
     SetEnded {
-        lifes: HashMap<String, usize>,
+        lifes: HashMap<PlayerId, usize>,
         upcard: Card,
-        decks: IndexMap<String, Vec<Card>>,
-        next: String,
+        decks: IndexMap<PlayerId, Vec<Card>>,
+        next: PlayerId,
         possible: Vec<usize>,
     },
     RoundEnded {
-        next: String,
-        rounds: HashMap<String, usize>,
+        next: PlayerId,
+        rounds: HashMap<PlayerId, usize>,
     },
     Ended {
-        lifes: HashMap<String, usize>,
+        lifes: HashMap<PlayerId, usize>,
     },
     TurnPlayed {
-        next: String,
+        next: PlayerId,
     },
 }
 
@@ -167,11 +169,11 @@ pub struct DealState {
 #[derive(Debug, PartialEq, Eq)]
 pub enum BiddingState {
     Active {
-        next: String,
+        next: PlayerId,
         possible_bids: Vec<usize>,
     },
     Ended {
-        next: String,
+        next: PlayerId,
     },
 }
 
@@ -198,7 +200,7 @@ pub enum TurnError {
     #[error("BiddingStageActive")]
     BiddingStageActive,
     #[error("Expected {expected:?}")]
-    NotYourTurn { expected: Option<String> },
+    NotYourTurn { expected: Option<PlayerId> },
     #[error("NotYourCard")]
     NotYourCard,
     #[error("InvalidPlayer")]

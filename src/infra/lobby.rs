@@ -7,7 +7,7 @@ use reqwest::StatusCode;
 
 use crate::{
     models::GameError,
-    services::manager::{LobbyError, Manager},
+    services::manager::{LobbyError, Manager, PlayerId},
 };
 
 use super::{auth::UserClaims, GetLobbyDto, JoinLobbyDto};
@@ -26,7 +26,7 @@ async fn get_lobbies(State(manager): State<Manager>) -> Json<Vec<GetLobbyDto>> {
 async fn join_lobby(
     State(manager): State<Manager>,
     Extension(user_claims): Extension<UserClaims>,
-    Path(id): Path<String>,
+    Path(id): Path<PlayerId>,
 ) -> Result<Json<JoinLobbyDto>, LobbyError> {
     let (players, should_reconnect) = manager.join_lobby(id.clone(), user_claims).await?;
 
@@ -48,7 +48,7 @@ async fn create_lobby(
 
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct CreateLobbyResponse {
-    pub lobby_id: String,
+    pub lobby_id: PlayerId,
 }
 
 impl IntoResponse for LobbyError {

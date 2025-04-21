@@ -39,7 +39,7 @@ impl Manager {
         }
     }
 
-    pub async fn create_lobby(&self, user_id: String) -> String {
+    pub async fn create_lobby(&self, user_id: PlayerId) -> PlayerId {
         let mut manager = self.inner.lobby.lock().await;
 
         manager.lobbies.insert(user_id.clone(), Lobby::new());
@@ -49,7 +49,7 @@ impl Manager {
 
     pub async fn join_lobby(
         &self,
-        lobby_id: String,
+        lobby_id: PlayerId,
         user_claims: UserClaims,
     ) -> Result<(Vec<PlayerStatus>, bool), LobbyError> {
         let (players_status, players, should_reconnect) = {
@@ -99,7 +99,7 @@ impl Manager {
         Ok((players_status, should_reconnect))
     }
 
-    pub async fn play_turn(&self, card: Card, player_id: String) -> Result<(), LobbyError> {
+    pub async fn play_turn(&self, card: Card, player_id: PlayerId) -> Result<(), LobbyError> {
         let (players, state) = {
             let mut manager = self.inner.lobby.lock().await;
 
@@ -167,7 +167,7 @@ impl Manager {
         Ok(())
     }
 
-    pub async fn bid(&self, bid: usize, player_id: String) -> Result<(), LobbyError> {
+    pub async fn bid(&self, bid: usize, player_id: PlayerId) -> Result<(), LobbyError> {
         let (players, state) = {
             let mut manager = self.inner.lobby.lock().await;
 
@@ -228,7 +228,7 @@ impl Manager {
 
     pub async fn store_player_connection(
         &self,
-        player_id: String,
+        player_id: PlayerId,
         sender: Connection,
     ) -> Result<(), ManagerError> {
         let mut manager = self.inner.connections.lock().await;
@@ -282,7 +282,7 @@ impl Manager {
 
     pub async fn player_status_change(
         &self,
-        player_id: String,
+        player_id: PlayerId,
         ready: bool,
     ) -> Result<(), LobbyError> {
         let (players, set_info) = {
@@ -314,8 +314,10 @@ impl Manager {
 
             let should_start = players_ready.len() == lobby.players.len();
 
+            let lobby_players = lobby.get_players_id();
+
             let set_info = if should_start {
-                let game = Game::new_default(lobby.get_players_id())?;
+                let game = Game::new_default(&lobby_players)?;
 
                 let (decks, upcard) = game.get_decks();
 
@@ -330,7 +332,7 @@ impl Manager {
                 None
             };
 
-            (lobby.get_players_id(), set_info)
+            (lobby_players, set_info)
         };
 
         let msg = ServerMessage::PlayerStatusChange { player_id, ready };
@@ -345,8 +347,8 @@ impl Manager {
 
     async fn init_set(
         &self,
-        decks: IndexMap<String, Vec<Card>>,
-        next: String,
+        decks: IndexMap<PlayerId, Vec<Card>>,
+        next: PlayerId,
         upcard: Card,
         possible_bids: Vec<usize>,
     ) {
@@ -369,7 +371,7 @@ impl Manager {
         self.broadcast_msg(&players, &msg).await;
     }
 
-    async fn broadcast_msg(&self, players: &[String], msg: &ServerMessage) {
+    async fn broadcast_msg(&self, players: &[Arc<str>], msg: &ServerMessage) {
         for p in players {
             let mut connections = self.inner.connections.lock().await;
 
@@ -379,7 +381,7 @@ impl Manager {
         }
     }
 
-    pub async fn reconnect(&self, player_id: String) -> Result<(), LobbyError> {
+    pub async fn reconnect(&self, player_id: PlayerId) -> Result<(), LobbyError> {
         let info = {
             let mut manager = self.inner.lobby.lock().await;
 
@@ -468,21 +470,21 @@ pub enum LobbyError {
 
 struct InnerManager {
     lobby: Mutex<LobbiesManager>,
-    connections: Mutex<HashMap<String, Connection>>,
+    connections: Mutex<HashMap<PlayerId, Connection>>,
 }
 
 type Connection = SplitSink<WebSocket, Message>;
 
 struct LobbiesManager {
-    lobbies: HashMap<String, Lobby>,
+    lobbies: HashMap<LobbyId, Lobby>,
     players_lobby: HashMap<PlayerId, LobbyId>,
 }
 
-type LobbyId = String;
-type PlayerId = String;
+pub type PlayerId = Arc<str>;
+pub type LobbyId = PlayerId;
 
 struct Lobby {
-    players: IndexMap<String, PlayerStatus>,
+    players: IndexMap<PlayerId, PlayerStatus>,
     state: LobbyState,
 }
 
@@ -491,6 +493,7 @@ pub struct PlayerStatus {
     pub ready: bool,
     pub player: UserClaims,
 }
+
 impl PlayerStatus {
     fn new(claims: UserClaims) -> Self {
         Self {
@@ -508,7 +511,7 @@ impl Lobby {
         }
     }
 
-    fn get_players_id(&self) -> Vec<String> {
+    fn get_players_id(&self) -> Vec<PlayerId> {
         self.players.keys().cloned().collect()
     }
 

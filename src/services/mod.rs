@@ -1,3 +1,5 @@
+use manager::PlayerId;
+
 use crate::models::Card;
 
 pub mod manager;
@@ -21,7 +23,7 @@ pub enum GameStageDto {
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq)]
 pub struct PlayerInfoDto {
-    pub id: String,
+    pub id: PlayerId,
     pub lifes: usize,
     pub rounds: usize,
     pub bid: Option<usize>,

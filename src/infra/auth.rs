@@ -14,7 +14,10 @@ use jsonwebtoken::{
 };
 use serde_json::json;
 
-use crate::services::{manager::Manager, repositories::auth::LoginDto};
+use crate::services::{
+    manager::{Manager, PlayerId},
+    repositories::auth::LoginDto,
+};
 
 pub fn router() -> Router<Manager> {
     Router::new().route("/login", routing::post(login)).route(
@@ -32,7 +35,7 @@ pub async fn middleware(mut req: Request, next: Next) -> Result<impl IntoRespons
 
     let claims = get_claims_from_token(token).await?;
 
-    req.extensions_mut().insert(claims.clone());
+    req.extensions_mut().insert(claims);
 
     Ok(next.run(req).await)
 }
@@ -42,9 +45,10 @@ pub struct ProfileParams {
     pub nickname: String,
     pub picture: String,
 }
+
 #[derive(serde::Serialize, serde::Deserialize)]
 struct AnonymousUserClaimsDto {
-    id: String,
+    id: PlayerId,
     picture: String,
     name: String,
     iss: String,
@@ -86,15 +90,15 @@ const ALPHABET: [char; 67] = [
     'u', 'v', 'w', 'x', 'y', 'z', '-', '.', '!', '*',
 ];
 
-fn generate_username() -> String {
-    nanoid::nanoid!(10, &ALPHABET)
+fn generate_username() -> PlayerId {
+    nanoid::nanoid!(10, &ALPHABET).into()
 }
 
 async fn generate_token(
     params: ProfileParams,
     manager: Manager,
     who: SocketAddr,
-    id: String,
+    id: PlayerId,
 ) -> Json<TokenResponse> {
     let claims = AnonymousUserClaimsDto {
         id,
@@ -217,7 +221,7 @@ impl IntoResponse for AuthError {
     }
 }
 
-#[derive(Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq, Debug)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, PartialEq, Eq, Debug)]
 #[serde(tag = "type", content = "data")]
 pub enum UserClaims {
     Anonymous(AnonymousUserClaims),
@@ -225,7 +229,7 @@ pub enum UserClaims {
 }
 
 impl UserClaims {
-    pub fn id(&self) -> String {
+    pub fn id(&self) -> PlayerId {
         match self {
             UserClaims::Anonymous(a) => a.id.clone(),
             UserClaims::Google(g) => g.email.clone(),
@@ -235,14 +239,14 @@ impl UserClaims {
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, PartialEq, Eq, Debug)]
 pub struct AnonymousUserClaims {
-    id: String,
+    id: PlayerId,
     picture: String,
     name: String,
 }
 
 #[derive(serde::Deserialize, serde::Serialize, Clone, PartialEq, Eq, Debug)]
 pub struct GoogleUserClaims {
-    pub email: String,
+    pub email: PlayerId,
     pub name: String,
     pub picture: String,
 }

@@ -11,7 +11,7 @@ use futures::{stream::SplitStream, StreamExt};
 
 use crate::{
     infra::ClientMessage,
-    services::manager::{Manager, ManagerError},
+    services::manager::{Manager, ManagerError, PlayerId},
 };
 
 use super::{
@@ -42,11 +42,11 @@ async fn handle_connection(socket: WebSocket, manager: Manager) -> Result<(), Ma
     manager.store_player_connection(auth.id(), sender).await?;
 
     tokio::spawn(async move {
-        let id = auth.id().clone();
         while let Some(Ok(message)) = receiver.next().await {
-            match process_msg(message, manager.clone(), id.clone()).await {
+            match process_msg(message, manager.clone(), auth.id()).await {
                 Ok(_) => {}
                 Err(error) => {
+                    let id = auth.id();
                     tracing::error!("{id} Error: {error}");
                     manager.send_error(&id, error).await;
                     break;
@@ -84,7 +84,7 @@ async fn get_auth(receiver: &mut SplitStream<WebSocket>) -> Result<UserClaims, M
 async fn process_msg(
     msg: Message,
     manager: Manager,
-    player_id: String,
+    player_id: PlayerId,
 ) -> Result<(), ManagerError> {
     match msg {
         Message::Text(msg) => {
@@ -117,7 +117,7 @@ async fn process_msg(
 async fn handle_game_msg(
     msg: ClientGameMessage,
     manager: Manager,
-    player_id: String,
+    player_id: PlayerId,
 ) -> Result<(), ManagerError> {
     let result = match msg {
         ClientGameMessage::PlayTurn { card } => manager.play_turn(card, player_id).await,
