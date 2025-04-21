@@ -55,14 +55,14 @@ impl IntoResponse for LobbyError {
     fn into_response(self) -> axum::response::Response {
         let code = match &self {
             LobbyError::InvalidLobby => StatusCode::NOT_FOUND,
-            LobbyError::GameAlreadyStarted => StatusCode::BAD_REQUEST,
-            LobbyError::GameNotStarted => StatusCode::BAD_REQUEST,
-            LobbyError::WrongLobby => StatusCode::BAD_REQUEST,
+            LobbyError::GameAlreadyStarted => StatusCode::CONFLICT,
+            LobbyError::GameNotStarted => StatusCode::PRECONDITION_FAILED,
+            LobbyError::WrongLobby => StatusCode::FORBIDDEN,
             LobbyError::GameError(e) => match e {
-                GameError::NotEnoughPlayers => StatusCode::BAD_REQUEST,
-                GameError::TooManyPlayers => StatusCode::BAD_REQUEST,
-                GameError::InvalidTurn(_) => StatusCode::BAD_REQUEST,
-                GameError::InvalidBid(_) => StatusCode::BAD_REQUEST,
+                GameError::NotEnoughPlayers => StatusCode::CONFLICT,
+                GameError::TooManyPlayers => StatusCode::CONFLICT,
+                GameError::InvalidTurn(_) => StatusCode::UNPROCESSABLE_ENTITY,
+                GameError::InvalidBid(_) => StatusCode::UNPROCESSABLE_ENTITY,
             },
         };
 
