@@ -53,9 +53,7 @@ async fn handle_connection(socket: WebSocket, manager: Manager) -> Result<(), Ma
                 }
             }
         }
-    })
-    .await
-    .expect("This task should complete successfully");
+    });
 
     Ok(())
 }
