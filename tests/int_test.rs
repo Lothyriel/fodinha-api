@@ -10,12 +10,24 @@ mod tests {
             ClientGameMessage, ClientMessage, JoinLobbyDto, ServerMessage,
         },
         models::Card,
+        services::manager::{LobbyId, PlayerId},
     };
     use reqwest::Client;
     use tokio::{net::TcpStream, task};
     use tokio_tungstenite::{connect_async, tungstenite::Message, MaybeTlsStream, WebSocketStream};
 
     const URL: &str = "http://localhost:3000/";
+
+    type WebSocket = WebSocketStream<MaybeTlsStream<TcpStream>>;
+
+    type Deck = Vec<Card>;
+
+    struct TestPlayerData {
+        connection: WebSocket,
+        deck: Deck,
+    }
+
+    type TestPlayersData = HashMap<PlayerId, TestPlayerData>;
 
     #[tokio::test]
     async fn test_example() {
@@ -66,7 +78,7 @@ mod tests {
         }
     }
 
-    async fn play_set(players: &mut HashMap<String, TestPlayerData>) {
+    async fn play_set(players: &mut TestPlayersData) {
         let rounds_count = players.values().next().unwrap().deck.len();
 
         bidding(players, rounds_count).await;
@@ -76,9 +88,7 @@ mod tests {
         }
     }
 
-    type Deck = Vec<Card>;
-
-    async fn play_round(players: &mut HashMap<String, TestPlayerData>, last: bool) {
+    async fn play_round(players: &mut TestPlayersData, last: bool) {
         for _ in 0..players.len() {
             play_turn(players).await;
         }
@@ -90,7 +100,7 @@ mod tests {
         }
     }
 
-    async fn play_turn(players: &mut HashMap<String, TestPlayerData>) {
+    async fn play_turn(players: &mut TestPlayersData) {
         let first_connection = players.values_mut().next().unwrap();
 
         let next = get_next_turn_player(&mut first_connection.connection).await;
@@ -112,13 +122,13 @@ mod tests {
         }
     }
 
-    async fn bidding(players: &mut HashMap<String, TestPlayerData>, bid: usize) {
+    async fn bidding(players: &mut TestPlayersData, bid: usize) {
         for _ in 0..players.len() {
             bid_turn(players, bid).await;
         }
     }
 
-    async fn bid_turn(players: &mut HashMap<String, TestPlayerData>, bid: usize) {
+    async fn bid_turn(players: &mut TestPlayersData, bid: usize) {
         let data = players.values_mut().next().unwrap();
 
         let next = get_next_bidding_player(&mut data.connection).await;
@@ -136,12 +146,7 @@ mod tests {
         }
     }
 
-    struct TestPlayerData {
-        connection: WebSocket,
-        deck: Deck,
-    }
-
-    async fn get_decks(players: &mut HashMap<String, TestPlayerData>) {
+    async fn get_decks(players: &mut TestPlayersData) {
         for p in players.values_mut() {
             assert_game_msg(&mut p.connection, validate_set_start).await;
         }
@@ -151,10 +156,7 @@ mod tests {
         }
     }
 
-    async fn join_lobby(
-        client: &mut Client,
-        tokens: Vec<String>,
-    ) -> HashMap<String, TestPlayerData> {
+    async fn join_lobby(client: &mut Client, tokens: Vec<String>) -> TestPlayersData {
         let lobby_id = create_lobby(client, &tokens[0]).await;
 
         for (i, p) in tokens.iter().enumerate() {
@@ -168,7 +170,7 @@ mod tests {
             let claims = get_claims_from_token(&p).await.unwrap();
 
             let data = TestPlayerData {
-                connection: connect_ws(p.clone()).await,
+                connection: connect_ws(p).await,
                 deck: Vec::new(),
             };
 
@@ -178,7 +180,7 @@ mod tests {
         connections
     }
 
-    async fn ready(players: &mut HashMap<String, TestPlayerData>) {
+    async fn ready(players: &mut TestPlayersData) {
         let msg = ClientGameMessage::PlayerStatusChange { ready: true };
 
         for p in players.values_mut() {
@@ -238,14 +240,14 @@ mod tests {
         matches!(m, ServerMessage::SetStart { upcard: _ })
     }
 
-    async fn get_next_turn_player(stream: &mut WebSocket) -> String {
+    async fn get_next_turn_player(stream: &mut WebSocket) -> PlayerId {
         match assert_game_msg(stream, validate_player_turn).await {
             ServerMessage::PlayerTurn { player_id } => player_id,
             _ => panic!("Should be a PlayerTurn message"),
         }
     }
 
-    async fn get_next_bidding_player(stream: &mut WebSocket) -> String {
+    async fn get_next_bidding_player(stream: &mut WebSocket) -> PlayerId {
         match assert_game_msg(stream, validate_bidding_turn).await {
             ServerMessage::PlayerBiddingTurn {
                 player_id,
@@ -285,8 +287,6 @@ mod tests {
         stream.send(Message::Text(msg)).await.unwrap();
     }
 
-    type WebSocket = WebSocketStream<MaybeTlsStream<TcpStream>>;
-
     async fn connect_ws(token: String) -> WebSocket {
         let (mut stream, _) = connect_async("ws://localhost:3000/game").await.unwrap();
 
@@ -323,7 +323,7 @@ mod tests {
         res.json().await.unwrap()
     }
 
-    async fn create_lobby(client: &mut Client, token: &str) -> String {
+    async fn create_lobby(client: &mut Client, token: &str) -> LobbyId {
         let res = client
             .post(format!("{URL}lobby"))
             .bearer_auth(token)
