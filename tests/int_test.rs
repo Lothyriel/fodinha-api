@@ -5,7 +5,7 @@ mod tests {
     use futures::{stream::FusedStream, SinkExt, StreamExt};
     use oh_hell::{
         infra::{
-            auth::{get_claims_from_token, ProfileParams, TokenResponse},
+            auth::{get_claims_from_token, TokenResponse},
             lobby::CreateLobbyResponse,
             ClientGameMessage, ClientMessage, JoinLobbyDto, ServerMessage,
         },
@@ -304,12 +304,10 @@ mod tests {
     async fn recv_msg(stream: &mut WebSocket) -> ServerMessage {
         let msg = stream.next().await.unwrap().unwrap();
 
-        let msg: ServerMessage = match msg {
+        match msg {
             Message::Text(t) => serde_json::from_str(&t).unwrap(),
             m => panic!("Error: {m}"),
-        };
-
-        msg
+        }
     }
 
     async fn join_lobby_http(client: &mut Client, token: &str, lobby_id: &str) -> JoinLobbyDto {
@@ -337,10 +335,9 @@ mod tests {
     }
 
     async fn login(client: &mut Client, number: usize) -> String {
-        let params = ProfileParams {
-            picture: "picture.jpg".to_string(),
-            nickname: format!("Player {number}"),
-        };
+        let params = serde_json::json!({
+            "nickname": format!("Player {number}"),
+        });
 
         let res = client
             .post(format!("{URL}auth/login"))

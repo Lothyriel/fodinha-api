@@ -12,7 +12,7 @@ use jsonwebtoken::{
     jwk::{Jwk, JwkSet},
     DecodingKey, EncodingKey, Header, TokenData, Validation,
 };
-use serde_json::json;
+use serde_json::{json, Value};
 
 use crate::services::{
     manager::{Manager, PlayerId},
@@ -41,17 +41,10 @@ pub async fn middleware(mut req: Request, next: Next) -> Result<impl IntoRespons
     Ok(next.run(req).await)
 }
 
-#[derive(serde::Deserialize, serde::Serialize)]
-pub struct ProfileParams {
-    pub nickname: String,
-    pub picture: String,
-}
-
 #[derive(serde::Serialize, serde::Deserialize)]
 struct AnonymousUserClaimsDto {
     id: PlayerId,
-    picture: String,
-    name: String,
+    data: Value,
     iss: &'static str,
     exp: usize,
 }
@@ -60,7 +53,7 @@ async fn update_profile(
     State(manager): State<Manager>,
     ConnectInfo(who): ConnectInfo<SocketAddr>,
     Extension(user_claims): Extension<UserClaims>,
-    Json(params): Json<ProfileParams>,
+    Json(params): Json<Value>,
 ) -> Result<Json<TokenResponse>, impl IntoResponse> {
     let claim = match user_claims {
         UserClaims::Anonymous(c) => c,
@@ -79,7 +72,7 @@ async fn update_profile(
 async fn login(
     State(manager): State<Manager>,
     ConnectInfo(who): ConnectInfo<SocketAddr>,
-    Json(params): Json<ProfileParams>,
+    Json(params): Json<Value>,
 ) -> Json<TokenResponse> {
     generate_token(params, manager, who, generate_username()).await
 }
@@ -96,15 +89,14 @@ fn generate_username() -> PlayerId {
 }
 
 async fn generate_token(
-    params: ProfileParams,
+    data: Value,
     manager: Manager,
     who: SocketAddr,
     id: PlayerId,
 ) -> Json<TokenResponse> {
     let claims = AnonymousUserClaimsDto {
         id,
-        picture: params.picture,
-        name: params.nickname,
+        data,
         iss: ISSUER,
         exp: 10000000000,
     };
@@ -161,13 +153,7 @@ fn get_anonymous_claims(token: &str) -> Result<UserClaims, AuthError> {
     validation.validate_exp = false;
     validation.set_issuer(&[ISSUER]);
 
-    let claims: AnonymousUserClaimsDto = jsonwebtoken::decode(token, &key, &validation)?.claims;
-
-    let claims = AnonymousUserClaims {
-        id: claims.id,
-        picture: claims.picture,
-        name: claims.name,
-    };
+    let claims = jsonwebtoken::decode(token, &key, &validation)?.claims;
 
     Ok(UserClaims::Anonymous(claims))
 }
@@ -242,8 +228,7 @@ impl UserClaims {
 #[derive(serde::Serialize, serde::Deserialize, Clone, PartialEq, Eq, Debug)]
 pub struct AnonymousUserClaims {
     id: PlayerId,
-    picture: String,
-    name: String,
+    data: Value,
 }
 
 #[derive(serde::Deserialize, serde::Serialize, Clone, PartialEq, Eq, Debug)]

@@ -62,7 +62,7 @@ async fn get_auth(receiver: &mut SplitStream<WebSocket>) -> Result<UserClaims, M
     if let Some(Ok(message)) = receiver.next().await {
         match message {
             Message::Text(message) => {
-                let message: ClientMessage = serde_json::from_str(&message)?;
+                let message = serde_json::from_str(&message)?;
 
                 match message {
                     ClientMessage::Auth { token } => Ok(auth::get_claims_from_token(&token).await?),
