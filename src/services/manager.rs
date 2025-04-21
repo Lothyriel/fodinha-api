@@ -49,7 +49,7 @@ impl Manager {
 
     pub async fn join_lobby(
         &self,
-        lobby_id: PlayerId,
+        lobby_id: LobbyId,
         user_claims: UserClaims,
     ) -> Result<(Vec<PlayerStatus>, bool), LobbyError> {
         let (players_status, players, should_reconnect) = {
@@ -371,7 +371,7 @@ impl Manager {
         self.broadcast_msg(&players, &msg).await;
     }
 
-    async fn broadcast_msg(&self, players: &[Arc<str>], msg: &ServerMessage) {
+    async fn broadcast_msg(&self, players: &[PlayerId], msg: &ServerMessage) {
         for p in players {
             let mut connections = self.inner.connections.lock().await;
 
