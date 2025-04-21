@@ -52,7 +52,7 @@ impl Player {
         self.lifes != 0
     }
 
-    pub fn loose_life(&mut self) {
+    pub fn decrease_life(&mut self) {
         self.lifes -= 1;
     }
 }
