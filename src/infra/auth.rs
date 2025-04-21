@@ -27,6 +27,7 @@ pub fn router() -> Router<Manager> {
 }
 
 pub static JWT_KEY: OnceLock<String> = OnceLock::new();
+const ISSUER: &str = "https://fodinha.click";
 
 pub async fn middleware(mut req: Request, next: Next) -> Result<impl IntoResponse, AuthError> {
     let token = get_token_from_req(&mut req)
@@ -51,7 +52,7 @@ struct AnonymousUserClaimsDto {
     id: PlayerId,
     picture: String,
     name: String,
-    iss: String,
+    iss: &'static str,
     exp: usize,
 }
 
@@ -104,7 +105,7 @@ async fn generate_token(
         id,
         picture: params.picture,
         name: params.nickname,
-        iss: "https://fodinha.click".to_string(),
+        iss: ISSUER,
         exp: 10000000000,
     };
 
@@ -158,6 +159,7 @@ fn get_anonymous_claims(token: &str) -> Result<UserClaims, AuthError> {
     let mut validation = Validation::new(jsonwebtoken::Algorithm::HS256);
 
     validation.validate_exp = false;
+    validation.set_issuer(&[ISSUER]);
 
     let claims: AnonymousUserClaimsDto = jsonwebtoken::decode(token, &key, &validation)?.claims;
 
