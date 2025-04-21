@@ -66,7 +66,7 @@ mod tests {
         }
     }
 
-    async fn play_set(players: &mut HashMap<String, PlayerData>) {
+    async fn play_set(players: &mut HashMap<String, TestPlayerData>) {
         let rounds_count = players.values().next().unwrap().deck.len();
 
         bidding(players, rounds_count).await;
@@ -78,7 +78,7 @@ mod tests {
 
     type Deck = Vec<Card>;
 
-    async fn play_round(players: &mut HashMap<String, PlayerData>, last: bool) {
+    async fn play_round(players: &mut HashMap<String, TestPlayerData>, last: bool) {
         for _ in 0..players.len() {
             play_turn(players).await;
         }
@@ -90,7 +90,7 @@ mod tests {
         }
     }
 
-    async fn play_turn(players: &mut HashMap<String, PlayerData>) {
+    async fn play_turn(players: &mut HashMap<String, TestPlayerData>) {
         let first_connection = players.values_mut().next().unwrap();
 
         let next = get_next_turn_player(&mut first_connection.connection).await;
@@ -112,13 +112,13 @@ mod tests {
         }
     }
 
-    async fn bidding(players: &mut HashMap<String, PlayerData>, bid: usize) {
+    async fn bidding(players: &mut HashMap<String, TestPlayerData>, bid: usize) {
         for _ in 0..players.len() {
             bid_turn(players, bid).await;
         }
     }
 
-    async fn bid_turn(players: &mut HashMap<String, PlayerData>, bid: usize) {
+    async fn bid_turn(players: &mut HashMap<String, TestPlayerData>, bid: usize) {
         let data = players.values_mut().next().unwrap();
 
         let next = get_next_bidding_player(&mut data.connection).await;
@@ -136,12 +136,12 @@ mod tests {
         }
     }
 
-    struct PlayerData {
+    struct TestPlayerData {
         connection: WebSocket,
         deck: Deck,
     }
 
-    async fn get_decks(players: &mut HashMap<String, PlayerData>) {
+    async fn get_decks(players: &mut HashMap<String, TestPlayerData>) {
         for p in players.values_mut() {
             assert_game_msg(&mut p.connection, validate_set_start).await;
         }
@@ -151,7 +151,10 @@ mod tests {
         }
     }
 
-    async fn join_lobby(client: &mut Client, tokens: Vec<String>) -> HashMap<String, PlayerData> {
+    async fn join_lobby(
+        client: &mut Client,
+        tokens: Vec<String>,
+    ) -> HashMap<String, TestPlayerData> {
         let lobby_id = create_lobby(client, &tokens[0]).await;
 
         for (i, p) in tokens.iter().enumerate() {
@@ -164,7 +167,7 @@ mod tests {
         for p in tokens {
             let claims = get_claims_from_token(&p).await.unwrap();
 
-            let data = PlayerData {
+            let data = TestPlayerData {
                 connection: connect_ws(p.clone()).await,
                 deck: Vec::new(),
             };
@@ -175,7 +178,7 @@ mod tests {
         connections
     }
 
-    async fn ready(players: &mut HashMap<String, PlayerData>) {
+    async fn ready(players: &mut HashMap<String, TestPlayerData>) {
         let msg = ClientGameMessage::PlayerStatusChange { ready: true };
 
         for p in players.values_mut() {
