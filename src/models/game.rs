@@ -285,7 +285,7 @@ impl Game {
     }
 
     fn start_new_set(&mut self) {
-        let (mode, count) = Self::get_new_cards_mode(
+        let (mode, count) = Self::get_new_dealing_mode(
             self.dealing_mode,
             self.cards_count,
             self.alive_players().count(),
@@ -306,7 +306,7 @@ impl Game {
         self.upcard = deck[0];
     }
 
-    fn get_new_cards_mode(
+    fn get_new_dealing_mode(
         mode: DealingMode,
         count: usize,
         player_count: usize,
@@ -579,22 +579,22 @@ mod tests {
     #[test]
     fn test_card_mode() {
         assert_eq!(
-            Game::get_new_cards_mode(DealingMode::Increasing, 1, 4),
+            Game::get_new_dealing_mode(DealingMode::Increasing, 1, 4),
             (DealingMode::Increasing, 2)
         );
 
         assert_eq!(
-            Game::get_new_cards_mode(DealingMode::Decreasing, 1, 4),
+            Game::get_new_dealing_mode(DealingMode::Decreasing, 1, 4),
             (DealingMode::Increasing, 2)
         );
 
         assert_eq!(
-            Game::get_new_cards_mode(DealingMode::Increasing, 2, 4),
+            Game::get_new_dealing_mode(DealingMode::Increasing, 2, 4),
             (DealingMode::Increasing, 3)
         );
 
         assert_eq!(
-            Game::get_new_cards_mode(DealingMode::Increasing, 7, 5),
+            Game::get_new_dealing_mode(DealingMode::Increasing, 7, 5),
             (DealingMode::Decreasing, 6)
         );
     }
