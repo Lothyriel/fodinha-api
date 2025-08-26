@@ -1,7 +1,8 @@
 use axum::{
+    Extension, Json, Router,
     extract::{Path, State},
     response::IntoResponse,
-    routing, Extension, Json, Router,
+    routing,
 };
 use reqwest::StatusCode;
 
@@ -10,13 +11,13 @@ use crate::{
     services::manager::{LobbyError, LobbyId, Manager},
 };
 
-use super::{auth::UserClaims, GetLobbyDto, JoinLobbyDto};
+use super::{GetLobbyDto, JoinLobbyDto, auth::UserClaims};
 
 pub fn router() -> Router<Manager> {
     Router::new()
         .route("/", routing::get(get_lobbies))
         .route("/", routing::post(create_lobby))
-        .route("/:id", routing::put(join_lobby))
+        .route("/{id}", routing::put(join_lobby))
 }
 
 async fn get_lobbies(State(manager): State<Manager>) -> Json<Vec<GetLobbyDto>> {

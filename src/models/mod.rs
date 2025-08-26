@@ -81,7 +81,7 @@ impl Card {
     pub fn shuffled_deck() -> Vec<Card> {
         let mut deck = Self::deck();
 
-        deck.shuffle(&mut rand::thread_rng());
+        deck.shuffle(&mut rand::rng());
 
         deck
     }

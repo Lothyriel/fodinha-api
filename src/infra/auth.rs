@@ -1,18 +1,19 @@
 use std::{net::SocketAddr, sync::OnceLock};
 
 use axum::{
+    Extension, Json, Router,
     extract::{ConnectInfo, Request, State},
-    http::{header, StatusCode},
+    http::{StatusCode, header},
     middleware::Next,
     response::IntoResponse,
-    routing, Extension, Json, Router,
+    routing,
 };
 use jsonwebtoken::{
+    DecodingKey, EncodingKey, Header, TokenData, Validation,
     errors::Error,
     jwk::{Jwk, JwkSet},
-    DecodingKey, EncodingKey, Header, TokenData, Validation,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::services::{
     manager::{Manager, PlayerId},
@@ -22,12 +23,12 @@ use crate::services::{
 pub fn router() -> Router<Manager> {
     Router::new().route("/login", routing::post(login)).route(
         "/profile",
-        routing::post(update_profile).layer(axum::middleware::from_fn(middleware)),
+        routing::post(update).layer(axum::middleware::from_fn(middleware)),
     )
 }
 
 pub static JWT_KEY: OnceLock<String> = OnceLock::new();
-const ISSUER: &str = "https://fodinha.click";
+const ISSUER: &str = "fodinha.loty.click";
 
 pub async fn middleware(mut req: Request, next: Next) -> Result<impl IntoResponse, AuthError> {
     let token = get_token_from_req(&mut req)
@@ -49,32 +50,36 @@ struct AnonymousUserClaimsDto {
     exp: usize,
 }
 
-async fn update_profile(
+async fn update(
     State(manager): State<Manager>,
     ConnectInfo(who): ConnectInfo<SocketAddr>,
     Extension(user_claims): Extension<UserClaims>,
     Json(params): Json<Value>,
-) -> Result<Json<TokenResponse>, impl IntoResponse> {
+) -> impl IntoResponse {
     let claim = match user_claims {
         UserClaims::Anonymous(c) => c,
-        UserClaims::Google(_) => {
+        UserClaims::Google(c) => {
             let response = (
-                StatusCode::UNPROCESSABLE_ENTITY,
+                StatusCode::NOT_IMPLEMENTED,
                 "Google claim not supported for now...",
             );
-            return Err(response.into_response());
+            return response.into_response();
         }
     };
 
-    Ok(generate_token(params, manager, who, claim.id).await)
+    let token = generate_token(params, manager, who, claim.id).await;
+
+    StatusCode::OK.into_response()
 }
 
 async fn login(
     State(manager): State<Manager>,
     ConnectInfo(who): ConnectInfo<SocketAddr>,
     Json(params): Json<Value>,
-) -> Json<TokenResponse> {
-    generate_token(params, manager, who, generate_username()).await
+) -> StatusCode {
+    let token = generate_token(params, manager, who, generate_username()).await;
+
+    StatusCode::OK
 }
 
 const ALPHABET: [char; 67] = [
@@ -88,12 +93,7 @@ fn generate_username() -> PlayerId {
     nanoid::nanoid!(10, &ALPHABET).into()
 }
 
-async fn generate_token(
-    data: Value,
-    manager: Manager,
-    who: SocketAddr,
-    id: PlayerId,
-) -> Json<TokenResponse> {
+async fn generate_token(data: Value, manager: Manager, who: SocketAddr, id: PlayerId) -> String {
     let claims = AnonymousUserClaimsDto {
         id,
         data,
@@ -111,7 +111,7 @@ async fn generate_token(
     )
     .expect("Should encode JWT");
 
-    Json(TokenResponse { token })
+    token
 }
 
 async fn save_login(manager: Manager, dto: LoginDto) {
@@ -120,11 +120,6 @@ async fn save_login(manager: Manager, dto: LoginDto) {
     if let Err(e) = insert {
         tracing::error!("Error while saving login info | {e}")
     }
-}
-
-#[derive(serde::Serialize, serde::Deserialize)]
-pub struct TokenResponse {
-    pub token: String,
 }
 
 fn get_key() -> &'static str {

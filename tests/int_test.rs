@@ -284,7 +284,7 @@ mod tests {
 
         let msg = serde_json::to_string(&msg).unwrap();
 
-        stream.send(Message::Text(msg)).await.unwrap();
+        stream.send(Message::Text(msg.into())).await.unwrap();
     }
 
     async fn connect_ws(token: String) -> WebSocket {
@@ -294,7 +294,7 @@ mod tests {
 
         let json = serde_json::to_string(&msg).unwrap();
 
-        stream.send(Message::Text(json)).await.unwrap();
+        stream.send(Message::Text(json.into())).await.unwrap();
 
         assert!(!stream.is_terminated());
 

@@ -1,5 +1,5 @@
 use std::{
-    borrow::{BorrowMut, Cow},
+    borrow::BorrowMut,
     collections::{HashMap, HashSet},
     sync::Arc,
 };
@@ -271,7 +271,7 @@ impl Manager {
         let send_close = connection
             .send(Message::Close(Some(CloseFrame {
                 code,
-                reason: Cow::Owned(reason.to_string()),
+                reason: reason.to_string().into(),
             })))
             .await;
 
@@ -423,7 +423,7 @@ async fn send_msg(msg: &ServerMessage, player: &str, connection: &mut Connection
     tracing::info!("Sending to {player}: {msg}");
 
     let send = connection
-        .send(Message::Text(msg))
+        .send(Message::Text(msg.into()))
         .await
         .map_err(|e| ManagerError::PlayerDisconnected(e.to_string()));
 

@@ -1,43 +1,44 @@
 use std::net::SocketAddr;
 
 use axum::{
+    Extension,
     extract::{
-        ws::{Message, WebSocket},
         ConnectInfo, State, WebSocketUpgrade,
+        ws::{Message, WebSocket},
     },
     response::IntoResponse,
 };
-use futures::{stream::SplitStream, StreamExt};
+use futures::StreamExt;
 
 use crate::{
     infra::ClientMessage,
     services::manager::{Manager, ManagerError, PlayerId},
 };
 
-use super::{
-    auth::{self, UserClaims},
-    ClientGameMessage,
-};
+use super::{ClientGameMessage, auth::UserClaims};
 
 pub async fn ws_handler(
     ws: WebSocketUpgrade,
     ConnectInfo(who): ConnectInfo<SocketAddr>,
     State(manager): State<Manager>,
+    Extension(auth): Extension<UserClaims>,
 ) -> impl IntoResponse {
     tracing::info!(">>>> {who} connected");
 
     ws.on_upgrade(move |socket| async move {
-        match handle_connection(socket, manager).await {
+        match handle_connection(socket, manager, auth).await {
             Ok(_) => tracing::warn!(">>>> {who} closed normally"),
             Err(e) => tracing::error!(">>>> {who} closed from error: {e}"),
         }
     })
 }
 
-async fn handle_connection(socket: WebSocket, manager: Manager) -> Result<(), ManagerError> {
+async fn handle_connection(
+    socket: WebSocket,
+    manager: Manager,
+    auth: UserClaims,
+) -> Result<(), ManagerError> {
     let (sender, mut receiver) = socket.split();
-
-    let auth = get_auth(&mut receiver).await?;
 
     manager.store_player_connection(auth.id(), sender).await?;
 
@@ -56,29 +57,6 @@ async fn handle_connection(socket: WebSocket, manager: Manager) -> Result<(), Ma
     });
 
     Ok(())
-}
-
-async fn get_auth(receiver: &mut SplitStream<WebSocket>) -> Result<UserClaims, ManagerError> {
-    if let Some(Ok(message)) = receiver.next().await {
-        match message {
-            Message::Text(message) => {
-                let message = serde_json::from_str(&message)?;
-
-                match message {
-                    ClientMessage::Auth { token } => Ok(auth::get_claims_from_token(&token).await?),
-                    ClientMessage::Game(_) => Err(ManagerError::UnexpectedValidMessage(
-                        "Expected auth message",
-                    )),
-                }
-            }
-
-            _ => Err(ManagerError::InvalidWebsocketMessageType),
-        }
-    } else {
-        Err(ManagerError::PlayerDisconnected(
-            "PlayerDisconnected during auth handshake".to_string(),
-        ))
-    }
 }
 
 async fn process_msg(
