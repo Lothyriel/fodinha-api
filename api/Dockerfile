@@ -13,8 +13,8 @@ COPY . .
 RUN cargo build --release -p api
 
 FROM gcr.io/distroless/cc-debian12:nonroot AS runtime
-COPY --from=builder /target/release/oh_hell /usr/local/bin/
+COPY --from=builder /target/release/api /usr/local/bin/
 
-ENTRYPOINT ["oh_hell"]
+ENTRYPOINT ["api"]
 
 EXPOSE 3000 

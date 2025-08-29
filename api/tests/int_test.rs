@@ -2,16 +2,16 @@
 mod tests {
     use std::collections::HashMap;
 
-    use futures::{SinkExt, StreamExt, stream::FusedStream};
-    use oh_hell::{
+    use api::{
         infra::{
-            ClientGameMessage, ClientMessage, JoinLobbyDto, ServerMessage,
             auth::{AUTH_COOKIE, get_claims_from_token},
             lobby::CreateLobbyResponse,
+            *,
         },
         models::Card,
         services::manager::{LobbyId, PlayerId},
     };
+    use futures::{SinkExt, StreamExt, stream::FusedStream};
     use reqwest::Client;
     use tokio::{net::TcpStream, task};
     use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async, tungstenite::Message};
@@ -31,7 +31,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_example() {
-        task::spawn(oh_hell::start_app());
+        task::spawn(api::start_app());
         let client = reqwest::Client::new();
 
         let tokens = get_players(&client, 7).await;
