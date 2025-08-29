@@ -12,9 +12,12 @@ mod tests {
         services::manager::{LobbyId, PlayerId},
     };
     use futures::{SinkExt, StreamExt, stream::FusedStream};
-    use reqwest::Client;
+    use reqwest::{Client, header};
     use tokio::{net::TcpStream, task};
-    use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async, tungstenite::Message};
+    use tokio_tungstenite::{
+        MaybeTlsStream, WebSocketStream, connect_async,
+        tungstenite::{Message, client::IntoClientRequest},
+    };
 
     const URL: &str = "http://localhost:3000";
 
@@ -111,7 +114,7 @@ mod tests {
 
         let next = players.get_mut(&next).unwrap();
 
-        let msg = ClientGameMessage::PlayTurn {
+        let msg = ClientMessage::PlayTurn {
             card: next.deck.swap_remove(0),
         };
 
@@ -139,7 +142,7 @@ mod tests {
 
         let next = players.get_mut(&next).unwrap();
 
-        send_msg(&mut next.connection, ClientGameMessage::PutBid { bid }).await;
+        send_msg(&mut next.connection, ClientMessage::PutBid { bid }).await;
 
         for p in players.values_mut() {
             assert_game_msg(&mut p.connection, validate_player_bidded).await;
@@ -170,7 +173,7 @@ mod tests {
             let claims = get_claims_from_token(&p).await.unwrap();
 
             let data = TestPlayerData {
-                connection: connect_ws(p).await,
+                connection: connect_ws(&p).await,
                 deck: Vec::new(),
             };
 
@@ -181,7 +184,7 @@ mod tests {
     }
 
     async fn ready(players: &mut TestPlayersData) {
-        let msg = ClientGameMessage::PlayerStatusChange { ready: true };
+        let msg = ClientMessage::PlayerStatusChange { ready: true };
 
         for p in players.values_mut() {
             send_msg(&mut p.connection, msg).await;
@@ -279,22 +282,18 @@ mod tests {
         }
     }
 
-    async fn send_msg(stream: &mut WebSocket, msg: ClientGameMessage) {
-        let msg = ClientMessage::Game(msg);
-
+    async fn send_msg(stream: &mut WebSocket, msg: ClientMessage) {
         let msg = serde_json::to_string(&msg).unwrap();
 
         stream.send(Message::Text(msg.into())).await.unwrap();
     }
 
-    async fn connect_ws(token: String) -> WebSocket {
-        let (mut stream, _) = connect_async("ws://localhost:3000/game").await.unwrap();
+    async fn connect_ws(token: &str) -> WebSocket {
+        let mut req = "ws://localhost:3000/game".into_client_request().unwrap();
+        req.headers_mut()
+            .insert(header::COOKIE, build_token(token).parse().unwrap());
 
-        let msg = ClientMessage::Auth { token };
-
-        let json = serde_json::to_string(&msg).unwrap();
-
-        stream.send(Message::Text(json.into())).await.unwrap();
+        let (stream, _) = connect_async(req).await.unwrap();
 
         assert!(!stream.is_terminated());
 
@@ -313,7 +312,7 @@ mod tests {
     async fn join_lobby_http(client: &Client, token: &str, lobby_id: &str) -> JoinLobbyDto {
         let res = client
             .put(format!("{URL}/lobby/{lobby_id}"))
-            .header(AUTH_COOKIE, token)
+            .header(header::COOKIE, build_token(token))
             .send()
             .await
             .unwrap();
@@ -321,10 +320,14 @@ mod tests {
         res.json().await.unwrap()
     }
 
+    fn build_token(token: &str) -> String {
+        format!("{AUTH_COOKIE}={token}")
+    }
+
     async fn create_lobby(client: &Client, token: &str) -> LobbyId {
         let res = client
             .post(format!("{URL}/lobby"))
-            .header(AUTH_COOKIE, token)
+            .header(header::COOKIE, build_token(token))
             .send()
             .await
             .unwrap();

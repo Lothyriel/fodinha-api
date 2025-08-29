@@ -18,10 +18,11 @@ use serde_json::{Value, json};
 use crate::services::manager::{Manager, PlayerId};
 
 pub fn router() -> Router<Manager> {
-    Router::new().route("/login", routing::post(login)).route(
-        "/profile",
-        routing::post(update).layer(axum::middleware::from_fn(middleware)),
-    )
+    let auth = axum::middleware::from_fn(middleware);
+
+    Router::new()
+        .route("/login", routing::post(login))
+        .route("/profile", routing::post(update).layer(auth))
 }
 
 pub static JWT_KEY: OnceLock<String> = OnceLock::new();

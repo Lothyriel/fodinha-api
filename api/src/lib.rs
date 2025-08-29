@@ -2,7 +2,7 @@ pub mod infra;
 pub mod models;
 pub mod services;
 
-use std::net::{Ipv4Addr, SocketAddr};
+use std::net::Ipv4Addr;
 
 use axum::{Router, routing};
 use infra::auth::JWT_KEY;
@@ -13,6 +13,8 @@ use services::{
 
 use tower_http::cors::{Any, CorsLayer};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+
+use crate::infra::game;
 
 pub async fn start_app() {
     tracing_subscriber::registry()
@@ -35,7 +37,7 @@ pub async fn start_app() {
 
     let manager = Manager::new(GamesRepository::new(&db));
 
-    let auth_layer = axum::middleware::from_fn(infra::auth::middleware);
+    let auth = axum::middleware::from_fn(infra::auth::middleware);
 
     let cors = CorsLayer::new()
         .allow_origin(Any)
@@ -43,8 +45,8 @@ pub async fn start_app() {
         .allow_headers(Any);
 
     let app = Router::new()
-        .route("/game", routing::get(infra::game::ws_handler))
-        .nest("/lobby", infra::lobby::router().layer(auth_layer))
+        .route("/game", routing::get(game::handler).layer(auth.clone()))
+        .nest("/lobby", infra::lobby::router().layer(auth))
         .nest("/auth", infra::auth::router())
         .fallback(infra::fallback_handler)
         .with_state(manager)
@@ -59,10 +61,7 @@ pub async fn start_app() {
 
     tracing::info!("Listening on {:?}", address);
 
-    axum::serve(
-        listener,
-        app.into_make_service_with_connect_info::<SocketAddr>(),
-    )
-    .await
-    .expect("Expected to start axum");
+    axum::serve(listener, app)
+        .await
+        .expect("Expected to start axum");
 }

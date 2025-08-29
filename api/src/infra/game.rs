@@ -1,9 +1,7 @@
-use std::net::SocketAddr;
-
 use axum::{
     Extension,
     extract::{
-        ConnectInfo, State, WebSocketUpgrade,
+        State, WebSocketUpgrade,
         ws::{Message, WebSocket},
     },
     response::IntoResponse,
@@ -15,14 +13,14 @@ use crate::{
     services::manager::{Manager, ManagerError, PlayerId},
 };
 
-use super::{ClientGameMessage, auth::UserClaims};
+use super::auth::UserClaims;
 
-pub async fn ws_handler(
+pub async fn handler(
     ws: WebSocketUpgrade,
-    ConnectInfo(who): ConnectInfo<SocketAddr>,
     State(manager): State<Manager>,
     Extension(auth): Extension<UserClaims>,
 ) -> impl IntoResponse {
+    let who = auth.id();
     tracing::info!(">>>> {who} connected");
 
     ws.on_upgrade(move |socket| async move {
@@ -34,11 +32,11 @@ pub async fn ws_handler(
 }
 
 async fn handle_connection(
-    socket: WebSocket,
+    ws: WebSocket,
     manager: Manager,
     auth: UserClaims,
 ) -> Result<(), ManagerError> {
-    let (sender, mut receiver) = socket.split();
+    let (sender, mut receiver) = ws.split();
 
     manager.store_player_connection(auth.id(), sender).await?;
 
@@ -69,15 +67,7 @@ async fn process_msg(
             let msg = serde_json::from_str(&msg)?;
             tracing::debug!("Received from {player_id}: {msg:?}");
 
-            match msg {
-                ClientMessage::Game(g) => handle_game_msg(g, manager, player_id).await,
-                ClientMessage::Auth { token: a } => {
-                    tracing::error!("Unexpected auth message {a}");
-                    Err(ManagerError::UnexpectedValidMessage(
-                        "Expected game message",
-                    ))
-                }
-            }
+            handle_game_msg(msg, manager, player_id).await
         }
         Message::Close(c) => {
             let reason = c
@@ -93,15 +83,15 @@ async fn process_msg(
 }
 
 async fn handle_game_msg(
-    msg: ClientGameMessage,
+    msg: ClientMessage,
     manager: Manager,
     player_id: PlayerId,
 ) -> Result<(), ManagerError> {
     let result = match msg {
-        ClientGameMessage::PlayTurn { card } => manager.play_turn(card, player_id).await,
-        ClientGameMessage::PutBid { bid } => manager.bid(bid, player_id).await,
-        ClientGameMessage::Reconnect => manager.reconnect(player_id).await,
-        ClientGameMessage::PlayerStatusChange { ready } => {
+        ClientMessage::PlayTurn { card } => manager.play_turn(card, player_id).await,
+        ClientMessage::PutBid { bid } => manager.bid(bid, player_id).await,
+        ClientMessage::Reconnect => manager.reconnect(player_id).await,
+        ClientMessage::PlayerStatusChange { ready } => {
             manager.player_status_change(player_id, ready).await
         }
     };

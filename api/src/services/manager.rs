@@ -261,7 +261,6 @@ impl Manager {
             ManagerError::Lobby(_) => 1008,
             ManagerError::Turn(_) | ManagerError::Bid(_) => 1008,
             ManagerError::UnexpectedJsonMessage(_) => 1008,
-            ManagerError::UnexpectedValidMessage(_) => 1008,
             ManagerError::Database(_) => 1011,
             ManagerError::Unauthorized(_) => 3000,
         };
@@ -442,8 +441,6 @@ pub enum ManagerError {
     InvalidWebsocketMessageType,
     #[error("Unexpected valid json message: {0}")]
     UnexpectedJsonMessage(#[from] serde_json::error::Error),
-    #[error("Unexpected message | {0}")]
-    UnexpectedValidMessage(&'static str),
     #[error("Database error: {0}")]
     Database(#[from] mongodb::error::Error),
     #[error("Unauthorized | {0}")]

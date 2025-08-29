@@ -10,8 +10,8 @@ use axum::http::StatusCode;
 use crate::{
     models::{Card, Turn},
     services::{
-        manager::{PlayerId, PlayerStatus},
         GameInfoDto,
+        manager::{PlayerId, PlayerStatus},
     },
 };
 
@@ -19,16 +19,9 @@ pub async fn fallback_handler() -> (StatusCode, &'static str) {
     (StatusCode::NOT_FOUND, "this resource doesn't exist")
 }
 
-#[derive(serde::Deserialize, serde::Serialize, Debug)]
-#[serde(tag = "type", content = "data")]
-pub enum ClientMessage {
-    Game(ClientGameMessage),
-    Auth { token: String },
-}
-
 #[derive(serde::Deserialize, serde::Serialize, Clone, Copy, Debug)]
 #[serde(tag = "type", content = "data")]
-pub enum ClientGameMessage {
+pub enum ClientMessage {
     PlayTurn { card: Card },
     PutBid { bid: usize },
     PlayerStatusChange { ready: bool },
