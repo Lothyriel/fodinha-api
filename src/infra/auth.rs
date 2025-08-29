@@ -1,12 +1,12 @@
-use std::{net::SocketAddr, sync::OnceLock};
+use std::sync::OnceLock;
 
 use axum::{
-    Extension, Json, Router,
-    extract::{ConnectInfo, Request, State},
-    http::{StatusCode, header},
-    middleware::Next,
-    response::IntoResponse,
-    routing,
+    Extension, Json, Router, extract::Request, http::StatusCode, middleware::Next,
+    response::IntoResponse, routing,
+};
+use axum_extra::extract::{
+    CookieJar,
+    cookie::{Cookie, SameSite},
 };
 use jsonwebtoken::{
     DecodingKey, EncodingKey, Header, TokenData, Validation,
@@ -15,10 +15,7 @@ use jsonwebtoken::{
 };
 use serde_json::{Value, json};
 
-use crate::services::{
-    manager::{Manager, PlayerId},
-    repositories::auth::LoginDto,
-};
+use crate::services::manager::{Manager, PlayerId};
 
 pub fn router() -> Router<Manager> {
     Router::new().route("/login", routing::post(login)).route(
@@ -28,14 +25,17 @@ pub fn router() -> Router<Manager> {
 }
 
 pub static JWT_KEY: OnceLock<String> = OnceLock::new();
+pub const AUTH_COOKIE: &str = "AUTH_TOKEN";
 const ISSUER: &str = "fodinha.loty.click";
 
-pub async fn middleware(mut req: Request, next: Next) -> Result<impl IntoResponse, AuthError> {
-    let token = get_token_from_req(&mut req)
-        .await
-        .ok_or(AuthError::TokenNotPresent)?;
+pub async fn middleware(
+    jar: CookieJar,
+    mut req: Request,
+    next: Next,
+) -> Result<impl IntoResponse, AuthError> {
+    let token = jar.get(AUTH_COOKIE).ok_or(AuthError::TokenNotPresent)?;
 
-    let claims = get_claims_from_token(token).await?;
+    let claims = get_claims_from_token(token.value()).await?;
 
     req.extensions_mut().insert(claims);
 
@@ -51,14 +51,13 @@ struct AnonymousUserClaimsDto {
 }
 
 async fn update(
-    State(manager): State<Manager>,
-    ConnectInfo(who): ConnectInfo<SocketAddr>,
     Extension(user_claims): Extension<UserClaims>,
+    jar: CookieJar,
     Json(params): Json<Value>,
 ) -> impl IntoResponse {
     let claim = match user_claims {
         UserClaims::Anonymous(c) => c,
-        UserClaims::Google(c) => {
+        UserClaims::Google(_) => {
             let response = (
                 StatusCode::NOT_IMPLEMENTED,
                 "Google claim not supported for now...",
@@ -67,19 +66,15 @@ async fn update(
         }
     };
 
-    let token = generate_token(params, manager, who, claim.id).await;
+    let token = generate_token(params, claim.id).await;
 
-    StatusCode::OK.into_response()
+    (StatusCode::OK, jar.add(token)).into_response()
 }
 
-async fn login(
-    State(manager): State<Manager>,
-    ConnectInfo(who): ConnectInfo<SocketAddr>,
-    Json(params): Json<Value>,
-) -> StatusCode {
-    let token = generate_token(params, manager, who, generate_username()).await;
+async fn login(jar: CookieJar, Json(params): Json<Value>) -> impl IntoResponse {
+    let token = generate_token(params, generate_playerid()).await;
 
-    StatusCode::OK
+    (StatusCode::OK, jar.add(token))
 }
 
 const ALPHABET: [char; 67] = [
@@ -89,11 +84,11 @@ const ALPHABET: [char; 67] = [
     'u', 'v', 'w', 'x', 'y', 'z', '-', '.', '!', '*',
 ];
 
-fn generate_username() -> PlayerId {
+fn generate_playerid() -> PlayerId {
     nanoid::nanoid!(10, &ALPHABET).into()
 }
 
-async fn generate_token(data: Value, manager: Manager, who: SocketAddr, id: PlayerId) -> String {
+async fn generate_token<'a>(data: Value, id: PlayerId) -> Cookie<'a> {
     let claims = AnonymousUserClaimsDto {
         id,
         data,
@@ -101,29 +96,24 @@ async fn generate_token(data: Value, manager: Manager, who: SocketAddr, id: Play
         exp: 10000000000,
     };
 
-    let dto = LoginDto::new(claims.id.to_string(), who.to_string());
-    tokio::spawn(save_login(manager, dto));
-
     let token = jsonwebtoken::encode(
         &Header::default(),
         &claims,
-        &EncodingKey::from_secret(get_key().as_bytes()),
+        &EncodingKey::from_secret(get_key_bytes()),
     )
     .expect("Should encode JWT");
 
-    token
+    let mut cookie = Cookie::new(AUTH_COOKIE, token);
+
+    cookie.set_http_only(true);
+    cookie.set_path("/");
+    cookie.set_same_site(Some(SameSite::Strict));
+
+    cookie
 }
 
-async fn save_login(manager: Manager, dto: LoginDto) {
-    let insert = manager.auth_repo.insert_login(&dto).await;
-
-    if let Err(e) = insert {
-        tracing::error!("Error while saving login info | {e}")
-    }
-}
-
-fn get_key() -> &'static str {
-    JWT_KEY.get().expect("JWT_KEY should be set")
+fn get_key_bytes() -> &'static [u8] {
+    JWT_KEY.get().expect("JWT_KEY should be set").as_bytes()
 }
 
 pub async fn get_claims_from_token(token: &str) -> Result<UserClaims, AuthError> {
@@ -133,15 +123,8 @@ pub async fn get_claims_from_token(token: &str) -> Result<UserClaims, AuthError>
     }
 }
 
-async fn get_token_from_req(req: &mut Request) -> Option<&str> {
-    req.headers()
-        .get(header::AUTHORIZATION)
-        .and_then(|header| header.to_str().ok())
-        .and_then(|value| value.starts_with("Bearer ").then(|| &value[7..]))
-}
-
 fn get_anonymous_claims(token: &str) -> Result<UserClaims, AuthError> {
-    let key = DecodingKey::from_secret(get_key().as_bytes());
+    let key = DecodingKey::from_secret(get_key_bytes());
 
     let mut validation = Validation::new(jsonwebtoken::Algorithm::HS256);
 
@@ -186,7 +169,7 @@ async fn get_google_jwks() -> Result<JwkSet, reqwest::Error> {
 
 #[derive(thiserror::Error, Debug)]
 pub enum AuthError {
-    #[error("Auth token not found on the request")]
+    #[error("Auth token cookie not found on the request headers")]
     TokenNotPresent,
     #[error("Invalid KeyId ('kid') on token")]
     InvalidKid,

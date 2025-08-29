@@ -2,21 +2,21 @@
 mod tests {
     use std::collections::HashMap;
 
-    use futures::{stream::FusedStream, SinkExt, StreamExt};
+    use futures::{SinkExt, StreamExt, stream::FusedStream};
     use oh_hell::{
         infra::{
-            auth::{get_claims_from_token, TokenResponse},
-            lobby::CreateLobbyResponse,
             ClientGameMessage, ClientMessage, JoinLobbyDto, ServerMessage,
+            auth::{AUTH_COOKIE, get_claims_from_token},
+            lobby::CreateLobbyResponse,
         },
         models::Card,
         services::manager::{LobbyId, PlayerId},
     };
     use reqwest::Client;
     use tokio::{net::TcpStream, task};
-    use tokio_tungstenite::{connect_async, tungstenite::Message, MaybeTlsStream, WebSocketStream};
+    use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async, tungstenite::Message};
 
-    const URL: &str = "http://localhost:3000/";
+    const URL: &str = "http://localhost:3000";
 
     type WebSocket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
@@ -32,11 +32,11 @@ mod tests {
     #[tokio::test]
     async fn test_example() {
         task::spawn(oh_hell::start_app());
-        let mut client = reqwest::Client::new();
+        let client = reqwest::Client::new();
 
-        let tokens = get_players(&mut client, 7).await;
+        let tokens = get_players(&client, 7).await;
 
-        let mut player_data = join_lobby(&mut client, tokens).await;
+        let mut player_data = join_lobby(&client, tokens).await;
 
         ready(&mut player_data).await;
 
@@ -53,7 +53,7 @@ mod tests {
         }
     }
 
-    async fn get_players(client: &mut Client, count: usize) -> Vec<String> {
+    async fn get_players(client: &Client, count: usize) -> Vec<String> {
         let mut players = vec![];
 
         for i in 0..count {
@@ -156,7 +156,7 @@ mod tests {
         }
     }
 
-    async fn join_lobby(client: &mut Client, tokens: Vec<String>) -> TestPlayersData {
+    async fn join_lobby(client: &Client, tokens: Vec<String>) -> TestPlayersData {
         let lobby_id = create_lobby(client, &tokens[0]).await;
 
         for (i, p) in tokens.iter().enumerate() {
@@ -310,10 +310,10 @@ mod tests {
         }
     }
 
-    async fn join_lobby_http(client: &mut Client, token: &str, lobby_id: &str) -> JoinLobbyDto {
+    async fn join_lobby_http(client: &Client, token: &str, lobby_id: &str) -> JoinLobbyDto {
         let res = client
-            .put(format!("{URL}lobby/{lobby_id}"))
-            .bearer_auth(token)
+            .put(format!("{URL}/lobby/{lobby_id}"))
+            .header(AUTH_COOKIE, token)
             .send()
             .await
             .unwrap();
@@ -321,10 +321,10 @@ mod tests {
         res.json().await.unwrap()
     }
 
-    async fn create_lobby(client: &mut Client, token: &str) -> LobbyId {
+    async fn create_lobby(client: &Client, token: &str) -> LobbyId {
         let res = client
-            .post(format!("{URL}lobby"))
-            .bearer_auth(token)
+            .post(format!("{URL}/lobby"))
+            .header(AUTH_COOKIE, token)
             .send()
             .await
             .unwrap();
@@ -334,20 +334,24 @@ mod tests {
         res.lobby_id
     }
 
-    async fn login(client: &mut Client, number: usize) -> String {
+    async fn login(client: &Client, number: usize) -> String {
         let params = serde_json::json!({
             "nickname": format!("Player {number}"),
         });
 
         let res = client
-            .post(format!("{URL}auth/login"))
+            .post(format!("{URL}/auth/login"))
             .json(&params)
             .send()
             .await
             .unwrap();
 
-        let res: TokenResponse = res.json().await.unwrap();
+        let headers = res.headers();
 
-        res.token
+        let set_cookie = headers.get("set-cookie").unwrap().to_str().unwrap();
+
+        let token_end = set_cookie.find(';').unwrap();
+
+        set_cookie["=".len() + AUTH_COOKIE.len()..token_end].to_owned()
     }
 }
