@@ -4,11 +4,11 @@ pub mod services;
 
 use std::net::{Ipv4Addr, SocketAddr};
 
-use axum::{routing, Router};
+use axum::{Router, routing};
 use infra::auth::JWT_KEY;
 use services::{
     manager::Manager,
-    repositories::{auth::AuthRepository, game::GamesRepository, get_mongo_client},
+    repositories::{game::GamesRepository, get_mongo_client},
 };
 
 use tower_http::cors::{Any, CorsLayer};
@@ -33,7 +33,7 @@ pub async fn start_app() {
         .expect("Expected to create mongo client")
         .database("oh_hell");
 
-    let manager = Manager::new(GamesRepository::new(&db), AuthRepository::new(&db));
+    let manager = Manager::new(GamesRepository::new(&db));
 
     let auth_layer = axum::middleware::from_fn(infra::auth::middleware);
 

@@ -1,6 +1,5 @@
-use mongodb::{error::Result, options::ClientOptions, Client};
+use mongodb::{Client, error::Result, options::ClientOptions};
 
-pub mod auth;
 pub mod game;
 
 pub async fn get_mongo_client() -> Result<Client> {

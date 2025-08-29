@@ -5,28 +5,27 @@ use std::{
 };
 
 use axum::extract::ws::{CloseFrame, Message, WebSocket};
-use futures::{stream::SplitSink, SinkExt};
+use futures::{SinkExt, stream::SplitSink};
 use indexmap::IndexMap;
 use tokio::sync::Mutex;
 
 use crate::{
-    infra::{self, auth::UserClaims, GetLobbyDto, ServerMessage},
+    infra::{self, GetLobbyDto, ServerMessage, auth::UserClaims},
     models::{
         BiddingError, BiddingState, Card, Game, GameError, GameEvent, LobbyState, Turn, TurnError,
     },
 };
 
-use super::repositories::{auth::AuthRepository, game::GamesRepository};
+use super::repositories::game::GamesRepository;
 
 #[derive(Clone)]
 pub struct Manager {
     inner: Arc<InnerManager>,
     pub games_repo: GamesRepository,
-    pub auth_repo: AuthRepository,
 }
 
 impl Manager {
-    pub fn new(games: GamesRepository, auth: AuthRepository) -> Self {
+    pub fn new(games: GamesRepository) -> Self {
         let inner = InnerManager {
             lobby: Mutex::new(LobbiesManager::new()),
             connections: Mutex::new(HashMap::new()),
@@ -35,7 +34,6 @@ impl Manager {
         Self {
             inner: Arc::new(inner),
             games_repo: games,
-            auth_repo: auth,
         }
     }
 
