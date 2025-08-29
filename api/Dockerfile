@@ -1,18 +1,20 @@
-# Build stage
-FROM rust:1.85 AS builder
+FROM lukemathwalker/cargo-chef:latest-rust-1 AS chef
+WORKDIR /
 
-COPY ./src ./src
-COPY Cargo.toml ./
+FROM chef AS planner
+COPY . .
+RUN cargo chef prepare --recipe-path recipe.json
 
+FROM chef AS builder
+COPY --from=planner /recipe.json recipe.json
+RUN cargo chef cook --release --recipe-path recipe.json
 
-RUN cargo build --release
+COPY . .
+RUN cargo build --release -p api
 
-# Prod stage
-FROM debian:stable-slim
+FROM gcr.io/distroless/cc-debian12:nonroot AS runtime
+COPY --from=builder /target/release/oh_hell /usr/local/bin/
 
+ENTRYPOINT ["oh_hell"]
 
-EXPOSE 3000
-
-COPY --from=builder /target/release/oh_hell /
-
-ENTRYPOINT ["./oh_hell"]
+EXPOSE 3000 
