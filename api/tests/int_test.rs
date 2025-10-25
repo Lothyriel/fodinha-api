@@ -4,7 +4,7 @@ mod tests {
 
     use api::{
         infra::{
-            auth::{AUTH_COOKIE, get_claims_from_token},
+            auth::{TokenResponse, get_claims_from_token},
             lobby::CreateLobbyResponse,
             *,
         },
@@ -12,12 +12,9 @@ mod tests {
         services::manager::{LobbyId, PlayerId},
     };
     use futures::{SinkExt, StreamExt, stream::FusedStream};
-    use reqwest::{Client, header};
+    use reqwest::Client;
     use tokio::{net::TcpStream, task};
-    use tokio_tungstenite::{
-        MaybeTlsStream, WebSocketStream, connect_async,
-        tungstenite::{Message, client::IntoClientRequest},
-    };
+    use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async, tungstenite::Message};
 
     const URL: &str = "http://localhost:3000";
 
@@ -289,11 +286,14 @@ mod tests {
     }
 
     async fn connect_ws(token: &str) -> WebSocket {
-        let mut req = "ws://localhost:3000/game".into_client_request().unwrap();
-        req.headers_mut()
-            .insert(header::COOKIE, build_token(token).parse().unwrap());
+        let uri = "ws://localhost:3000/game".parse().unwrap();
 
-        let (stream, _) = connect_async(req).await.unwrap();
+        let req = tokio_tungstenite::tungstenite::ClientRequestBuilder::new(uri)
+            .with_header("Authorization", format!("Bearer {token}"));
+
+        let (stream, _) = connect_async(req)
+            .await
+            .expect("Failed to connect WebSocket");
 
         assert!(!stream.is_terminated());
 
@@ -312,7 +312,7 @@ mod tests {
     async fn join_lobby_http(client: &Client, token: &str, lobby_id: &str) -> JoinLobbyDto {
         let res = client
             .put(format!("{URL}/lobby/{lobby_id}"))
-            .header(header::COOKIE, build_token(token))
+            .bearer_auth(token)
             .send()
             .await
             .unwrap();
@@ -320,14 +320,10 @@ mod tests {
         res.json().await.unwrap()
     }
 
-    fn build_token(token: &str) -> String {
-        format!("{AUTH_COOKIE}={token}")
-    }
-
     async fn create_lobby(client: &Client, token: &str) -> LobbyId {
         let res = client
             .post(format!("{URL}/lobby"))
-            .header(header::COOKIE, build_token(token))
+            .bearer_auth(token)
             .send()
             .await
             .unwrap();
@@ -343,18 +339,14 @@ mod tests {
         });
 
         let res = client
-            .post(format!("{URL}/auth/login"))
+            .post(format!("{URL}/auth/signup"))
             .json(&params)
             .send()
             .await
             .unwrap();
 
-        let headers = res.headers();
+        let res: TokenResponse = res.json().await.unwrap();
 
-        let set_cookie = headers.get("set-cookie").unwrap().to_str().unwrap();
-
-        let token_end = set_cookie.find(';').unwrap();
-
-        set_cookie["=".len() + AUTH_COOKIE.len()..token_end].to_owned()
+        res.token
     }
 }
