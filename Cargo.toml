@@ -1,3 +1,47 @@
-[workspace]
-members = ["api", "client"]
-resolver = "3"
+[package]
+name = "api"
+version = "0.1.0"
+edition = "2024"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+axum = { version = "0.8.4", features = ["ws"] }
+tower-http = { version = "0.6.6", features = ["trace", "cors"] }
+
+tokio = { version = "1.47.1", features = ["rt-multi-thread"] }
+futures = "0.3.31"
+
+tracing = "0.1.41"
+tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
+
+thiserror = "2.0.16"
+
+serde = { version = "1.0.219", features = ["derive", "rc"] }
+serde_json = "1.0.143"
+
+mongodb = "3.2.5"
+
+chrono = { version = "0.4.41", features = ["serde"] }
+
+dotenv = "0.15"
+
+strum = "0.27.2"
+strum_macros = "0.27.2"
+
+rand = "0.9.2"
+
+reqwest = { version = "0.12.23", features = [
+  "json",
+  "rustls-tls",
+], default-features = false }
+
+jsonwebtoken = "9.3.1"
+
+indexmap = "2.11"
+
+nanoid = "0.4.0"
+
+[dev-dependencies]
+tokio-tungstenite = "0.27.0"
+
