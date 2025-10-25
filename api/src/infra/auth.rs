@@ -18,7 +18,7 @@ pub fn router() -> Router<Manager> {
     let auth = axum::middleware::from_fn(middleware);
 
     Router::new()
-        .route("/login", routing::post(sign_up))
+        .route("/signup", routing::post(sign_up))
         .route("/profile", routing::post(update).layer(auth))
 }
 
