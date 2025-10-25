@@ -4,15 +4,12 @@ use axum::{
     Extension, Json, Router, extract::Request, http::StatusCode, middleware::Next,
     response::IntoResponse, routing,
 };
-use axum_extra::extract::{
-    CookieJar,
-    cookie::{Cookie, SameSite},
-};
 use jsonwebtoken::{
     DecodingKey, EncodingKey, Header, TokenData, Validation,
     errors::Error,
     jwk::{Jwk, JwkSet},
 };
+use reqwest::header;
 use serde_json::{Value, json};
 
 use crate::services::manager::{Manager, PlayerId};
@@ -21,26 +18,30 @@ pub fn router() -> Router<Manager> {
     let auth = axum::middleware::from_fn(middleware);
 
     Router::new()
-        .route("/login", routing::post(login))
+        .route("/login", routing::post(sign_up))
         .route("/profile", routing::post(update).layer(auth))
 }
 
 pub static JWT_KEY: OnceLock<String> = OnceLock::new();
-pub const AUTH_COOKIE: &str = "AUTH_TOKEN";
 const ISSUER: &str = "fodinha.loty.click";
 
-pub async fn middleware(
-    jar: CookieJar,
-    mut req: Request,
-    next: Next,
-) -> Result<impl IntoResponse, AuthError> {
-    let token = jar.get(AUTH_COOKIE).ok_or(AuthError::TokenNotPresent)?;
+pub async fn middleware(mut req: Request, next: Next) -> Result<impl IntoResponse, AuthError> {
+    let token = get_token_from_req(&mut req)
+        .await
+        .ok_or(AuthError::TokenNotPresent)?;
 
-    let claims = get_claims_from_token(token.value()).await?;
+    let claims = get_claims_from_token(token).await?;
 
     req.extensions_mut().insert(claims);
 
     Ok(next.run(req).await)
+}
+
+async fn get_token_from_req(req: &mut Request) -> Option<&str> {
+    req.headers()
+        .get(header::AUTHORIZATION)
+        .and_then(|header| header.to_str().ok())
+        .and_then(|value| value.starts_with("Bearer ").then(|| &value[7..]))
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -51,9 +52,13 @@ struct AnonymousUserClaimsDto {
     exp: usize,
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct TokenResponse {
+    pub token: String,
+}
+
 async fn update(
     Extension(user_claims): Extension<UserClaims>,
-    jar: CookieJar,
     Json(params): Json<Value>,
 ) -> impl IntoResponse {
     let claim = match user_claims {
@@ -69,27 +74,27 @@ async fn update(
 
     let token = generate_token(params, claim.id).await;
 
-    (StatusCode::OK, jar.add(token)).into_response()
+    Json(token).into_response()
 }
 
-async fn login(jar: CookieJar, Json(params): Json<Value>) -> impl IntoResponse {
+async fn sign_up(Json(params): Json<Value>) -> impl IntoResponse {
     let token = generate_token(params, generate_playerid()).await;
 
-    (StatusCode::OK, jar.add(token))
+    Json(token)
 }
 
-const ALPHABET: [char; 67] = [
+const ALPHABET: &[char] = &[
     '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I',
     'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z', '_', 'a',
     'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r', 's', 't',
-    'u', 'v', 'w', 'x', 'y', 'z', '-', '.', '!', '*',
+    'u', 'v', 'w', 'x', 'y', 'z', '-',
 ];
 
 fn generate_playerid() -> PlayerId {
-    nanoid::nanoid!(10, &ALPHABET).into()
+    nanoid::nanoid!(10, ALPHABET).into()
 }
 
-async fn generate_token<'a>(data: Value, id: PlayerId) -> Cookie<'a> {
+async fn generate_token(data: Value, id: PlayerId) -> TokenResponse {
     let claims = AnonymousUserClaimsDto {
         id,
         data,
@@ -104,13 +109,7 @@ async fn generate_token<'a>(data: Value, id: PlayerId) -> Cookie<'a> {
     )
     .expect("Should encode JWT");
 
-    let mut cookie = Cookie::new(AUTH_COOKIE, token);
-
-    cookie.set_http_only(true);
-    cookie.set_path("/");
-    cookie.set_same_site(Some(SameSite::Strict));
-
-    cookie
+    TokenResponse { token }
 }
 
 fn get_key_bytes() -> &'static [u8] {
@@ -170,7 +169,7 @@ async fn get_google_jwks() -> Result<JwkSet, reqwest::Error> {
 
 #[derive(thiserror::Error, Debug)]
 pub enum AuthError {
-    #[error("Auth token cookie not found on the request headers")]
+    #[error("Auth token not found on the request headers")]
     TokenNotPresent,
     #[error("Invalid KeyId ('kid') on token")]
     InvalidKid,
