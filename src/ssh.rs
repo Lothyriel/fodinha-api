@@ -1,3 +1,4 @@
+use base64::Engine;
 use ratatui::{
     Terminal,
     backend::CrosstermBackend,
@@ -95,8 +96,11 @@ impl AppServer {
             }
         });
 
-        let host_key =
-            keys::PrivateKey::from_openssh(&settings.ssh_host_key).expect("valid host key");
+        let key = base64::engine::general_purpose::STANDARD
+            .decode(&settings.ssh_host_key)
+            .expect("valid base64");
+
+        let host_key = keys::PrivateKey::from_openssh(key).expect("valid host key");
 
         let config = Config {
             inactivity_timeout: Some(Duration::from_secs(3600)),
