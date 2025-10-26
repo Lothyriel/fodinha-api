@@ -106,7 +106,7 @@ impl AppServer {
             ..Default::default()
         };
 
-        let addr = (Ipv6Addr::UNSPECIFIED, 2222);
+        let addr = (Ipv6Addr::UNSPECIFIED, settings.ssh_port);
 
         tracing::info!("Listening on {:?}", addr);
 

@@ -4,27 +4,30 @@ mod models;
 mod services;
 pub mod ssh;
 
+use config::{Config, ConfigError, Environment};
+
 pub use services::manager::Manager;
 
+#[derive(Debug, serde::Deserialize)]
 pub struct AppSettings {
     pub jwt_key: String,
     pub mongo_conn_string: String,
     pub ssh_host_key: String,
+    pub ssh_port: u16,
 }
 
 impl AppSettings {
-    pub fn from_env() -> Self {
-        let mongo_conn_string = std::env::var("MONGO_CONN_STRING")
-            .unwrap_or_else(|_| "mongodb://localhost/?retryWrites=true".to_string());
+    pub fn from_env() -> Result<Self, ConfigError> {
+        dotenv::dotenv().ok();
 
-        let jwt_key = std::env::var("JWT_KEY").expect("JWT_KEY var is missing");
+        let cfg = Config::builder()
+            .set_default("ssh_port", 22)?
+            .set_default("mongo_conn_string", "mongodb://localhost/?retryWrites=true")?
+            .add_source(Environment::default())
+            .build()?;
 
-        let ssh_host_key = std::env::var("SSH_HOST_KEY").expect("SSH_HOST_KEY var is missing");
+        let settings = cfg.try_deserialize()?;
 
-        Self {
-            ssh_host_key,
-            mongo_conn_string,
-            jwt_key,
-        }
+        Ok(settings)
     }
 }

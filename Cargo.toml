@@ -44,6 +44,7 @@ nanoid = "0.4.0"
 
 ratatui = "0.29.0"
 russh = { version = "0.54.6", features = ["aws-lc-rs"] }
+config = "0.15.18"
 
 [dev-dependencies]
 tokio-tungstenite = "0.28.0"

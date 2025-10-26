@@ -10,9 +10,7 @@ async fn main() {
         .with(tracing_subscriber::fmt::layer().with_line_number(true))
         .init();
 
-    dotenv::dotenv().ok();
-
-    let settings = AppSettings::from_env();
+    let settings = AppSettings::from_env().expect("to load env variables");
 
     let manager = Manager::from(&settings).await;
 
