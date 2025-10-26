@@ -99,9 +99,9 @@ impl AppServer {
             keys::PrivateKey::from_openssh(&settings.ssh_host_key).expect("valid host key");
 
         let config = Config {
-            inactivity_timeout: Some(std::time::Duration::from_secs(3600)),
-            auth_rejection_time: std::time::Duration::from_secs(3),
-            auth_rejection_time_initial: Some(std::time::Duration::from_secs(0)),
+            inactivity_timeout: Some(Duration::from_secs(3600)),
+            auth_rejection_time: Duration::from_secs(3),
+            auth_rejection_time_initial: Some(Duration::from_secs(0)),
             keys: vec![host_key],
             ..Default::default()
         };
