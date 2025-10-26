@@ -10,10 +10,12 @@ use indexmap::IndexMap;
 use tokio::sync::Mutex;
 
 use crate::{
+    AppSettings,
     infra::{self, GetLobbyDto, ServerMessage, auth::UserClaims},
     models::{
         BiddingError, BiddingState, Card, Game, GameError, GameEvent, LobbyState, Turn, TurnError,
     },
+    services::repositories::get_mongo_client,
 };
 
 use super::repositories::game::GamesRepository;
@@ -35,6 +37,15 @@ impl Manager {
             inner: Arc::new(inner),
             games_repo: games,
         }
+    }
+
+    pub async fn from(settings: &AppSettings) -> Self {
+        let db = get_mongo_client(&settings.mongo_conn_string)
+            .await
+            .expect("Expected to create mongo client")
+            .database("oh_hell");
+
+        Self::new(GamesRepository::new(&db))
     }
 
     pub async fn create_lobby(&self, user_id: PlayerId) -> PlayerId {

@@ -3,13 +3,14 @@ mod tests {
     use std::collections::HashMap;
 
     use api::{
+        ApiSettings,
         infra::{
             auth::{TokenResponse, get_claims_from_token},
             lobby::CreateLobbyResponse,
             *,
         },
         models::Card,
-        services::manager::{LobbyId, PlayerId},
+        services::manager::{LobbyId, Manager, PlayerId},
     };
     use futures::{SinkExt, StreamExt, stream::FusedStream};
     use reqwest::Client;
@@ -31,7 +32,15 @@ mod tests {
 
     #[tokio::test]
     async fn test_example() {
-        task::spawn(api::start_app());
+        let settings = ApiSettings {
+            jwt_key: "very-random-secret-key".to_string(),
+            mongo_conn_string: "mongodb://localhost/?retryWrites=true".to_string(),
+        };
+
+        let manager = Manager::from(&settings).await;
+
+        task::spawn(api::start(manager, settings));
+
         let client = reqwest::Client::new();
 
         let tokens = get_players(&client, 7).await;
