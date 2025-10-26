@@ -1,14 +1,14 @@
 pub mod api;
-mod infra;
-mod models;
-mod services;
+pub mod infra;
+pub mod models;
+pub mod services;
 pub mod ssh;
 
 use config::{Config, ConfigError, Environment};
 
 pub use services::manager::Manager;
 
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, serde::Deserialize, Default)]
 pub struct AppSettings {
     pub jwt_key: String,
     pub mongo_conn_string: String,

@@ -2,8 +2,9 @@
 mod tests {
     use std::collections::HashMap;
 
-    use api::{
-        ApiSettings,
+    use futures::{SinkExt, StreamExt, stream::FusedStream};
+    use oh_hell::{
+        AppSettings, api,
         infra::{
             auth::{TokenResponse, get_claims_from_token},
             lobby::CreateLobbyResponse,
@@ -12,7 +13,6 @@ mod tests {
         models::Card,
         services::manager::{LobbyId, Manager, PlayerId},
     };
-    use futures::{SinkExt, StreamExt, stream::FusedStream};
     use reqwest::Client;
     use tokio::{net::TcpStream, task};
     use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async, tungstenite::Message};
@@ -32,14 +32,17 @@ mod tests {
 
     #[tokio::test]
     async fn test_example() {
-        let settings = ApiSettings {
-            jwt_key: "very-random-secret-key".to_string(),
-            mongo_conn_string: "mongodb://localhost/?retryWrites=true".to_string(),
-        };
+        task::spawn(async {
+            let settings = AppSettings {
+                jwt_key: "very-random-secret-key".to_string(),
+                mongo_conn_string: "mongodb://localhost/?retryWrites=true".to_string(),
+                ..Default::default()
+            };
 
-        let manager = Manager::from(&settings).await;
+            let manager = Manager::from(&settings).await;
 
-        task::spawn(api::start(manager, settings));
+            api::start(manager, &settings).await
+        });
 
         let client = reqwest::Client::new();
 
