@@ -3,7 +3,7 @@ pub mod iter;
 
 use std::collections::{HashMap, HashSet};
 
-pub use game::{Game, MAX_PLAYER_COUNT};
+pub use game::Game;
 
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};

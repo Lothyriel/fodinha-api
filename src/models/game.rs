@@ -2,14 +2,11 @@ use std::collections::{BinaryHeap, HashMap};
 
 use indexmap::IndexMap;
 
-use crate::{
-    models::GameError,
-    services::{manager::PlayerId, GameInfoDto, GameStageDto, PlayerInfoDto},
-};
+use crate::services::{GameInfoDto, GameStageDto, PlayerInfoDto, manager::PlayerId};
 
 use super::{
-    iter::CyclicIterator, BiddingError, BiddingState, Card, DealState, DealingMode, GameEvent,
-    Player, Turn, TurnError,
+    BiddingError, BiddingState, Card, DealState, DealingMode, GameError, GameEvent, Player, Turn,
+    TurnError, iter::CyclicIterator,
 };
 
 #[derive(Debug)]
@@ -346,7 +343,7 @@ impl Game {
             .filter(|(_, p)| p.bid != Some(p.rounds));
 
         for (_, player) in lost {
-            player.lifes -= 1;
+            player.decrease_life();
         }
 
         for (_, p) in self.alive_players_mut() {
@@ -441,7 +438,7 @@ impl Game {
     }
 
     fn alive_players_mut(&mut self) -> impl Iterator<Item = (&PlayerId, &mut Player)> {
-        self.players.iter_mut().filter(|(_, p)| p.lifes > 0)
+        self.players.iter_mut().filter(|(_, p)| p.is_alive())
     }
 }
 
