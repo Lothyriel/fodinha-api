@@ -36,7 +36,7 @@ impl std::io::Write for TerminalHandle {
         let handle = self.handle.clone();
         let channel_id = self.channel_id;
         let data = self.sink.clone().into();
-        futures::executor::block_on(async move {
+        tokio::spawn(async move {
             let result = handle.data(channel_id, data).await;
             if result.is_err() {
                 tracing::error!("Failed to send data: {result:?}");
@@ -137,17 +137,17 @@ impl Handler for AppServer {
         channel: Channel<Msg>,
         session: &mut Session,
     ) -> Result<bool, Self::Error> {
+        let terminal_handle = TerminalHandle {
+            handle: session.handle(),
+            sink: Vec::new(),
+            channel_id: channel.id(),
+        };
+
+        let backend = CrosstermBackend::new(terminal_handle.clone());
+        let terminal = Terminal::new(backend)?;
+
         {
             let mut clients = self.clients.lock().await;
-            let terminal_handle = TerminalHandle {
-                handle: session.handle(),
-                sink: Vec::new(),
-                channel_id: channel.id(),
-            };
-
-            let backend = CrosstermBackend::new(terminal_handle.clone());
-            let terminal = Terminal::new(backend)?;
-
             clients.insert(self.id, terminal);
         }
 
