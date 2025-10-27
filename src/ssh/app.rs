@@ -206,7 +206,7 @@ impl Handler for AppServer {
                 height: height as u16,
             };
             terminal.resize(rect)?;
-            terminal.backend_mut().resize(width, height);
+            terminal.backend_mut().resize(width as u16, height as u16);
         }
 
         Ok(())
