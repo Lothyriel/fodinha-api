@@ -21,7 +21,7 @@ impl AppSettings {
         dotenv::dotenv().ok();
 
         let cfg = Config::builder()
-            .set_default("ssh_port", 22)?
+            .set_default("ssh_port", 2222)?
             .set_default("mongo_conn_string", "mongodb://localhost/?retryWrites=true")?
             .add_source(Environment::default())
             .build()?;
