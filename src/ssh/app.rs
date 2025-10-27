@@ -1,7 +1,6 @@
 use base64::Engine;
 use ratatui::{
     Terminal,
-    backend::CrosstermBackend,
     layout::Rect,
     style::{Color, Style},
     widgets::*,
@@ -9,47 +8,56 @@ use ratatui::{
 use russh::{Channel, ChannelId, keys, server::*};
 use std::{
     collections::HashMap,
+    io::Error,
     net::Ipv6Addr,
     sync::atomic::{AtomicUsize, Ordering},
 };
-use std::{net::SocketAddr, sync::Arc};
+use std::{io, net::SocketAddr, sync::Arc};
 use tokio::{sync::Mutex, time::Duration};
 
-use crate::{AppSettings, Manager};
+use crate::{
+    AppSettings,
+    ssh::{SshError, backend::SshBackend},
+};
 
-type SshTerminal = Terminal<CrosstermBackend<TerminalHandle>>;
+type SshTerminal = Terminal<SshBackend>;
 
 #[derive(Clone)]
-struct TerminalHandle {
+pub struct TerminalHandle {
     handle: Handle,
     sink: Vec<u8>,
     channel_id: ChannelId,
 }
 
 impl std::io::Write for TerminalHandle {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         self.sink.extend_from_slice(buf);
         Ok(buf.len())
     }
 
-    fn flush(&mut self) -> std::io::Result<()> {
+    fn flush(&mut self) -> io::Result<()> {
         let handle = self.handle.clone();
         let channel_id = self.channel_id;
         let data = self.sink.clone().into();
-        tokio::spawn(async move {
+
+        let result = futures::executor::block_on(async move {
             let result = handle.data(channel_id, data).await;
+
             if result.is_err() {
-                tracing::error!("Failed to send data: {result:?}");
+                tracing::error!("Failed to send data");
+                return handle.close(channel_id).await;
             }
+
+            Ok(())
         });
 
         self.sink.clear();
-        Ok(())
+        result.map_err(|_| Error::other("something went wrong"))
     }
 }
 
 #[derive(Clone)]
-struct AppServer {
+pub struct AppServer {
     clients: Arc<Mutex<HashMap<usize, SshTerminal>>>,
     counter: Arc<AtomicUsize>,
     id: usize,
@@ -67,34 +75,7 @@ impl AppServer {
     pub async fn run(&mut self, settings: &AppSettings) -> std::io::Result<()> {
         let app = self.clone();
 
-        tokio::spawn(async move {
-            loop {
-                tokio::time::sleep(Duration::from_millis(100)).await;
-
-                for (_, terminal) in app.clients.lock().await.iter_mut() {
-                    let counter = app.counter.fetch_add(1, Ordering::Relaxed);
-
-                    terminal
-                        .draw(|f| {
-                            let size = f.area();
-                            f.render_widget(Clear, size);
-                            let style = match counter % 3 {
-                                0 => Style::default().fg(Color::Red),
-                                1 => Style::default().fg(Color::Green),
-                                _ => Style::default().fg(Color::Blue),
-                            };
-                            let paragraph = Paragraph::new(format!("Counter: {counter}"))
-                                .alignment(ratatui::layout::Alignment::Center)
-                                .style(style);
-                            let block = Block::default()
-                                .title("Press 'c' to reset the counter!")
-                                .borders(Borders::ALL);
-                            f.render_widget(paragraph.block(block), size);
-                        })
-                        .unwrap();
-                }
-            }
-        });
+        tokio::spawn(game_loop(app));
 
         let key = base64::engine::general_purpose::STANDARD
             .decode(&settings.ssh_host_key)
@@ -103,7 +84,7 @@ impl AppServer {
         let host_key = keys::PrivateKey::from_openssh(key).expect("valid host key");
 
         let config = Config {
-            inactivity_timeout: Some(Duration::from_secs(3600)),
+            inactivity_timeout: Some(Duration::from_secs(30)),
             auth_rejection_time: Duration::from_secs(3),
             auth_rejection_time_initial: Some(Duration::from_secs(0)),
             keys: vec![host_key],
@@ -143,7 +124,7 @@ impl Handler for AppServer {
             channel_id: channel.id(),
         };
 
-        let backend = CrosstermBackend::new(terminal_handle.clone());
+        let backend = SshBackend::new(terminal_handle);
         let terminal = Terminal::new(backend)?;
 
         {
@@ -156,10 +137,25 @@ impl Handler for AppServer {
 
     async fn auth_publickey(
         &mut self,
-        _: &str,
-        _: &russh::keys::PublicKey,
+        user: &str,
+        key: &russh::keys::PublicKey,
     ) -> Result<Auth, Self::Error> {
+        tracing::debug!(
+            "user {} connected with key {}",
+            user,
+            key.fingerprint(keys::HashAlg::Sha256)
+        );
         Ok(Auth::Accept)
+    }
+
+    async fn channel_close(
+        &mut self,
+        _channel: ChannelId,
+        _session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        self.clients.lock().await.remove(&self.id);
+
+        Ok(())
     }
 
     async fn data(
@@ -179,14 +175,22 @@ impl Handler for AppServer {
             _ => {}
         }
 
+        tracing::debug!(
+            "client {} on channel {} sent {:?}|{}",
+            self.id,
+            channel,
+            data,
+            data[0] as char
+        );
+
         Ok(())
     }
 
     async fn window_change_request(
         &mut self,
         _: ChannelId,
-        col_width: u32,
-        row_height: u32,
+        width: u32,
+        height: u32,
         _: u32,
         _: u32,
         _: &mut Session,
@@ -194,30 +198,56 @@ impl Handler for AppServer {
         {
             let mut clients = self.clients.lock().await;
             let terminal = clients.get_mut(&self.id).unwrap();
+            tracing::debug!("client {} resizing to {:?}", self.id, (height, width));
             let rect = Rect {
                 x: 0,
                 y: 0,
-                width: col_width as u16,
-                height: row_height as u16,
+                width: width as u16,
+                height: height as u16,
             };
             terminal.resize(rect)?;
+            terminal.backend_mut().resize(width, height);
         }
 
         Ok(())
     }
 }
 
-pub async fn start(_manager: Manager, settings: &AppSettings) {
-    AppServer::new()
-        .run(settings)
-        .await
-        .expect("Failed running server");
-}
+async fn game_loop(app: AppServer) {
+    let mut disconnected = vec![];
 
-#[derive(thiserror::Error, Debug)]
-pub enum SshError {
-    #[error("{0}")]
-    IO(#[from] std::io::Error),
-    #[error("{0}")]
-    Russh(#[from] russh::Error),
+    loop {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let counter = app.counter.fetch_add(1, Ordering::Relaxed);
+
+        for (id, terminal) in app.clients.lock().await.iter_mut() {
+            let draw_result = terminal.draw(|f| {
+                let size = f.area();
+                f.render_widget(Clear, size);
+                let style = match counter % 3 {
+                    0 => Style::default().fg(Color::Red),
+                    1 => Style::default().fg(Color::Green),
+                    _ => Style::default().fg(Color::Blue),
+                };
+                let paragraph = Paragraph::new(format!("Counter: {counter}"))
+                    .alignment(ratatui::layout::Alignment::Center)
+                    .style(style);
+                let block = Block::default()
+                    .title("Press 'c' to reset the counter!")
+                    .borders(Borders::ALL);
+                f.render_widget(paragraph.block(block), size);
+            });
+
+            if draw_result.is_err() {
+                disconnected.push(*id);
+            }
+        }
+
+        let mut clients = app.clients.lock().await;
+
+        for d in &disconnected {
+            clients.remove(d);
+        }
+        disconnected.clear();
+    }
 }

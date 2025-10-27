@@ -5,7 +5,7 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 async fn main() {
     tracing_subscriber::registry()
         .with(tracing_subscriber::EnvFilter::from(
-            "debug,hyper=off,rustls=error,tungstenite=error,russh=debug",
+            "debug,hyper=off,rustls=error,tungstenite=error,russh=info",
         ))
         .with(tracing_subscriber::fmt::layer().with_line_number(true))
         .init();
