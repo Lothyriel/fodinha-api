@@ -22,7 +22,7 @@ primary_region = 'gru'
   cpus = 1
 
 [[services]]
-  internal_port = 22
+  internal_port = 2222
   protocol = "tcp"
   processes = ["app"]
 
