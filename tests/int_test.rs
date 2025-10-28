@@ -15,7 +15,10 @@ mod tests {
     };
     use reqwest::Client;
     use tokio::{net::TcpStream, task};
-    use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async, tungstenite::Message};
+    use tokio_tungstenite::{
+        MaybeTlsStream, WebSocketStream, connect_async,
+        tungstenite::{Message, client::IntoClientRequest},
+    };
 
     const URL: &str = "http://localhost:3000";
 
@@ -298,10 +301,9 @@ mod tests {
     }
 
     async fn connect_ws(token: &str) -> WebSocket {
-        let uri = "ws://localhost:3000/game".parse().unwrap();
-
-        let req = tokio_tungstenite::tungstenite::ClientRequestBuilder::new(uri)
-            .with_header("Authorization", format!("Bearer {token}"));
+        let req = format!("ws://localhost:3000/game?token={token}")
+            .into_client_request()
+            .unwrap();
 
         let (stream, _) = connect_async(req)
             .await
