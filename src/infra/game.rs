@@ -1,7 +1,6 @@
 use axum::{
-    Extension,
     extract::{
-        State, WebSocketUpgrade,
+        Query, State, WebSocketUpgrade,
         ws::{Message, WebSocket},
     },
     response::IntoResponse,
@@ -9,22 +8,33 @@ use axum::{
 use futures::StreamExt;
 
 use crate::{
-    infra::ClientMessage,
+    infra::{ClientMessage, auth::get_claims_from_token},
     services::manager::{Manager, ManagerError, PlayerId},
 };
 
 use super::auth::UserClaims;
 
+#[derive(serde::Deserialize)]
+pub struct Auth {
+    token: String,
+}
+
 pub async fn handler(
     ws: WebSocketUpgrade,
     State(manager): State<Manager>,
-    Extension(auth): Extension<UserClaims>,
+    Query(query): Query<Auth>,
 ) -> impl IntoResponse {
-    let who = auth.id();
+    let claims = match get_claims_from_token(&query.token).await {
+        Ok(c) => c,
+        Err(e) => return e.into_response(),
+    };
+
+    let who = claims.id();
+
     tracing::info!(">>>> {who} connected");
 
     ws.on_upgrade(move |socket| async move {
-        match handle_connection(socket, manager, auth).await {
+        match handle_connection(socket, manager, claims).await {
             Ok(_) => tracing::warn!(">>>> {who} closed normally"),
             Err(e) => tracing::error!(">>>> {who} closed from error: {e}"),
         }

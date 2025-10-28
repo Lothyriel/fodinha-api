@@ -18,7 +18,7 @@ pub async fn start(manager: Manager, settings: &AppSettings) {
         .allow_headers(Any);
 
     let app = Router::new()
-        .route("/game", routing::get(game::handler).layer(auth.clone()))
+        .route("/game", routing::get(game::handler))
         .nest("/lobby", lobby::router().layer(auth))
         .nest("/auth", auth::router())
         .fallback(fallback_handler)

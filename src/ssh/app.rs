@@ -40,15 +40,14 @@ impl std::io::Write for TerminalHandle {
         let channel_id = self.channel_id;
         let data = self.sink.clone().into();
 
-        let result = futures::executor::block_on(async move {
-            let result = handle.data(channel_id, data).await;
-
-            if result.is_err() {
-                tracing::error!("Failed to send data");
-                return handle.close(channel_id).await;
+        let result = futures::executor::block_on(async {
+            match handle.data(channel_id, data).await {
+                Ok(_) => Ok(()),
+                Err(_) => {
+                    tracing::error!("Failed to send data");
+                    return handle.close(channel_id).await;
+                }
             }
-
-            Ok(())
         });
 
         self.sink.clear();
@@ -245,9 +244,8 @@ async fn game_loop(app: AppServer) {
 
         let mut clients = app.clients.lock().await;
 
-        for d in &disconnected {
-            clients.remove(d);
+        for d in disconnected.drain(..) {
+            clients.remove(&d);
         }
-        disconnected.clear();
     }
 }
