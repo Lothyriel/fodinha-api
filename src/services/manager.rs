@@ -11,7 +11,7 @@ use tokio::sync::Mutex;
 
 use crate::{
     AppSettings,
-    infra::{self, GetLobbyDto, ServerMessage, auth::UserClaims},
+    infra::{self, GetLobbyDto, ServerMessage, auth::UserClaims, generate_lobbyid},
     models::{
         BiddingError, BiddingState, Card, Game, GameError, GameEvent, LobbyState, Turn, TurnError,
     },
@@ -48,12 +48,14 @@ impl Manager {
         Self::new(GamesRepository::new(&db))
     }
 
-    pub async fn create_lobby(&self, user_id: PlayerId) -> PlayerId {
+    pub async fn create_lobby(&self, _user_id: PlayerId) -> LobbyId {
         let mut manager = self.inner.lobby.lock().await;
 
-        manager.lobbies.insert(user_id.clone(), Lobby::new());
+        let lobby_id = generate_lobbyid();
 
-        user_id
+        manager.lobbies.insert(lobby_id.clone(), Lobby::new());
+
+        lobby_id
     }
 
     pub async fn join_lobby(
@@ -112,13 +114,11 @@ impl Manager {
         let (players, state) = {
             let mut manager = self.inner.lobby.lock().await;
 
-            let game_id = {
-                manager
-                    .players_lobby
-                    .get(&player_id)
-                    .ok_or(LobbyError::WrongLobby)
-                    .cloned()?
-            };
+            let game_id = manager
+                .players_lobby
+                .get(&player_id)
+                .ok_or(LobbyError::WrongLobby)
+                .cloned()?;
 
             let lobby = manager
                 .lobbies
@@ -131,7 +131,10 @@ impl Manager {
 
             let game = lobby.get_game()?;
 
-            let turn = Turn { player_id, card };
+            let turn = Turn {
+                player_id: player_id.clone(),
+                card,
+            };
 
             let state = game
                 .deal(turn)
@@ -247,7 +250,7 @@ impl Manager {
         Ok(())
     }
 
-    pub async fn unicast_msg(&self, player_id: &str, message: &ServerMessage) {
+    pub async fn unicast_msg(&self, player_id: &PlayerId, message: &ServerMessage) {
         let mut manager = self.inner.connections.lock().await;
 
         if let Some(connection) = manager.get_mut(player_id) {
@@ -255,13 +258,13 @@ impl Manager {
         }
     }
 
-    pub async fn send_disconnect(&self, player_id: &str, reason: ManagerError) {
+    pub async fn send_disconnect(&self, player_id: &PlayerId, reason: ManagerError) {
         let mut manager = self.inner.connections.lock().await;
 
         let connection = match manager.get_mut(player_id) {
             Some(c) => c,
             None => {
-                tracing::error!("{player_id} disconnected");
+                tracing::error!("{player_id:?} disconnected");
                 return;
             }
         };
@@ -416,7 +419,7 @@ impl Manager {
         Ok(())
     }
 
-    pub async fn send_error(&self, id: &str, error: ManagerError) {
+    pub async fn send_error(&self, id: &PlayerId, error: ManagerError) {
         let msg = ServerMessage::Error {
             msg: error.to_string(),
         };
@@ -425,10 +428,10 @@ impl Manager {
     }
 }
 
-async fn send_msg(msg: &ServerMessage, player: &str, connection: &mut Connection) {
+async fn send_msg(msg: &ServerMessage, player: &PlayerId, connection: &mut Connection) {
     let msg = serde_json::to_string(msg).expect("Should be valid json");
 
-    tracing::info!("Sending to {player}: {msg}");
+    tracing::info!("Sending to {player:?}: {msg}");
 
     let send = connection
         .send(Message::Text(msg.into()))
@@ -436,7 +439,7 @@ async fn send_msg(msg: &ServerMessage, player: &str, connection: &mut Connection
         .map_err(|e| ManagerError::PlayerDisconnected(e.to_string()));
 
     if let Err(e) = send {
-        tracing::error!("Error sending msg to: {player} | {e}");
+        tracing::error!("Error sending msg to: {player:?} | {e}");
     }
 }
 
@@ -486,8 +489,67 @@ struct LobbiesManager {
     players_lobby: HashMap<PlayerId, LobbyId>,
 }
 
-pub type PlayerId = Arc<str>;
-pub type LobbyId = PlayerId;
+#[derive(Debug, PartialEq, Eq, Hash, Clone)]
+pub struct PlayerId(pub Arc<str>);
+
+impl<'de> serde::Deserialize<'de> for PlayerId {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = <&str>::deserialize(deserializer)?;
+        Ok(PlayerId(Arc::from(s)))
+    }
+}
+
+impl serde::Serialize for PlayerId {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&self.0)
+    }
+}
+
+impl AsRef<str> for PlayerId {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl PlayerId {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+#[derive(Debug, PartialEq, Eq, Hash, Clone)]
+pub struct LobbyId(pub Arc<str>);
+
+impl serde::Serialize for LobbyId {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&self.0)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for LobbyId {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = <&str>::deserialize(deserializer)?;
+        Ok(LobbyId(Arc::from(s)))
+    }
+}
+
+impl LobbyId {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
 
 struct Lobby {
     players: IndexMap<PlayerId, PlayerStatus>,

@@ -11,7 +11,7 @@ use crate::{
     models::{Card, Turn},
     services::{
         GameInfoDto,
-        manager::{PlayerId, PlayerStatus},
+        manager::{LobbyId, PlayerId, PlayerStatus},
     },
 };
 
@@ -30,13 +30,13 @@ pub enum ClientMessage {
 
 #[derive(serde::Serialize)]
 pub struct GetLobbyDto {
-    pub id: PlayerId,
+    pub id: LobbyId,
     pub player_count: usize,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug)]
 pub struct JoinLobbyDto {
-    pub id: PlayerId,
+    pub id: LobbyId,
     pub players: Vec<PlayerStatus>,
     pub should_reconnect: bool,
 }
@@ -80,4 +80,19 @@ pub enum ServerMessage {
     Error {
         msg: String,
     },
+}
+
+const ALPHABET: &[char] = &[
+    '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I',
+    'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z', '_', 'a',
+    'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r', 's', 't',
+    'u', 'v', 'w', 'x', 'y', 'z', '-',
+];
+
+pub fn generate_playerid() -> PlayerId {
+    PlayerId(nanoid::nanoid!(10, ALPHABET).into())
+}
+
+pub fn generate_lobbyid() -> LobbyId {
+    LobbyId(nanoid::nanoid!(12, ALPHABET).into())
 }

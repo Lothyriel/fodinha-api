@@ -139,7 +139,7 @@ impl Game {
         })
     }
 
-    pub fn bid(&mut self, player_id: &str, bid: usize) -> Result<BiddingState, BiddingError> {
+    pub fn bid(&mut self, player_id: &PlayerId, bid: usize) -> Result<BiddingState, BiddingError> {
         if self.get_stage() == GameStage::Dealing {
             return Err(BiddingError::DealingStageActive);
         }
@@ -150,7 +150,7 @@ impl Game {
 
         let current_bidder = self.peek_current_bidder();
 
-        if current_bidder.filter(|c| c.as_ref() == player_id).is_none() {
+        if current_bidder.filter(|c| c == player_id).is_none() {
             return Err(BiddingError::NotYourTurn);
         }
 
@@ -216,7 +216,7 @@ impl Game {
         (decks, self.upcard)
     }
 
-    pub fn get_game_info(&self, player_id: &str) -> GameInfoDto {
+    pub fn get_game_info(&self, player_id: &PlayerId) -> GameInfoDto {
         let player = self
             .players
             .get(player_id)
@@ -238,14 +238,13 @@ impl Game {
             GameStage::Dealing => self.peek_current_dealer(),
             GameStage::Bidding => self.peek_current_bidder(),
         }
-        .expect("Should contain an active player")
-        .to_string();
+        .expect("Should contain an active player");
 
         GameInfoDto {
             deck,
             upcard: self.upcard,
             info,
-            current_player,
+            current_player: current_player.0.to_string(),
             stage: match self.get_stage() {
                 GameStage::Dealing => GameStageDto::Dealing,
                 GameStage::Bidding => GameStageDto::Bidding {
@@ -444,14 +443,12 @@ impl Game {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
     use super::*;
 
     #[test]
     fn test_game() {
-        let player1: Arc<str> = "P1".into();
-        let player2: Arc<str> = "P2".into();
+        let player1 = PlayerId("P1".into());
+        let player2 = PlayerId("P2".into());
 
         let mut game = Game::new_default(&[player1.clone(), player2.clone()]).unwrap();
         assert!(game.pile.is_empty());
@@ -511,8 +508,8 @@ mod tests {
 
     #[test]
     fn test_invalid_bid() {
-        let player1: Arc<str> = "P1".into();
-        let player2: Arc<str> = "P2".into();
+        let player1 = PlayerId("P1".into());
+        let player2 = PlayerId("P2".into());
 
         let mut game = Game::new_default(&[player1.clone(), player2.clone()]).unwrap();
 
@@ -534,7 +531,7 @@ mod tests {
     #[test]
     fn test_game_max_players() {
         for p in 0..MAX_PLAYER_COUNT + 3 {
-            let players: Vec<_> = (0..p).map(|i| i.to_string().into()).collect();
+            let players: Vec<_> = (0..p).map(|i| PlayerId(i.to_string().into())).collect();
             let result = Game::new_default(&players);
 
             match p {
@@ -549,8 +546,8 @@ mod tests {
 
     #[test]
     fn test_possible_bid() {
-        let player1: Arc<str> = "P1".into();
-        let player2: Arc<str> = "P2".into();
+        let player1 = PlayerId("P1".into());
+        let player2 = PlayerId("P2".into());
 
         let mut game = Game::new(&[player1.clone(), player2.clone()], 2).unwrap();
 

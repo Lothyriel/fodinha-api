@@ -78,20 +78,9 @@ async fn update(
 }
 
 async fn sign_up(Json(params): Json<Value>) -> impl IntoResponse {
-    let token = generate_token(params, generate_playerid()).await;
+    let token = generate_token(params, super::generate_playerid()).await;
 
     Json(token)
-}
-
-const ALPHABET: &[char] = &[
-    '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I',
-    'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z', '_', 'a',
-    'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r', 's', 't',
-    'u', 'v', 'w', 'x', 'y', 'z', '-',
-];
-
-fn generate_playerid() -> PlayerId {
-    nanoid::nanoid!(10, ALPHABET).into()
 }
 
 async fn generate_token(data: Value, id: PlayerId) -> TokenResponse {

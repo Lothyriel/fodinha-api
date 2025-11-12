@@ -31,12 +31,12 @@ pub async fn handler(
 
     let who = claims.id();
 
-    tracing::info!(">>>> {who} connected");
+    tracing::info!(">>>> {who:?} connected");
 
     ws.on_upgrade(move |socket| async move {
         match handle_connection(socket, manager, claims).await {
-            Ok(_) => tracing::warn!(">>>> {who} closed normally"),
-            Err(e) => tracing::error!(">>>> {who} closed from error: {e}"),
+            Ok(_) => tracing::warn!(">>>> {who:?} closed normally"),
+            Err(e) => tracing::error!(">>>> {who:?} closed from error: {e}"),
         }
     })
 }
@@ -56,7 +56,7 @@ async fn handle_connection(
                 Ok(_) => {}
                 Err(error) => {
                     let id = auth.id();
-                    tracing::error!("{id} Error: {error}");
+                    tracing::error!("{id:?} Error: {error}");
                     manager.send_error(&id, error).await;
                     break;
                 }
@@ -75,7 +75,7 @@ async fn process_msg(
     match msg {
         Message::Text(msg) => {
             let msg = serde_json::from_str(&msg)?;
-            tracing::debug!("Received from {player_id}: {msg:?}");
+            tracing::debug!("Received from {player_id:?}: {msg:?}");
 
             handle_game_msg(msg, manager, player_id).await
         }
@@ -84,7 +84,7 @@ async fn process_msg(
                 .map(|c| format!("code: {} | {}", c.code, c.reason))
                 .unwrap_or("empty".to_string());
 
-            tracing::warn!("{player_id} sent close message, reason: {}", reason);
+            tracing::warn!("{player_id:?} sent close message, reason: {}", reason);
 
             Err(ManagerError::PlayerDisconnected(reason))
         }
