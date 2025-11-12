@@ -323,7 +323,9 @@ mod tests {
         }
     }
 
-    async fn join_lobby_http(client: &Client, token: &str, lobby_id: &str) -> JoinLobbyDto {
+    async fn join_lobby_http(client: &Client, token: &str, lobby_id: &LobbyId) -> JoinLobbyDto {
+        let lobby_id = lobby_id.as_str();
+
         let res = client
             .put(format!("{URL}/lobby/{lobby_id}"))
             .bearer_auth(token)
