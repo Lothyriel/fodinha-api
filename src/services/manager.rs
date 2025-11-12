@@ -146,6 +146,8 @@ impl Manager {
         let msg = ServerMessage::TurnPlayed { pile: state.pile };
         self.broadcast_msg(&players, &msg).await;
 
+        let game_ended = matches!(state.event, GameEvent::Ended { lifes: _ });
+
         match state.event {
             GameEvent::SetEnded {
                 lifes,
@@ -173,6 +175,22 @@ impl Manager {
             GameEvent::Ended { lifes } => {
                 let msg = ServerMessage::GameEnded { lifes };
                 self.broadcast_msg(&players, &msg).await;
+            }
+        }
+
+        if game_ended {
+            let mut manager = self.inner.lobby.lock().await;
+
+            let game_id = manager
+                .players_lobby
+                .get(&player_id)
+                .ok_or(LobbyError::WrongLobby)
+                .cloned()?;
+
+            manager.lobbies.remove(&game_id);
+
+            for p in &players {
+                manager.players_lobby.remove(p);
             }
         }
 
