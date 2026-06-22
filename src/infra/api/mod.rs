@@ -135,7 +135,9 @@ mod tests {
             commands::{ClientCommand, CreateLobbyResponse, LobbyInfo, ServerMessage},
             id::{LobbyId, PlayerId},
         },
-        services::{manager::GameManager, repositories::get_mongo_client},
+        services::{
+            dispatcher::ManagerHandle, manager::GameManager, repositories::get_mongo_client,
+        },
     };
 
     use super::{auth::get_claims_from_token, models::*, serve_listener};
@@ -159,6 +161,7 @@ mod tests {
     struct TestServer {
         base_url: String,
         ws_url: String,
+        manager: ManagerHandle,
         database: Option<Database>,
         handle: Option<JoinHandle<()>>,
     }
@@ -179,6 +182,7 @@ mod tests {
                 .expect("Expected to create mongo client");
             let database = client.database(&mongo_database);
             let manager = GameManager::start(&settings).await;
+            let server_manager = manager.clone();
             let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
                 .await
                 .expect("Expected to bind test API listener");
@@ -194,6 +198,7 @@ mod tests {
             let server = Self {
                 base_url,
                 ws_url,
+                manager: server_manager,
                 database: Some(database),
                 handle: Some(handle),
             };
@@ -226,6 +231,22 @@ mod tests {
             }
 
             panic!("API server did not start");
+        }
+
+        async fn wait_until_match_actor_stopped(&self) {
+            timeout(WS_TIMEOUT, async {
+                loop {
+                    if self.manager.match_senders.is_empty()
+                        && self.manager.active_player_route_count() == 0
+                    {
+                        return;
+                    }
+
+                    sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("Timed out waiting for match actor cleanup");
         }
 
         async fn shutdown(mut self) {
@@ -274,6 +295,8 @@ mod tests {
                 }
             }
         }
+
+        server.wait_until_match_actor_stopped().await;
 
         drop(player_data);
         server.shutdown().await;

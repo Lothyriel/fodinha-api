@@ -337,6 +337,10 @@ impl Game {
         }
     }
 
+    pub fn is_finished(&self) -> bool {
+        self.alive_players().count() <= 1
+    }
+
     pub fn get_game_info(&self, player_id: &PlayerId) -> GameInfoDto {
         let player = self
             .players

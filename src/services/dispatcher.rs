@@ -47,6 +47,11 @@ impl ManagerHandle {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn active_player_route_count(&self) -> usize {
+        self.player_games.len()
+    }
+
     pub async fn create_lobby(
         &self,
         _player_id: PlayerId,
@@ -294,6 +299,11 @@ impl MatchActor {
         while let Ok(command) = rx.recv_async().await {
             let should_continue = self.handle(command).await;
 
+            if self.is_finished() {
+                self.stop_game();
+                break;
+            }
+
             if !should_continue {
                 break;
             }
@@ -508,7 +518,6 @@ impl MatchActor {
             }
         };
 
-        let players = self.player_ids()?;
         let applied = self.persist_apply(event).await?;
 
         match applied {
@@ -524,7 +533,6 @@ impl MatchActor {
                 let ended = self.broadcast_turn(state).await;
 
                 if ended {
-                    self.stop_game(&players);
                     Ok(ActorResult::Stop)
                 } else {
                     Ok(ActorResult::Continue)
@@ -733,12 +741,16 @@ impl MatchActor {
         }
     }
 
-    fn stop_game(&mut self, players: &[PlayerId]) {
+    fn stop_game(&mut self) {
         self.match_senders.remove(&self.lobby_id);
 
-        for player in players {
-            self.player_games.remove(player);
+        if let Some(lobby) = self.lobby.as_ref() {
+            for player_id in lobby.players.keys() {
+                self.player_games.remove(player_id);
+            }
         }
+
+        self.players.clear();
     }
 
     fn start_game_data(&self) -> Result<Option<(Vec<PlayerId>, GameSettings)>, ManagerError> {
@@ -755,8 +767,11 @@ impl MatchActor {
         Ok(Some((lobby.get_players_id(), settings.clone())))
     }
 
-    fn player_ids(&self) -> Result<Vec<PlayerId>, ManagerError> {
-        Ok(self.lobby()?.get_players_id())
+    fn is_finished(&self) -> bool {
+        matches!(
+            self.lobby.as_ref().map(|lobby| &lobby.state),
+            Some(LobbyState::Playing(game)) if game.is_finished()
+        )
     }
 
     fn lobby(&self) -> Result<&Lobby, ManagerError> {
