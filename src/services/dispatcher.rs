@@ -1,8 +1,11 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
 use dashmap::DashMap;
 use indexmap::IndexMap;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{Mutex, mpsc, oneshot};
 
 use crate::{
     infra::UserClaims,
@@ -29,6 +32,7 @@ pub struct ManagerHandle {
     pub match_senders: MatchSenders,
     player_games: PlayerGames,
     games_repo: GamesRepository,
+    actor_load_lock: Arc<Mutex<()>>,
 }
 
 pub struct PlayerConnectionContext {
@@ -44,6 +48,7 @@ impl ManagerHandle {
             match_senders: Arc::new(DashMap::new()),
             player_games: Arc::new(DashMap::new()),
             games_repo,
+            actor_load_lock: Arc::new(Mutex::new(())),
         }
     }
 
@@ -90,7 +95,7 @@ impl ManagerHandle {
         lobby_id: LobbyId,
         user_claims: UserClaims,
     ) -> Result<LobbyInfo, ManagerError> {
-        let sender = self.sender_for_match(&lobby_id)?;
+        let sender = self.sender_for_match(&lobby_id).await?;
 
         Self::request(&sender, |respond| MatchActorMessage::JoinLobby {
             user_claims,
@@ -100,14 +105,28 @@ impl ManagerHandle {
     }
 
     pub async fn get_lobbies(&self) -> Vec<GetLobbyDto> {
-        let actors: Vec<_> = self
+        let mut lobby_ids: HashSet<_> = self
             .match_senders
             .iter()
-            .map(|entry| entry.value().clone())
+            .map(|entry| entry.key().clone())
             .collect();
+
+        match self.games_repo.waiting_game_ids().await {
+            Ok(waiting) => lobby_ids.extend(waiting),
+            Err(e) => tracing::error!("Error loading waiting game metadata: {e}"),
+        }
+
         let mut lobbies = Vec::new();
 
-        for sender in actors {
+        for lobby_id in lobby_ids {
+            let sender = match self.sender_for_match(&lobby_id).await {
+                Ok(sender) => sender,
+                Err(e) => {
+                    tracing::error!("Error loading match actor for {lobby_id:?}: {e}");
+                    continue;
+                }
+            };
+
             let response = Self::request(&sender, |respond| MatchActorMessage::GetLobbySummary {
                 respond,
             })
@@ -122,7 +141,7 @@ impl ManagerHandle {
     }
 
     pub async fn play_turn(&self, card: Card, player_id: PlayerId) -> Result<(), ManagerError> {
-        let sender = self.sender_for_player(&player_id)?;
+        let sender = self.sender_for_player(&player_id).await?;
 
         Self::request(&sender, |respond| MatchActorMessage::GameCommand {
             player_id,
@@ -133,7 +152,7 @@ impl ManagerHandle {
     }
 
     pub async fn bid(&self, bid: usize, player_id: PlayerId) -> Result<(), ManagerError> {
-        let sender = self.sender_for_player(&player_id)?;
+        let sender = self.sender_for_player(&player_id).await?;
 
         Self::request(&sender, |respond| MatchActorMessage::GameCommand {
             player_id,
@@ -148,7 +167,7 @@ impl ManagerHandle {
         player_id: PlayerId,
         ready: bool,
     ) -> Result<(), ManagerError> {
-        let sender = self.sender_for_player(&player_id)?;
+        let sender = self.sender_for_player(&player_id).await?;
 
         Self::request(&sender, |respond| MatchActorMessage::StatusChange {
             player_id,
@@ -162,12 +181,8 @@ impl ManagerHandle {
         &self,
         player_id: PlayerId,
     ) -> Result<PlayerConnectionContext, ManagerError> {
-        let match_id = self
-            .player_games
-            .get(&player_id)
-            .map(|entry| entry.value().clone())
-            .ok_or(LobbyError::PlayerNotInLobby)?;
-        let match_tx = self.sender_for_match(&match_id)?;
+        let match_id = self.match_id_for_player(&player_id).await?;
+        let match_tx = self.sender_for_match(&match_id).await?;
         let (outbound_tx, outbound_rx) = mpsc::channel(128);
 
         Self::request(&match_tx, |respond| MatchActorMessage::ConnectPlayer {
@@ -199,21 +214,92 @@ impl ManagerHandle {
         rx.await.map_err(|_| ManagerError::ReceiverDisposed)?
     }
 
-    fn sender_for_match(&self, lobby_id: &LobbyId) -> Result<MatchSender, ManagerError> {
-        self.match_senders
-            .get(lobby_id)
-            .map(|entry| entry.value().clone())
-            .ok_or_else(|| LobbyError::InvalidLobby.into())
+    async fn sender_for_match(&self, lobby_id: &LobbyId) -> Result<MatchSender, ManagerError> {
+        if let Some(sender) = self.active_sender_for_match(lobby_id) {
+            return Ok(sender);
+        }
+
+        self.load_match_actor(lobby_id).await
     }
 
-    fn sender_for_player(&self, player_id: &PlayerId) -> Result<MatchSender, ManagerError> {
-        let lobby_id = self
+    async fn sender_for_player(&self, player_id: &PlayerId) -> Result<MatchSender, ManagerError> {
+        let lobby_id = self.match_id_for_player(player_id).await?;
+
+        self.sender_for_match(&lobby_id).await
+    }
+
+    async fn match_id_for_player(&self, player_id: &PlayerId) -> Result<LobbyId, ManagerError> {
+        if let Some(lobby_id) = self
             .player_games
             .get(player_id)
             .map(|entry| entry.value().clone())
-            .ok_or(LobbyError::PlayerNotInLobby)?;
+        {
+            return Ok(lobby_id);
+        }
 
-        self.sender_for_match(&lobby_id)
+        self.games_repo
+            .active_metadata_for_player(player_id)
+            .await?
+            .map(|metadata| metadata.lobby_id())
+            .ok_or_else(|| LobbyError::PlayerNotInLobby.into())
+    }
+
+    async fn load_match_actor(&self, lobby_id: &LobbyId) -> Result<MatchSender, ManagerError> {
+        let _guard = self.actor_load_lock.lock().await;
+
+        if let Some(sender) = self.active_sender_for_match(lobby_id) {
+            return Ok(sender);
+        }
+
+        if self.games_repo.active_metadata(lobby_id).await?.is_none() {
+            return Err(LobbyError::InvalidLobby.into());
+        }
+
+        let events = self.games_repo.load_events(lobby_id).await?;
+
+        if events.is_empty() {
+            return Err(LobbyError::InvalidLobby.into());
+        }
+
+        let mut actor = MatchActor::new(
+            lobby_id.clone(),
+            self.games_repo.clone(),
+            self.match_senders.clone(),
+            self.player_games.clone(),
+        );
+
+        for event in events {
+            actor.version = actor.version.max(event.sequence + 1);
+
+            if let Err(e) = actor.apply_event(event.event) {
+                actor.stop_game();
+
+                return Err(e);
+            }
+        }
+
+        if actor.is_finished() {
+            actor.stop_game();
+
+            if let Err(e) = self.games_repo.mark_metadata_finished(lobby_id).await {
+                tracing::error!("Error marking stale finished game metadata: {e}");
+            }
+
+            return Err(LobbyError::InvalidLobby.into());
+        }
+
+        let (tx, rx) = flume::unbounded();
+
+        self.match_senders.insert(lobby_id.clone(), tx.clone());
+        tokio::spawn(actor.run(rx));
+
+        Ok(tx)
+    }
+
+    fn active_sender_for_match(&self, lobby_id: &LobbyId) -> Option<MatchSender> {
+        self.match_senders
+            .get(lobby_id)
+            .map(|entry| entry.value().clone())
     }
 }
 
@@ -563,7 +649,33 @@ impl MatchActor {
             .await?;
         self.version += 1;
 
-        self.apply_event(event)
+        let applied = self.apply_event(event.clone())?;
+
+        if let Err(e) = self.project_metadata(&event).await {
+            tracing::error!("Error projecting game metadata: {e}");
+        }
+
+        Ok(applied)
+    }
+
+    async fn project_metadata(&self, event: &DomainEvent) -> mongodb::error::Result<()> {
+        match event {
+            DomainEvent::LobbyCreated { .. } => self.repo.create_metadata(&self.lobby_id).await,
+            DomainEvent::PlayerJoined { user_claims } => {
+                let player_id = user_claims.id();
+
+                self.repo
+                    .add_metadata_player(&self.lobby_id, &player_id)
+                    .await
+            }
+            DomainEvent::GameStarted { .. } => {
+                self.repo.mark_metadata_playing(&self.lobby_id).await
+            }
+            DomainEvent::TurnPlayed { .. } if self.is_finished() => {
+                self.repo.mark_metadata_finished(&self.lobby_id).await
+            }
+            _ => Ok(()),
+        }
     }
 
     fn apply_event(&mut self, event: DomainEvent) -> Result<AppliedEvent, ManagerError> {

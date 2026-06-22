@@ -145,11 +145,17 @@ mod tests {
     type WebSocket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
     const HTTP_TIMEOUT: Duration = Duration::from_secs(10);
+    const MONGO_CONN_STRING: &str = "mongodb://localhost/?retryWrites=true";
     const SERVER_START_TIMEOUT: Duration = Duration::from_millis(200);
     const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
     const WS_TIMEOUT: Duration = Duration::from_secs(5);
 
     type Deck = Vec<Card>;
+
+    enum EndMessage {
+        Set(HashMap<PlayerId, usize>),
+        Game,
+    }
 
     struct TestPlayerData {
         connection: WebSocket,
@@ -161,6 +167,7 @@ mod tests {
     struct TestServer {
         base_url: String,
         ws_url: String,
+        mongo_database: String,
         manager: ManagerHandle,
         database: Option<Database>,
         handle: Option<JoinHandle<()>>,
@@ -168,8 +175,13 @@ mod tests {
 
     impl TestServer {
         async fn start() -> Self {
-            let mongo_conn_string = "mongodb://localhost/?retryWrites=true".to_string();
             let mongo_database = format!("oh_hell_test_{}", nanoid::nanoid!(10));
+
+            Self::start_with_database(mongo_database).await
+        }
+
+        async fn start_with_database(mongo_database: String) -> Self {
+            let mongo_conn_string = MONGO_CONN_STRING.to_string();
             let settings = AppSettings {
                 jwt_key: "very-random-secret-key".to_string(),
                 mongo_conn_string: mongo_conn_string.clone(),
@@ -198,6 +210,7 @@ mod tests {
             let server = Self {
                 base_url,
                 ws_url,
+                mongo_database,
                 manager: server_manager,
                 database: Some(database),
                 handle: Some(handle),
@@ -249,11 +262,18 @@ mod tests {
             .expect("Timed out waiting for match actor cleanup");
         }
 
+        async fn stop_without_dropping_database(mut self) -> String {
+            let mongo_database = self.mongo_database.clone();
+
+            self.stop_server().await;
+
+            self.database.take();
+
+            mongo_database
+        }
+
         async fn shutdown(mut self) {
-            if let Some(handle) = self.handle.take() {
-                handle.abort();
-                let _ = timeout(SHUTDOWN_TIMEOUT, handle).await;
-            }
+            self.stop_server().await;
 
             if let Some(database) = self.database.take() {
                 timeout(SHUTDOWN_TIMEOUT, database.drop())
@@ -262,10 +282,21 @@ mod tests {
                     .expect("Expected to drop test database");
             }
         }
+
+        async fn stop_server(&mut self) {
+            self.manager.match_senders.clear();
+
+            if let Some(handle) = self.handle.take() {
+                handle.abort();
+                let _ = timeout(SHUTDOWN_TIMEOUT, handle).await;
+            }
+        }
     }
 
     impl Drop for TestServer {
         fn drop(&mut self) {
+            self.manager.match_senders.clear();
+
             if let Some(handle) = self.handle.take() {
                 handle.abort();
             }
@@ -279,6 +310,7 @@ mod tests {
         let client = http_client();
 
         let tokens = get_players(&client, &server, 7).await;
+        let first_token = tokens[0].clone();
 
         let mut player_data = join_lobby(&client, &server, tokens).await;
 
@@ -289,14 +321,23 @@ mod tests {
 
             play_set(&mut player_data).await;
 
+            let mut set_lifes = None;
+
             for p in player_data.values_mut() {
-                if assert_game_or_set_ended(&mut p.connection).await {
-                    break 'game;
+                match recv_game_or_set_ended(&mut p.connection).await {
+                    EndMessage::Set(lifes) => set_lifes = Some(lifes),
+                    EndMessage::Game => break 'game,
                 }
+            }
+
+            if let Some(lifes) = set_lifes {
+                player_data
+                    .retain(|player_id, _| lifes.get(player_id).copied().unwrap_or_default() > 0);
             }
         }
 
         server.wait_until_match_actor_stopped().await;
+        assert_ws_closes_without_snapshot(&server, &first_token).await;
 
         drop(player_data);
         server.shutdown().await;
@@ -336,6 +377,35 @@ mod tests {
         server.shutdown().await;
     }
 
+    #[tokio::test]
+    async fn test_lazy_loads_match_actor_from_events() {
+        let server = TestServer::start().await;
+
+        let client = http_client();
+        let tokens = get_players(&client, &server, 2).await;
+        let lobby_id = create_lobby(&client, &server, &tokens[0]).await;
+
+        for token in &tokens {
+            join_lobby_http(&client, &server, token, &lobby_id).await;
+        }
+
+        let mongo_database = server.stop_without_dropping_database().await;
+        let server = TestServer::start_with_database(mongo_database).await;
+
+        assert!(server.manager.match_senders.is_empty());
+        assert_eq!(server.manager.active_player_route_count(), 0);
+
+        let mut connection = connect_ws(&server, &tokens[0]).await;
+        let snapshot = get_snapshot(&mut connection).await;
+
+        assert!(matches!(snapshot, LobbyInfo::NotStarted(players) if players.len() == 2));
+        assert_eq!(server.manager.match_senders.len(), 1);
+        assert_eq!(server.manager.active_player_route_count(), 2);
+
+        drop(connection);
+        server.shutdown().await;
+    }
+
     async fn get_players(client: &Client, server: &TestServer, count: usize) -> Vec<String> {
         let mut players = vec![];
 
@@ -354,10 +424,10 @@ mod tests {
             .expect("Expected to build test HTTP client")
     }
 
-    async fn assert_game_or_set_ended(socket: &mut WebSocket) -> bool {
+    async fn recv_game_or_set_ended(socket: &mut WebSocket) -> EndMessage {
         match recv_msg(socket).await {
-            ServerMessage::SetEnded { lifes: _ } => false,
-            ServerMessage::GameEnded { lifes: _ } => true,
+            ServerMessage::SetEnded { lifes } => EndMessage::Set(lifes),
+            ServerMessage::GameEnded { lifes: _ } => EndMessage::Game,
             msg => panic!("Expected Set or Game end | {msg:?}"),
         }
     }
@@ -601,6 +671,28 @@ mod tests {
         stream
     }
 
+    async fn assert_ws_closes_without_snapshot(server: &TestServer, token: &str) {
+        let req = server
+            .websocket_url(&format!("/game?token={token}"))
+            .into_client_request()
+            .unwrap();
+
+        let result = timeout(WS_TIMEOUT, connect_async(req))
+            .await
+            .expect("Timed out connecting websocket");
+        let Ok((mut stream, _)) = result else {
+            return;
+        };
+
+        match timeout(WS_TIMEOUT, stream.next())
+            .await
+            .expect("Timed out waiting for websocket close")
+        {
+            None | Some(Err(_)) | Some(Ok(Message::Close(_))) => {}
+            Some(Ok(msg)) => panic!("Expected websocket to close without snapshot, got {msg:?}"),
+        }
+    }
+
     async fn recv_msg(stream: &mut WebSocket) -> ServerMessage {
         let msg = timeout(WS_TIMEOUT, stream.next())
             .await
@@ -639,8 +731,15 @@ mod tests {
             .send()
             .await
             .unwrap();
+        let status = res.status();
+        let body = res.text().await.unwrap();
 
-        let res: CreateLobbyResponse = res.json().await.unwrap();
+        assert!(
+            status.is_success(),
+            "Expected lobby creation to succeed, got {status}: {body}"
+        );
+
+        let res: CreateLobbyResponse = serde_json::from_str(&body).unwrap();
 
         res.lobby_id
     }

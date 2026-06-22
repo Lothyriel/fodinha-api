@@ -21,6 +21,8 @@ pub struct Game {
     round_iter: CyclicIterator,
     cards_count: usize,
     upcard: Card,
+    seed: i64,
+    next_shuffle_sequence: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -92,12 +94,19 @@ impl DealingMode {
     }
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct NewSet {
     pub dealing_mode: DealingMode,
     pub cards_count: usize,
+    pub shuffle: DeckShuffle,
     pub decks: IndexMap<PlayerId, Vec<Card>>,
     pub upcard: Card,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct DeckShuffle {
+    pub seed: i64,
+    pub sequence: i64,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -193,7 +202,15 @@ impl Game {
     }
 
     pub fn new(players: &[PlayerId], settings: GameSettings) -> Result<Self, GameError> {
-        let event = Self::start_event(players, settings)?;
+        Self::new_with_seed(players, settings, rand::random())
+    }
+
+    pub fn new_with_seed(
+        players: &[PlayerId],
+        settings: GameSettings,
+        seed: i64,
+    ) -> Result<Self, GameError> {
+        let event = Self::start_event_with_seed(players, settings, seed)?;
 
         match event {
             DomainEvent::GameStarted { settings, set } => {
@@ -207,9 +224,17 @@ impl Game {
         players: &[PlayerId],
         settings: GameSettings,
     ) -> Result<DomainEvent, GameError> {
+        Self::start_event_with_seed(players, settings, rand::random())
+    }
+
+    pub fn start_event_with_seed(
+        players: &[PlayerId],
+        settings: GameSettings,
+        seed: i64,
+    ) -> Result<DomainEvent, GameError> {
         Self::validate_game(players, &settings)?;
 
-        let set = Self::new_set(players, settings.mode, settings.cards_count);
+        let set = Self::new_set(players, settings.mode, settings.cards_count, seed, 0);
 
         Ok(DomainEvent::GameStarted { settings, set })
     }
@@ -237,6 +262,8 @@ impl Game {
             round_iter: CyclicIterator::new(players.len()),
             cards_count: set.cards_count,
             upcard: set.upcard,
+            seed: set.shuffle.seed,
+            next_shuffle_sequence: set.shuffle.sequence.wrapping_add(1),
         })
     }
 
@@ -512,7 +539,7 @@ impl Game {
                     .get_next(next.cards_count, next.alive_players().count());
                 let players: Vec<_> = next.alive_players().map(|(id, _)| id.clone()).collect();
 
-                Some(Self::new_set(&players, mode, count))
+                Some(next.new_set_for_game(&players, mode, count))
             }
             _ => None,
         }
@@ -522,6 +549,8 @@ impl Game {
         self.dealing_mode = set.dealing_mode;
         self.cards_count = set.cards_count;
         self.upcard = set.upcard;
+        self.seed = set.shuffle.seed;
+        self.next_shuffle_sequence = set.shuffle.sequence.wrapping_add(1);
 
         for (id, player) in self.players.iter_mut() {
             if player.is_alive() {
@@ -531,8 +560,29 @@ impl Game {
         }
     }
 
-    fn new_set(players: &[PlayerId], mode: DealingMode, cards_count: usize) -> NewSet {
-        let mut deck = Card::shuffled_deck();
+    fn new_set_for_game(
+        &self,
+        players: &[PlayerId],
+        mode: DealingMode,
+        cards_count: usize,
+    ) -> NewSet {
+        Self::new_set(
+            players,
+            mode,
+            cards_count,
+            self.seed,
+            self.next_shuffle_sequence,
+        )
+    }
+
+    fn new_set(
+        players: &[PlayerId],
+        mode: DealingMode,
+        cards_count: usize,
+        seed: i64,
+        sequence: i64,
+    ) -> NewSet {
+        let mut deck = Card::shuffled_deck(seed, sequence);
         let decks = players
             .iter()
             .map(|p| (p.clone(), deck.drain(..cards_count).collect()))
@@ -541,6 +591,7 @@ impl Game {
         NewSet {
             dealing_mode: mode,
             cards_count,
+            shuffle: DeckShuffle { seed, sequence },
             decks,
             upcard: deck[0],
         }
@@ -733,6 +784,24 @@ mod tests {
 
         let state = game.bid(&other, 2).unwrap();
         assert!(matches!(state, BiddingState::Ended { next: _ }));
+    }
+
+    #[test]
+    fn test_seeded_decks_are_reproducible() {
+        let player1 = PlayerId("P1".into());
+        let player2 = PlayerId("P2".into());
+        let players = [player1.clone(), player2.clone()];
+        let settings = GameSettings::default();
+        let seed = 42;
+
+        let first = Game::new_with_seed(&players, settings.clone(), seed).unwrap();
+        let second = Game::new_with_seed(&players, settings, seed).unwrap();
+
+        assert_eq!(first.upcard, second.upcard);
+        assert_eq!(first.players[&player1].deck, second.players[&player1].deck);
+        assert_eq!(first.players[&player2].deck, second.players[&player2].deck);
+        assert_eq!(first.seed, seed);
+        assert_eq!(first.next_shuffle_sequence, 1);
     }
 
     #[test]
