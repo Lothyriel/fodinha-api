@@ -16,31 +16,32 @@ use crate::{
     services::{LobbyError, ManagerError, repositories::game::GamesRepository},
 };
 
-pub type GameSender = flume::Sender<GameActorCommand>;
+pub type MatchSender = flume::Sender<MatchActorMessage>;
 pub type PlayerSender = mpsc::Sender<ServerMessage>;
 pub type PlayerReceiver = mpsc::Receiver<ServerMessage>;
 
-type GameReceiver = flume::Receiver<GameActorCommand>;
-pub type GameSenders = Arc<DashMap<LobbyId, GameSender>>;
+type MatchReceiver = flume::Receiver<MatchActorMessage>;
+pub type MatchSenders = Arc<DashMap<LobbyId, MatchSender>>;
 type PlayerGames = Arc<DashMap<PlayerId, LobbyId>>;
 
 #[derive(Clone)]
 pub struct ManagerHandle {
-    pub game_senders: GameSenders,
+    pub match_senders: MatchSenders,
     player_games: PlayerGames,
     games_repo: GamesRepository,
 }
 
 pub struct PlayerConnectionContext {
-    pub game_id: LobbyId,
-    pub game_tx: GameSender,
+    pub match_id: LobbyId,
+    pub match_tx: MatchSender,
+    pub outbound_tx: PlayerSender,
     pub outbound_rx: PlayerReceiver,
 }
 
 impl ManagerHandle {
     pub fn new(games_repo: GamesRepository) -> Self {
         Self {
-            game_senders: Arc::new(DashMap::new()),
+            match_senders: Arc::new(DashMap::new()),
             player_games: Arc::new(DashMap::new()),
             games_repo,
         }
@@ -54,24 +55,24 @@ impl ManagerHandle {
         let lobby_id = id::gen_lobbyid();
         let (tx, rx) = flume::unbounded();
 
-        let actor = GameActor::new(
+        let actor = MatchActor::new(
             lobby_id.clone(),
             self.games_repo.clone(),
-            self.game_senders.clone(),
+            self.match_senders.clone(),
             self.player_games.clone(),
         );
 
-        self.game_senders.insert(lobby_id.clone(), tx.clone());
+        self.match_senders.insert(lobby_id.clone(), tx.clone());
         tokio::spawn(actor.run(rx));
 
-        let result = Self::request(&tx, |respond| GameActorCommand::CreateLobby {
+        let result = Self::request(&tx, |respond| MatchActorMessage::CreateLobby {
             settings,
             respond,
         })
         .await;
 
         if result.is_err() {
-            self.game_senders.remove(&lobby_id);
+            self.match_senders.remove(&lobby_id);
         }
 
         result?;
@@ -84,9 +85,9 @@ impl ManagerHandle {
         lobby_id: LobbyId,
         user_claims: UserClaims,
     ) -> Result<LobbyInfo, ManagerError> {
-        let sender = self.sender_for_game(&lobby_id)?;
+        let sender = self.sender_for_match(&lobby_id)?;
 
-        Self::request(&sender, |respond| GameActorCommand::JoinLobby {
+        Self::request(&sender, |respond| MatchActorMessage::JoinLobby {
             user_claims,
             respond,
         })
@@ -95,14 +96,14 @@ impl ManagerHandle {
 
     pub async fn get_lobbies(&self) -> Vec<GetLobbyDto> {
         let actors: Vec<_> = self
-            .game_senders
+            .match_senders
             .iter()
             .map(|entry| entry.value().clone())
             .collect();
         let mut lobbies = Vec::new();
 
         for sender in actors {
-            let response = Self::request(&sender, |respond| GameActorCommand::GetLobbySummary {
+            let response = Self::request(&sender, |respond| MatchActorMessage::GetLobbySummary {
                 respond,
             })
             .await;
@@ -118,7 +119,7 @@ impl ManagerHandle {
     pub async fn play_turn(&self, card: Card, player_id: PlayerId) -> Result<(), ManagerError> {
         let sender = self.sender_for_player(&player_id)?;
 
-        Self::request(&sender, |respond| GameActorCommand::GameCommand {
+        Self::request(&sender, |respond| MatchActorMessage::GameCommand {
             player_id,
             command: GameCommand::PlayTurn { card },
             respond,
@@ -129,7 +130,7 @@ impl ManagerHandle {
     pub async fn bid(&self, bid: usize, player_id: PlayerId) -> Result<(), ManagerError> {
         let sender = self.sender_for_player(&player_id)?;
 
-        Self::request(&sender, |respond| GameActorCommand::GameCommand {
+        Self::request(&sender, |respond| MatchActorMessage::GameCommand {
             player_id,
             command: GameCommand::PutBid { bid },
             respond,
@@ -144,19 +145,9 @@ impl ManagerHandle {
     ) -> Result<(), ManagerError> {
         let sender = self.sender_for_player(&player_id)?;
 
-        Self::request(&sender, |respond| GameActorCommand::StatusChange {
+        Self::request(&sender, |respond| MatchActorMessage::StatusChange {
             player_id,
             ready,
-            respond,
-        })
-        .await
-    }
-
-    pub async fn reconnect(&self, player_id: PlayerId) -> Result<(), ManagerError> {
-        let sender = self.sender_for_player(&player_id)?;
-
-        Self::request(&sender, |respond| GameActorCommand::Reconnect {
-            player_id,
             respond,
         })
         .await
@@ -166,31 +157,32 @@ impl ManagerHandle {
         &self,
         player_id: PlayerId,
     ) -> Result<PlayerConnectionContext, ManagerError> {
-        let game_id = self
+        let match_id = self
             .player_games
             .get(&player_id)
             .map(|entry| entry.value().clone())
             .ok_or(LobbyError::PlayerNotInLobby)?;
-        let game_tx = self.sender_for_game(&game_id)?;
+        let match_tx = self.sender_for_match(&match_id)?;
         let (outbound_tx, outbound_rx) = mpsc::channel(128);
 
-        Self::request(&game_tx, |respond| GameActorCommand::ConnectPlayer {
+        Self::request(&match_tx, |respond| MatchActorMessage::ConnectPlayer {
             player_id,
-            outbound_tx,
+            outbound_tx: outbound_tx.clone(),
             respond,
         })
         .await?;
 
         Ok(PlayerConnectionContext {
-            game_id,
-            game_tx,
+            match_id,
+            match_tx,
+            outbound_tx,
             outbound_rx,
         })
     }
 
     async fn request<T>(
-        sender: &GameSender,
-        build: impl FnOnce(oneshot::Sender<Result<T, ManagerError>>) -> GameActorCommand,
+        sender: &MatchSender,
+        build: impl FnOnce(oneshot::Sender<Result<T, ManagerError>>) -> MatchActorMessage,
     ) -> Result<T, ManagerError> {
         let (tx, rx) = oneshot::channel();
 
@@ -202,25 +194,25 @@ impl ManagerHandle {
         rx.await.map_err(|_| ManagerError::ReceiverDisposed)?
     }
 
-    fn sender_for_game(&self, lobby_id: &LobbyId) -> Result<GameSender, ManagerError> {
-        self.game_senders
+    fn sender_for_match(&self, lobby_id: &LobbyId) -> Result<MatchSender, ManagerError> {
+        self.match_senders
             .get(lobby_id)
             .map(|entry| entry.value().clone())
             .ok_or_else(|| LobbyError::InvalidLobby.into())
     }
 
-    fn sender_for_player(&self, player_id: &PlayerId) -> Result<GameSender, ManagerError> {
+    fn sender_for_player(&self, player_id: &PlayerId) -> Result<MatchSender, ManagerError> {
         let lobby_id = self
             .player_games
             .get(player_id)
             .map(|entry| entry.value().clone())
             .ok_or(LobbyError::PlayerNotInLobby)?;
 
-        self.sender_for_game(&lobby_id)
+        self.sender_for_match(&lobby_id)
     }
 }
 
-pub enum GameActorCommand {
+pub enum MatchActorMessage {
     ConnectPlayer {
         player_id: PlayerId,
         outbound_tx: PlayerSender,
@@ -228,6 +220,7 @@ pub enum GameActorCommand {
     },
     DisconnectPlayer {
         player_id: PlayerId,
+        outbound_tx: PlayerSender,
     },
     CreateLobby {
         settings: GameSettings,
@@ -247,22 +240,18 @@ pub enum GameActorCommand {
         command: GameCommand,
         respond: oneshot::Sender<Result<(), ManagerError>>,
     },
-    Reconnect {
-        player_id: PlayerId,
-        respond: oneshot::Sender<Result<(), ManagerError>>,
-    },
     GetLobbySummary {
         respond: oneshot::Sender<Result<Option<GetLobbyDto>, ManagerError>>,
     },
 }
 
-struct GameActor {
+struct MatchActor {
     lobby_id: LobbyId,
     lobby: Option<Lobby>,
     players: HashMap<PlayerId, PlayerSender>,
     version: usize,
     repo: GamesRepository,
-    game_senders: GameSenders,
+    match_senders: MatchSenders,
     player_games: PlayerGames,
 }
 
@@ -283,11 +272,11 @@ enum AppliedEvent {
     Game(AppliedGameEvent),
 }
 
-impl GameActor {
+impl MatchActor {
     fn new(
         lobby_id: LobbyId,
         repo: GamesRepository,
-        game_senders: GameSenders,
+        match_senders: MatchSenders,
         player_games: PlayerGames,
     ) -> Self {
         Self {
@@ -296,12 +285,12 @@ impl GameActor {
             players: HashMap::new(),
             version: 0,
             repo,
-            game_senders,
+            match_senders,
             player_games,
         }
     }
 
-    async fn run(mut self, rx: GameReceiver) {
+    async fn run(mut self, rx: MatchReceiver) {
         while let Ok(command) = rx.recv_async().await {
             let should_continue = self.handle(command).await;
 
@@ -311,35 +300,47 @@ impl GameActor {
         }
     }
 
-    async fn handle(&mut self, command: GameActorCommand) -> bool {
+    async fn handle(&mut self, command: MatchActorMessage) -> bool {
         match command {
-            GameActorCommand::ConnectPlayer {
+            MatchActorMessage::ConnectPlayer {
                 player_id,
                 outbound_tx,
                 respond,
             } => {
-                respond_once(respond, self.handle_connect_player(player_id, outbound_tx));
+                respond_once(
+                    respond,
+                    self.handle_connect_player(player_id, outbound_tx).await,
+                );
             }
-            GameActorCommand::DisconnectPlayer { player_id } => {
-                self.players.remove(&player_id);
+            MatchActorMessage::DisconnectPlayer {
+                player_id,
+                outbound_tx,
+            } => {
+                if self
+                    .players
+                    .get(&player_id)
+                    .is_some_and(|current| current.same_channel(&outbound_tx))
+                {
+                    self.players.remove(&player_id);
+                }
             }
-            GameActorCommand::CreateLobby { settings, respond } => {
+            MatchActorMessage::CreateLobby { settings, respond } => {
                 respond_once(respond, self.handle_create_lobby(settings).await);
             }
-            GameActorCommand::JoinLobby {
+            MatchActorMessage::JoinLobby {
                 user_claims,
                 respond,
             } => {
                 respond_once(respond, self.handle_join_lobby(user_claims).await);
             }
-            GameActorCommand::StatusChange {
+            MatchActorMessage::StatusChange {
                 player_id,
                 ready,
                 respond,
             } => {
                 respond_once(respond, self.handle_status_change(player_id, ready).await);
             }
-            GameActorCommand::GameCommand {
+            MatchActorMessage::GameCommand {
                 player_id,
                 command,
                 respond,
@@ -349,10 +350,7 @@ impl GameActor {
                 respond_once(respond, result.map(|_| ()));
                 return should_continue;
             }
-            GameActorCommand::Reconnect { player_id, respond } => {
-                respond_once(respond, self.handle_reconnect(player_id).await);
-            }
-            GameActorCommand::GetLobbySummary { respond } => {
+            MatchActorMessage::GetLobbySummary { respond } => {
                 respond_once(respond, self.handle_get_lobby_summary());
             }
         }
@@ -371,18 +369,24 @@ impl GameActor {
         Ok(())
     }
 
-    fn handle_connect_player(
+    async fn handle_connect_player(
         &mut self,
         player_id: PlayerId,
         outbound_tx: PlayerSender,
     ) -> Result<(), ManagerError> {
-        let lobby = self.lobby()?;
+        let snapshot = {
+            let lobby = self.lobby()?;
 
-        if !lobby.players.contains_key(&player_id) {
-            return Err(LobbyError::WrongLobby.into());
-        }
+            if !lobby.players.contains_key(&player_id) {
+                return Err(LobbyError::WrongLobby.into());
+            }
 
-        self.players.insert(player_id, outbound_tx);
+            lobby.get_info(&player_id)
+        };
+
+        self.players.insert(player_id.clone(), outbound_tx);
+        self.send_to_player(&player_id, ServerMessage::Snapshot(snapshot))
+            .await;
 
         Ok(())
     }
@@ -528,26 +532,6 @@ impl GameActor {
             }
             _ => unreachable!("game command must apply a game event"),
         }
-    }
-
-    async fn handle_reconnect(&mut self, player_id: PlayerId) -> Result<(), ManagerError> {
-        let info = {
-            let lobby = self.lobby()?;
-
-            if !lobby.players.contains_key(&player_id) {
-                return Err(LobbyError::WrongLobby.into());
-            }
-
-            match &lobby.state {
-                LobbyState::NotStarted(_) => return Err(LobbyError::GameNotStarted.into()),
-                LobbyState::Playing(game) => game.get_game_info(&player_id),
-            }
-        };
-
-        self.send_to_player(&player_id, ServerMessage::Reconnect(info))
-            .await;
-
-        Ok(())
     }
 
     fn handle_get_lobby_summary(&self) -> Result<Option<GetLobbyDto>, ManagerError> {
@@ -750,7 +734,7 @@ impl GameActor {
     }
 
     fn stop_game(&mut self, players: &[PlayerId]) {
-        self.game_senders.remove(&self.lobby_id);
+        self.match_senders.remove(&self.lobby_id);
 
         for player in players {
             self.player_games.remove(player);

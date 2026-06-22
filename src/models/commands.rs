@@ -21,7 +21,7 @@ pub struct CreateLobbyResponse {
     pub lobby_id: LobbyId,
 }
 
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, Clone)]
 pub enum LobbyInfo {
     NotStarted(HashMap<PlayerId, PlayerStatus>),
     Playing(GameInfoDto),
@@ -35,7 +35,6 @@ pub enum ClientCommand {
     PlayTurn { card: Card },
     PutBid { bid: usize },
     PlayerStatusChange { ready: bool },
-    Reconnect,
 }
 
 #[derive(serde::Deserialize, serde::Serialize, Clone, Copy, Debug)]
@@ -78,7 +77,7 @@ pub enum ServerMessage {
         lifes: PlayerPoints,
     },
     PlayerJoined(UserClaims),
-    Reconnect(GameInfoDto),
+    Snapshot(LobbyInfo),
     Error {
         msg: String,
     },

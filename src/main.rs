@@ -12,7 +12,7 @@ async fn main() {
 
     let settings = AppSettings::from_env().expect("to load env variables");
 
-    let handle = GameManager::new().start(&settings).await;
+    let handle = GameManager::start(&settings).await;
 
     tokio::select! {
         _ = infra::api::start(handle.clone(), &settings) => {}

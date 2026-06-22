@@ -6,7 +6,7 @@ use crate::{
     services::LobbyError,
 };
 
-#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct PlayerStatus {
     pub ready: bool,
     pub player: UserClaims,

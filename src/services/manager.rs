@@ -9,15 +9,16 @@ use crate::{
 pub struct GameManager;
 
 impl GameManager {
-    pub fn new() -> Self {
-        Self
-    }
+    pub async fn start(settings: &AppSettings) -> ManagerHandle {
+        let database = match settings.mongo_database.is_empty() {
+            true => "oh_hell",
+            false => settings.mongo_database.as_str(),
+        };
 
-    pub async fn start(self, settings: &AppSettings) -> ManagerHandle {
         let db = get_mongo_client(&settings.mongo_conn_string)
             .await
             .expect("Expected to create mongo client")
-            .database("oh_hell");
+            .database(database);
 
         ManagerHandle::new(GamesRepository::new(&db))
     }

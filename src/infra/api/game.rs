@@ -16,7 +16,7 @@ use crate::{
     },
     services::{
         ManagerError,
-        dispatcher::{GameActorCommand, GameSender, ManagerHandle, PlayerReceiver},
+        dispatcher::{ManagerHandle, MatchActorMessage, MatchSender, PlayerReceiver, PlayerSender},
     },
 };
 
@@ -53,9 +53,10 @@ async fn handle_connection(
     let context = manager.connect_player(player_id.clone()).await?;
     let connection = PlayerConnection {
         player_id,
-        game_id: context.game_id,
+        match_id: context.match_id,
         socket: ws,
-        game_tx: context.game_tx,
+        match_tx: context.match_tx,
+        outbound_tx: context.outbound_tx,
         outbound_rx: context.outbound_rx,
     };
 
@@ -64,9 +65,10 @@ async fn handle_connection(
 
 struct PlayerConnection {
     player_id: PlayerId,
-    game_id: LobbyId,
+    match_id: LobbyId,
     socket: WebSocket,
-    game_tx: GameSender,
+    match_tx: MatchSender,
+    outbound_tx: PlayerSender,
     outbound_rx: PlayerReceiver,
 }
 
@@ -75,15 +77,16 @@ impl PlayerConnection {
         tracing::debug!(
             "Starting websocket task for {:?} in {:?}",
             self.player_id,
-            self.game_id
+            self.match_id
         );
 
         let result = self.run_loop().await;
 
         let _ = self
-            .game_tx
-            .send_async(GameActorCommand::DisconnectPlayer {
+            .match_tx
+            .send_async(MatchActorMessage::DisconnectPlayer {
                 player_id: self.player_id.clone(),
+                outbound_tx: self.outbound_tx.clone(),
             })
             .await;
 
@@ -122,7 +125,7 @@ impl PlayerConnection {
                 let msg = serde_json::from_str(&msg)?;
                 tracing::debug!("Received from {:?}: {msg:?}", self.player_id);
 
-                handle_game_msg(self.player_id.clone(), self.game_tx.clone(), msg).await
+                handle_game_msg(self.player_id.clone(), self.match_tx.clone(), msg).await
             }
             Message::Close(c) => {
                 let reason = c
@@ -161,12 +164,12 @@ impl PlayerConnection {
 
 async fn handle_game_msg(
     player_id: PlayerId,
-    game_tx: GameSender,
+    match_tx: MatchSender,
     msg: ClientCommand,
 ) -> Result<(), ManagerError> {
     match msg {
         ClientCommand::PlayTurn { card } => {
-            request(&game_tx, |respond| GameActorCommand::GameCommand {
+            request(&match_tx, |respond| MatchActorMessage::GameCommand {
                 player_id,
                 command: GameCommand::PlayTurn { card },
                 respond,
@@ -174,7 +177,7 @@ async fn handle_game_msg(
             .await
         }
         ClientCommand::PutBid { bid } => {
-            request(&game_tx, |respond| GameActorCommand::GameCommand {
+            request(&match_tx, |respond| MatchActorMessage::GameCommand {
                 player_id,
                 command: GameCommand::PutBid { bid },
                 respond,
@@ -182,16 +185,9 @@ async fn handle_game_msg(
             .await
         }
         ClientCommand::PlayerStatusChange { ready } => {
-            request(&game_tx, |respond| GameActorCommand::StatusChange {
+            request(&match_tx, |respond| MatchActorMessage::StatusChange {
                 player_id,
                 ready,
-                respond,
-            })
-            .await
-        }
-        ClientCommand::Reconnect => {
-            request(&game_tx, |respond| GameActorCommand::Reconnect {
-                player_id,
                 respond,
             })
             .await
@@ -200,12 +196,12 @@ async fn handle_game_msg(
 }
 
 async fn request(
-    game_tx: &GameSender,
-    build: impl FnOnce(oneshot::Sender<Result<(), ManagerError>>) -> GameActorCommand,
+    match_tx: &MatchSender,
+    build: impl FnOnce(oneshot::Sender<Result<(), ManagerError>>) -> MatchActorMessage,
 ) -> Result<(), ManagerError> {
     let (tx, rx) = oneshot::channel();
 
-    game_tx
+    match_tx
         .send_async(build(tx))
         .await
         .map_err(|_| ManagerError::ReceiverDisposed)?;
