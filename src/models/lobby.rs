@@ -2,7 +2,12 @@ use indexmap::{IndexMap, map::Entry};
 
 use crate::{
     infra::UserClaims,
-    models::{GameError, LobbyState, commands::LobbyInfo, game::GameSettings, id::PlayerId},
+    models::{
+        GameError, LobbyState,
+        commands::{LobbyInfo, MatchSnapshot},
+        game::GameSettings,
+        id::PlayerId,
+    },
     services::LobbyError,
 };
 
@@ -74,6 +79,21 @@ impl Lobby {
                 LobbyInfo::NotStarted(players)
             }
             LobbyState::Playing(game) => LobbyInfo::Playing(game.get_game_info(player_id)),
+        }
+    }
+
+    pub fn get_snapshot(&self, player_id: &PlayerId) -> MatchSnapshot {
+        match &self.state {
+            LobbyState::NotStarted(_) => {
+                let players = self
+                    .players
+                    .iter()
+                    .map(|(id, p)| (id.clone(), p.clone()))
+                    .collect();
+
+                MatchSnapshot::Waiting(players)
+            }
+            LobbyState::Playing(game) => MatchSnapshot::Playing(game.get_game_info(player_id)),
         }
     }
 }

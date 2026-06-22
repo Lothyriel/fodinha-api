@@ -13,7 +13,7 @@ use tower_http::cors::{Any, CorsLayer};
 use crate::{
     AppSettings,
     models::GameError,
-    services::{LobbyError, ManagerError, dispatcher::ManagerHandle},
+    services::{LobbyError, ManagerError, matches::ManagerHandle},
 };
 
 #[derive(Clone)]
@@ -132,12 +132,12 @@ mod tests {
         AppSettings,
         models::{
             Card,
-            commands::{ClientCommand, CreateLobbyResponse, LobbyInfo, ServerMessage},
+            commands::{
+                ClientCommand, CreateLobbyResponse, LobbyInfo, MatchSnapshot, ServerMessage,
+            },
             id::{LobbyId, PlayerId},
         },
-        services::{
-            dispatcher::ManagerHandle, manager::GameManager, repositories::get_mongo_client,
-        },
+        services::{manager::GameManager, matches::ManagerHandle, repositories::get_mongo_client},
     };
 
     use super::{auth::get_claims_from_token, models::*, serve_listener};
@@ -250,7 +250,7 @@ mod tests {
         async fn wait_until_match_actor_stopped(&self) {
             timeout(WS_TIMEOUT, async {
                 loop {
-                    if self.manager.match_senders.is_empty()
+                    if self.manager.registry.matches.is_empty()
                         && self.manager.active_player_route_count() == 0
                     {
                         return;
@@ -285,7 +285,7 @@ mod tests {
         }
 
         async fn stop_server(&mut self) {
-            self.manager.match_senders.clear();
+            self.manager.registry.matches.clear();
 
             if let Some(handle) = self.handle.take() {
                 handle.abort();
@@ -296,7 +296,7 @@ mod tests {
 
     impl Drop for TestServer {
         fn drop(&mut self) {
-            self.manager.match_senders.clear();
+            self.manager.registry.matches.clear();
 
             if let Some(handle) = self.handle.take() {
                 handle.abort();
@@ -364,7 +364,7 @@ mod tests {
         let snapshot = get_snapshot(&mut first_connection).await;
 
         assert!(
-            matches!(snapshot, LobbyInfo::NotStarted(players) if players.contains_key(&claims.id()))
+            matches!(snapshot, MatchSnapshot::Waiting(players) if players.contains_key(&claims.id()))
         );
 
         first_connection.close(None).await.unwrap();
@@ -373,7 +373,7 @@ mod tests {
         let snapshot = get_snapshot(&mut reconnected).await;
 
         assert!(
-            matches!(snapshot, LobbyInfo::NotStarted(players) if players.contains_key(&claims.id()))
+            matches!(snapshot, MatchSnapshot::Waiting(players) if players.contains_key(&claims.id()))
         );
 
         drop(reconnected);
@@ -381,7 +381,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_lazy_loads_match_actor_from_events() {
+    async fn test_concurrent_lazy_loads_match_actor_from_events() {
         let server = TestServer::start().await;
 
         let client = http_client();
@@ -395,17 +395,25 @@ mod tests {
         let mongo_database = server.stop_without_dropping_database().await;
         let server = TestServer::start_with_database(mongo_database).await;
 
-        assert!(server.manager.match_senders.is_empty());
+        assert!(server.manager.registry.matches.is_empty());
         assert_eq!(server.manager.active_player_route_count(), 0);
 
-        let mut connection = connect_ws(&server, &tokens[0]).await;
-        let snapshot = get_snapshot(&mut connection).await;
+        let (mut first_connection, mut second_connection) = tokio::join!(
+            connect_ws(&server, &tokens[0]),
+            connect_ws(&server, &tokens[1])
+        );
+        let (first_snapshot, second_snapshot) = tokio::join!(
+            get_snapshot(&mut first_connection),
+            get_snapshot(&mut second_connection)
+        );
 
-        assert!(matches!(snapshot, LobbyInfo::NotStarted(players) if players.len() == 2));
-        assert_eq!(server.manager.match_senders.len(), 1);
+        assert!(matches!(first_snapshot, MatchSnapshot::Waiting(players) if players.len() == 2));
+        assert!(matches!(second_snapshot, MatchSnapshot::Waiting(players) if players.len() == 2));
+        assert_eq!(server.manager.registry.matches.len(), 1);
         assert_eq!(server.manager.active_player_route_count(), 2);
 
-        drop(connection);
+        drop(first_connection);
+        drop(second_connection);
         server.shutdown().await;
     }
 
@@ -535,7 +543,7 @@ mod tests {
             let snapshot = get_snapshot(&mut connection).await;
 
             assert!(
-                matches!(snapshot, LobbyInfo::NotStarted(players) if players.len() == player_count)
+                matches!(snapshot, MatchSnapshot::Waiting(players) if players.len() == player_count)
             );
 
             let data = TestPlayerData {
@@ -633,7 +641,7 @@ mod tests {
         }
     }
 
-    async fn get_snapshot(stream: &mut WebSocket) -> LobbyInfo {
+    async fn get_snapshot(stream: &mut WebSocket) -> MatchSnapshot {
         match assert_game_msg(stream, |m| matches!(m, ServerMessage::Snapshot(_))).await {
             ServerMessage::Snapshot(info) => info,
             _ => panic!("Should be a Snapshot message"),

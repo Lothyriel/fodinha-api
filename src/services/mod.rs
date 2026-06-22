@@ -3,9 +3,8 @@ use crate::{
     models::{BiddingError, Card, DealError, GameError, id::PlayerId},
 };
 
-pub mod dispatcher;
-pub mod lobby;
 pub mod manager;
+pub mod matches;
 pub mod repositories;
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, Clone)]

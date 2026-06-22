@@ -11,7 +11,7 @@ use strum_macros::{Display, EnumIter};
 
 use id::PlayerId;
 
-pub use game::{Game, LobbyState};
+pub use game::{Game, GameOutcome, LobbyState};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Turn {

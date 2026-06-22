@@ -27,6 +27,13 @@ pub enum LobbyInfo {
     Playing(GameInfoDto),
 }
 
+#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, Clone)]
+#[serde(tag = "type", content = "data")]
+pub enum MatchSnapshot {
+    Waiting(HashMap<PlayerId, PlayerStatus>),
+    Playing(GameInfoDto),
+}
+
 type PlayerPoints = HashMap<PlayerId, usize>;
 
 #[derive(serde::Deserialize, serde::Serialize, Clone, Copy, Debug)]
@@ -77,7 +84,7 @@ pub enum ServerMessage {
         lifes: PlayerPoints,
     },
     PlayerJoined(UserClaims),
-    Snapshot(LobbyInfo),
+    Snapshot(MatchSnapshot),
     Error {
         msg: String,
     },

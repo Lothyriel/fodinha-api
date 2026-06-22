@@ -111,8 +111,8 @@ pub struct DeckShuffle {
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "type", content = "data")]
-pub enum DomainEvent {
-    LobbyCreated {
+pub enum MatchEvent {
+    MatchCreated {
         settings: GameSettings,
     },
     PlayerJoined {
@@ -143,7 +143,7 @@ pub enum LobbyState {
 }
 
 #[derive(Debug, Clone)]
-pub enum GameEvent {
+pub enum GameOutcome {
     SetEnded {
         lifes: HashMap<PlayerId, usize>,
         upcard: Card,
@@ -165,7 +165,7 @@ pub enum GameEvent {
 
 #[derive(Debug, Clone)]
 pub struct DealState {
-    pub event: GameEvent,
+    pub outcome: GameOutcome,
     pub pile: Vec<Turn>,
 }
 
@@ -187,7 +187,7 @@ enum GameStage {
 }
 
 #[derive(Debug, Clone)]
-pub enum AppliedGameEvent {
+pub enum AppliedGameChange {
     BidPlaced {
         player_id: PlayerId,
         bid: usize,
@@ -210,33 +210,31 @@ impl Game {
         settings: GameSettings,
         seed: i64,
     ) -> Result<Self, GameError> {
-        let event = Self::start_event_with_seed(players, settings, seed)?;
+        let event = Self::start_match_event_with_seed(players, settings, seed)?;
 
         match event {
-            DomainEvent::GameStarted { settings, set } => {
-                Self::from_started(players, settings, set)
-            }
-            _ => unreachable!("start_event only emits GameStarted"),
+            MatchEvent::GameStarted { settings, set } => Self::from_started(players, settings, set),
+            _ => unreachable!("start_match_event only emits GameStarted"),
         }
     }
 
-    pub fn start_event(
+    pub fn start_match_event(
         players: &[PlayerId],
         settings: GameSettings,
-    ) -> Result<DomainEvent, GameError> {
-        Self::start_event_with_seed(players, settings, rand::random())
+    ) -> Result<MatchEvent, GameError> {
+        Self::start_match_event_with_seed(players, settings, rand::random())
     }
 
-    pub fn start_event_with_seed(
+    pub fn start_match_event_with_seed(
         players: &[PlayerId],
         settings: GameSettings,
         seed: i64,
-    ) -> Result<DomainEvent, GameError> {
+    ) -> Result<MatchEvent, GameError> {
         Self::validate_game(players, &settings)?;
 
         let set = Self::new_set(players, settings.mode, settings.cards_count, seed, 0);
 
-        Ok(DomainEvent::GameStarted { settings, set })
+        Ok(MatchEvent::GameStarted { settings, set })
     }
 
     pub fn from_started(
@@ -271,7 +269,7 @@ impl Game {
         &self,
         player_id: &PlayerId,
         bid: usize,
-    ) -> Result<DomainEvent, BiddingError> {
+    ) -> Result<MatchEvent, BiddingError> {
         if self.get_stage() == GameStage::Dealing {
             return Err(BiddingError::DealingStageActive);
         }
@@ -295,13 +293,13 @@ impl Game {
             return Err(BiddingError::AlreadyBidded);
         }
 
-        Ok(DomainEvent::BidPlaced {
+        Ok(MatchEvent::BidPlaced {
             player_id: player_id.clone(),
             bid,
         })
     }
 
-    pub fn validate_turn(&self, turn: Turn) -> Result<DomainEvent, DealError> {
+    pub fn validate_turn(&self, turn: Turn) -> Result<MatchEvent, DealError> {
         if self.get_stage() == GameStage::Bidding {
             return Err(DealError::BiddingStageActive);
         }
@@ -325,22 +323,22 @@ impl Game {
 
         let next_set = self.next_set_after_turn(&turn);
 
-        Ok(DomainEvent::TurnPlayed { turn, next_set })
+        Ok(MatchEvent::TurnPlayed { turn, next_set })
     }
 
-    pub fn apply_domain_event(&mut self, event: DomainEvent) -> AppliedGameEvent {
+    pub fn apply_match_event(&mut self, event: MatchEvent) -> AppliedGameChange {
         match event {
-            DomainEvent::BidPlaced { player_id, bid } => {
+            MatchEvent::BidPlaced { player_id, bid } => {
                 let state = self.apply_bid(&player_id, bid);
 
-                AppliedGameEvent::BidPlaced {
+                AppliedGameChange::BidPlaced {
                     player_id,
                     bid,
                     state,
                 }
             }
-            DomainEvent::TurnPlayed { turn, next_set } => {
-                AppliedGameEvent::TurnPlayed(self.apply_turn(turn, next_set))
+            MatchEvent::TurnPlayed { turn, next_set } => {
+                AppliedGameChange::TurnPlayed(self.apply_turn(turn, next_set))
             }
             _ => unreachable!("only game play events can be applied to Game"),
         }
@@ -349,8 +347,8 @@ impl Game {
     pub fn bid(&mut self, player_id: &PlayerId, bid: usize) -> Result<BiddingState, BiddingError> {
         let event = self.validate_bid(player_id, bid)?;
 
-        match self.apply_domain_event(event) {
-            AppliedGameEvent::BidPlaced { state, .. } => Ok(state),
+        match self.apply_match_event(event) {
+            AppliedGameChange::BidPlaced { state, .. } => Ok(state),
             _ => unreachable!("bid emits bid event"),
         }
     }
@@ -358,8 +356,8 @@ impl Game {
     pub fn deal(&mut self, turn: Turn) -> Result<DealState, DealError> {
         let event = self.validate_turn(turn)?;
 
-        match self.apply_domain_event(event) {
-            AppliedGameEvent::TurnPlayed(state) => Ok(state),
+        match self.apply_match_event(event) {
+            AppliedGameChange::TurnPlayed(state) => Ok(state),
             _ => unreachable!("deal emits turn event"),
         }
     }
@@ -475,12 +473,12 @@ impl Game {
             let lifes = self.get_lifes();
             let players_alive = self.alive_players().count();
 
-            let event = match (players_alive, next_set) {
-                (0 | 1, _) => GameEvent::Ended { lifes },
+            let outcome = match (players_alive, next_set) {
+                (0 | 1, _) => GameOutcome::Ended { lifes },
                 (_, Some(set)) => {
                     self.apply_new_set(&set);
 
-                    GameEvent::SetEnded {
+                    GameOutcome::SetEnded {
                         lifes,
                         upcard: set.upcard,
                         decks: set.decks,
@@ -488,7 +486,7 @@ impl Game {
                         possible: self.get_possible_bids(),
                     }
                 }
-                _ => GameEvent::SetEnded {
+                _ => GameOutcome::SetEnded {
                     lifes,
                     upcard: self.upcard,
                     decks: IndexMap::new(),
@@ -497,7 +495,7 @@ impl Game {
                 },
             };
 
-            return DealState { event, pile };
+            return DealState { outcome, pile };
         }
 
         if self.pile.len() == self.alive_players().count() {
@@ -510,17 +508,17 @@ impl Game {
 
             self.round_iter.shift_to(idx);
 
-            let event = GameEvent::RoundEnded {
+            let outcome = GameOutcome::RoundEnded {
                 next: player_id.clone(),
                 rounds: self.get_points(),
             };
 
-            return DealState { event, pile };
+            return DealState { outcome, pile };
         }
 
         DealState {
             pile: self.get_pile(),
-            event: GameEvent::TurnPlayed {
+            outcome: GameOutcome::TurnPlayed {
                 next: self
                     .peek_current_dealer()
                     .expect("Should contain a dealing player"),
@@ -532,8 +530,8 @@ impl Game {
         let mut next = self.clone();
         let state = next.apply_turn(turn.clone(), None);
 
-        match state.event {
-            GameEvent::SetEnded { .. } => {
+        match state.outcome {
+            GameOutcome::SetEnded { .. } => {
                 let (mode, count) = next
                     .dealing_mode
                     .get_next(next.cards_count, next.alive_players().count());
@@ -756,8 +754,8 @@ mod tests {
         let state = game.deal(second_turn).unwrap();
 
         assert!(matches!(
-            state.event,
-            GameEvent::SetEnded {
+            state.outcome,
+            GameOutcome::SetEnded {
                 lifes: _,
                 upcard: _,
                 decks: _,

@@ -1,0 +1,25 @@
+use crate::{
+    models::{game::MatchEvent, id::MatchId},
+    services::repositories::matches::MatchesRepository,
+};
+
+pub(crate) async fn project_match_metadata(
+    repo: &MatchesRepository,
+    match_id: &MatchId,
+    event: &MatchEvent,
+    match_finished: bool,
+) -> mongodb::error::Result<()> {
+    match event {
+        MatchEvent::MatchCreated { .. } => repo.create_metadata(match_id).await,
+        MatchEvent::PlayerJoined { user_claims } => {
+            let player_id = user_claims.id();
+
+            repo.add_metadata_player(match_id, &player_id).await
+        }
+        MatchEvent::GameStarted { .. } => repo.mark_metadata_playing(match_id).await,
+        MatchEvent::TurnPlayed { .. } if match_finished => {
+            repo.mark_metadata_finished(match_id).await
+        }
+        _ => Ok(()),
+    }
+}

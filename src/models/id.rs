@@ -37,6 +37,8 @@ impl PlayerId {
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
 pub struct LobbyId(pub Arc<str>);
 
+pub type MatchId = LobbyId;
+
 impl serde::Serialize for LobbyId {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -77,6 +79,10 @@ pub fn gen_playerid() -> PlayerId {
 
 pub fn gen_lobbyid() -> LobbyId {
     LobbyId(nanoid::nanoid!(12, ALPHABET).into())
+}
+
+pub fn gen_matchid() -> MatchId {
+    gen_lobbyid()
 }
 
 pub fn gen_uid() -> Uid {

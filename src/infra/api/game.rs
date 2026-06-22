@@ -6,17 +6,16 @@ use axum::{
     response::IntoResponse,
 };
 use futures::StreamExt;
-use tokio::sync::oneshot;
 
 use crate::{
     infra::UserClaims,
     models::{
-        commands::{ClientCommand, GameCommand, ServerMessage},
-        id::{LobbyId, PlayerId},
+        commands::{ClientCommand, ServerMessage},
+        id::{MatchId, PlayerId},
     },
     services::{
         ManagerError,
-        dispatcher::{ManagerHandle, MatchActorMessage, MatchSender, PlayerReceiver, PlayerSender},
+        matches::{ManagerHandle, PlayerReceiver, PlayerSender},
     },
 };
 
@@ -56,7 +55,7 @@ async fn handle_connection(
         player_id,
         match_id: context.match_id,
         socket: ws,
-        match_tx: context.match_tx,
+        manager,
         outbound_tx: context.outbound_tx,
         outbound_rx: context.outbound_rx,
     };
@@ -66,9 +65,9 @@ async fn handle_connection(
 
 struct PlayerConnection {
     player_id: PlayerId,
-    match_id: LobbyId,
+    match_id: MatchId,
     socket: WebSocket,
-    match_tx: MatchSender,
+    manager: ManagerHandle,
     outbound_tx: PlayerSender,
     outbound_rx: PlayerReceiver,
 }
@@ -83,12 +82,12 @@ impl PlayerConnection {
 
         let result = self.run_loop().await;
 
-        let _ = self
-            .match_tx
-            .send_async(MatchActorMessage::DisconnectPlayer {
-                player_id: self.player_id.clone(),
-                outbound_tx: self.outbound_tx.clone(),
-            })
+        self.manager
+            .disconnect_player(
+                &self.match_id,
+                self.player_id.clone(),
+                self.outbound_tx.clone(),
+            )
             .await;
 
         result
@@ -126,7 +125,7 @@ impl PlayerConnection {
                 let msg = serde_json::from_str(&msg)?;
                 tracing::debug!("Received from {:?}: {msg:?}", self.player_id);
 
-                handle_game_msg(self.player_id.clone(), self.match_tx.clone(), msg).await
+                handle_client_command(self.manager.clone(), self.player_id.clone(), msg).await
             }
             Message::Close(c) => {
                 let reason = c
@@ -163,49 +162,16 @@ impl PlayerConnection {
     }
 }
 
-async fn handle_game_msg(
+async fn handle_client_command(
+    manager: ManagerHandle,
     player_id: PlayerId,
-    match_tx: MatchSender,
     msg: ClientCommand,
 ) -> Result<(), ManagerError> {
     match msg {
-        ClientCommand::PlayTurn { card } => {
-            request(&match_tx, |respond| MatchActorMessage::GameCommand {
-                player_id,
-                command: GameCommand::PlayTurn { card },
-                respond,
-            })
-            .await
-        }
-        ClientCommand::PutBid { bid } => {
-            request(&match_tx, |respond| MatchActorMessage::GameCommand {
-                player_id,
-                command: GameCommand::PutBid { bid },
-                respond,
-            })
-            .await
-        }
+        ClientCommand::PlayTurn { card } => manager.play_turn(card, player_id).await,
+        ClientCommand::PutBid { bid } => manager.bid(bid, player_id).await,
         ClientCommand::PlayerStatusChange { ready } => {
-            request(&match_tx, |respond| MatchActorMessage::StatusChange {
-                player_id,
-                ready,
-                respond,
-            })
-            .await
+            manager.player_status_change(player_id, ready).await
         }
     }
-}
-
-async fn request(
-    match_tx: &MatchSender,
-    build: impl FnOnce(oneshot::Sender<Result<(), ManagerError>>) -> MatchActorMessage,
-) -> Result<(), ManagerError> {
-    let (tx, rx) = oneshot::channel();
-
-    match_tx
-        .send_async(build(tx))
-        .await
-        .map_err(|_| ManagerError::ReceiverDisposed)?;
-
-    rx.await.map_err(|_| ManagerError::ReceiverDisposed)?
 }

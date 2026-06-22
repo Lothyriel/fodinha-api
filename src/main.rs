@@ -14,8 +14,5 @@ async fn main() {
 
     let handle = GameManager::start(&settings).await;
 
-    tokio::select! {
-        _ = infra::api::start(handle.clone(), &settings) => {}
-        _ = infra::ssh::start(handle.clone(), &settings) => {}
-    }
+    infra::api::start(handle, &settings).await;
 }

@@ -1,8 +1,8 @@
 use crate::{
     AppSettings,
     services::{
-        dispatcher::ManagerHandle,
-        repositories::{game::GamesRepository, get_mongo_client},
+        matches::ManagerHandle,
+        repositories::{get_mongo_client, matches::MatchesRepository},
     },
 };
 
@@ -20,6 +20,6 @@ impl GameManager {
             .expect("Expected to create mongo client")
             .database(database);
 
-        ManagerHandle::new(GamesRepository::new(&db))
+        ManagerHandle::new(MatchesRepository::new(&db))
     }
 }
