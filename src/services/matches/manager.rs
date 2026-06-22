@@ -17,6 +17,8 @@ use crate::{
             PlayerReceiver, PlayerSender, SenderLookup,
         },
         repositories::matches::MatchesRepository,
+        repositories::stats::StatsRepository,
+        stats::{PlayerStatsResponse, StatsProjectorHandle},
     },
 };
 
@@ -24,6 +26,8 @@ use crate::{
 pub struct ManagerHandle {
     pub(crate) registry: MatchRegistry,
     repo: MatchesRepository,
+    stats_repo: StatsRepository,
+    stats_projector: StatsProjectorHandle,
 }
 
 pub struct PlayerConnectionContext {
@@ -33,10 +37,16 @@ pub struct PlayerConnectionContext {
 }
 
 impl ManagerHandle {
-    pub fn new(repo: MatchesRepository) -> Self {
+    pub fn new(
+        repo: MatchesRepository,
+        stats_repo: StatsRepository,
+        stats_projector: StatsProjectorHandle,
+    ) -> Self {
         Self {
             registry: MatchRegistry::new(),
             repo,
+            stats_repo,
+            stats_projector,
         }
     }
 
@@ -122,6 +132,29 @@ impl ManagerHandle {
         }
 
         lobbies
+    }
+
+    pub async fn leaderboard(&self, limit: i64) -> Result<Vec<PlayerStatsResponse>, ManagerError> {
+        let stats = self
+            .stats_repo
+            .leaderboard(limit)
+            .await?
+            .into_iter()
+            .map(Into::into)
+            .collect();
+
+        Ok(stats)
+    }
+
+    pub async fn player_stats(
+        &self,
+        player_id: &PlayerId,
+    ) -> Result<Option<PlayerStatsResponse>, ManagerError> {
+        Ok(self
+            .stats_repo
+            .player_stats(player_id)
+            .await?
+            .map(Into::into))
     }
 
     pub async fn play_turn(&self, card: Card, player_id: PlayerId) -> Result<(), ManagerError> {
@@ -274,6 +307,8 @@ impl ManagerHandle {
                 tracing::error!("Error marking stale finished match metadata: {e}");
             }
 
+            self.stats_projector.notify_match_finished(match_id);
+
             return Err(LobbyError::InvalidLobby.into());
         }
 
@@ -289,6 +324,7 @@ impl ManagerHandle {
         MatchActor::new(
             match_id,
             self.repo.clone(),
+            self.stats_projector.clone(),
             self.registry.matches.clone(),
             self.registry.player_routes.clone(),
         )

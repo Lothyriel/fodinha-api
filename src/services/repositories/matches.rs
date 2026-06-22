@@ -114,6 +114,17 @@ impl MatchesRepository {
         Ok(metadata.into_iter().map(|m| m.match_id()).collect())
     }
 
+    pub async fn finished_match_ids(&self) -> mongodb::error::Result<Vec<MatchId>> {
+        let cursor = self
+            .metadata
+            .find(doc! { "status": MatchMetadataStatus::Finished.as_str() })
+            .await?;
+
+        let metadata: Vec<MatchMetadataDto> = cursor.try_collect().await?;
+
+        Ok(metadata.into_iter().map(|m| m.match_id()).collect())
+    }
+
     async fn set_metadata_status(
         &self,
         match_id: &MatchId,

@@ -6,6 +6,7 @@ use crate::{
 pub mod manager;
 pub mod matches;
 pub mod repositories;
+pub mod stats;
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, Clone)]
 pub struct GameInfoDto {

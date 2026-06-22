@@ -2,6 +2,7 @@ mod auth;
 mod game;
 mod lobby;
 mod models;
+mod stats;
 
 use std::net::Ipv6Addr;
 
@@ -60,6 +61,7 @@ fn build_app(manager: ManagerHandle, settings: &AppSettings) -> Router {
     Router::new()
         .route("/game", routing::get(game::handler))
         .nest("/lobby", lobby::router().layer(auth))
+        .nest("/stats", stats::router(state.clone()))
         .nest("/auth", auth::router(state.clone()))
         .fallback(fallback_handler)
         .with_state(state)
@@ -137,7 +139,10 @@ mod tests {
             },
             id::{LobbyId, PlayerId},
         },
-        services::{manager::GameManager, matches::ManagerHandle, repositories::get_mongo_client},
+        services::{
+            manager::GameManager, matches::ManagerHandle, repositories::get_mongo_client,
+            stats::PlayerStatsResponse,
+        },
     };
 
     use super::{auth::get_claims_from_token, models::*, serve_listener};
@@ -430,7 +435,7 @@ mod tests {
             assert!(matches!(lobby, LobbyInfo::NotStarted(players) if players.len() == i + 1));
         }
 
-        let mut player_data = connect_players(&server, tokens).await;
+        let mut player_data = connect_players(&server, tokens.clone()).await;
 
         ready(&mut player_data).await;
         get_decks(&mut player_data).await;
@@ -444,6 +449,26 @@ mod tests {
         }
 
         server.wait_until_match_actor_stopped().await;
+
+        let my_stats = wait_for_my_stats(&client, &server, &tokens[0]).await;
+        assert_eq!(my_stats.games_played, 1);
+        assert_eq!(my_stats.bid_count, 1);
+
+        let leaderboard = wait_for_leaderboard(&client, &server, 2).await;
+        assert_eq!(
+            leaderboard
+                .iter()
+                .map(|stats| stats.games_played)
+                .sum::<i64>(),
+            2
+        );
+        assert_eq!(
+            leaderboard
+                .iter()
+                .map(|stats| stats.matches_won)
+                .sum::<i64>(),
+            1
+        );
 
         drop(player_data);
         server.shutdown().await;
@@ -770,6 +795,71 @@ mod tests {
             .unwrap();
 
         res.json().await.unwrap()
+    }
+
+    async fn wait_for_my_stats(
+        client: &Client,
+        server: &TestServer,
+        token: &str,
+    ) -> PlayerStatsResponse {
+        timeout(WS_TIMEOUT, async {
+            loop {
+                if let Some(stats) = get_my_stats(client, server, token).await {
+                    return stats;
+                }
+
+                sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .expect("Timed out waiting for my stats")
+    }
+
+    async fn get_my_stats(
+        client: &Client,
+        server: &TestServer,
+        token: &str,
+    ) -> Option<PlayerStatsResponse> {
+        client
+            .get(server.url("/stats/me"))
+            .bearer_auth(token)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap()
+    }
+
+    async fn wait_for_leaderboard(
+        client: &Client,
+        server: &TestServer,
+        expected: usize,
+    ) -> Vec<PlayerStatsResponse> {
+        timeout(WS_TIMEOUT, async {
+            loop {
+                let stats = get_leaderboard(client, server).await;
+
+                if stats.len() >= expected {
+                    return stats;
+                }
+
+                sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .expect("Timed out waiting for leaderboard stats")
+    }
+
+    async fn get_leaderboard(client: &Client, server: &TestServer) -> Vec<PlayerStatsResponse> {
+        client
+            .get(server.url("/stats"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap()
     }
 
     async fn create_lobby(client: &Client, server: &TestServer, token: &str) -> LobbyId {

@@ -18,6 +18,7 @@ use crate::{
             project_match_metadata,
         },
         repositories::matches::MatchesRepository,
+        stats::StatsProjectorHandle,
     },
 };
 
@@ -27,6 +28,7 @@ pub(crate) struct MatchActor {
     connections: HashMap<PlayerId, PlayerSender>,
     pub(crate) version: usize,
     repo: MatchesRepository,
+    stats_projector: StatsProjectorHandle,
     match_entries: MatchEntries,
     player_routes: PlayerRoutes,
 }
@@ -52,6 +54,7 @@ impl MatchActor {
     pub(crate) fn new(
         match_id: MatchId,
         repo: MatchesRepository,
+        stats_projector: StatsProjectorHandle,
         match_entries: MatchEntries,
         player_routes: PlayerRoutes,
     ) -> Self {
@@ -61,6 +64,7 @@ impl MatchActor {
             connections: HashMap::new(),
             version: 0,
             repo,
+            stats_projector,
             match_entries,
             player_routes,
         }
@@ -71,6 +75,7 @@ impl MatchActor {
             let should_continue = self.handle(command).await;
 
             if self.is_finished() {
+                self.stats_projector.notify_match_finished(&self.match_id);
                 self.stop_match();
                 break;
             }
