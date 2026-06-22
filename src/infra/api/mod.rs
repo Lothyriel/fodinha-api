@@ -60,13 +60,13 @@ impl IntoResponse for LobbyError {
             LobbyError::GameAlreadyStarted => StatusCode::CONFLICT,
             LobbyError::GameNotStarted => StatusCode::PRECONDITION_FAILED,
             LobbyError::WrongLobby => StatusCode::FORBIDDEN,
-            LobbyError::PlayerNotInLobby => todo!(),
+            LobbyError::PlayerNotInLobby => StatusCode::FORBIDDEN,
             LobbyError::GameError(e) => match e {
                 GameError::NotEnoughPlayers => StatusCode::CONFLICT,
                 GameError::TooManyPlayers => StatusCode::CONFLICT,
                 GameError::InvalidDeal(_) => StatusCode::UNPROCESSABLE_ENTITY,
                 GameError::InvalidBid(_) => StatusCode::UNPROCESSABLE_ENTITY,
-                GameError::InvalidStage => todo!(),
+                GameError::InvalidStage => StatusCode::UNPROCESSABLE_ENTITY,
             },
         };
 
@@ -109,7 +109,7 @@ mod tests {
         AppSettings,
         models::{
             Card,
-            commands::{Command, GameCommand, LobbyCommand, LobbyInfo, ServerMessage},
+            commands::{ClientCommand, CreateLobbyResponse, LobbyInfo, ServerMessage},
             id::{LobbyId, PlayerId},
         },
         services::manager::GameManager,
@@ -223,7 +223,7 @@ mod tests {
 
         let next = players.get_mut(&next).unwrap();
 
-        let msg = GameCommand::PlayTurn {
+        let msg = ClientCommand::PlayTurn {
             card: next.deck.pop().unwrap(),
         };
 
@@ -251,7 +251,7 @@ mod tests {
 
         let next = players.get_mut(&next).unwrap();
 
-        send_msg(&mut next.connection, GameCommand::PutBid { bid }).await;
+        send_msg(&mut next.connection, ClientCommand::PutBid { bid }).await;
 
         for p in players.values_mut() {
             assert_game_msg(&mut p.connection, validate_player_bidded).await;
@@ -293,7 +293,7 @@ mod tests {
     }
 
     async fn ready(players: &mut TestPlayersData) {
-        let msg = LobbyCommand::StatusChange { ready: true };
+        let msg = ClientCommand::PlayerStatusChange { ready: true };
 
         for p in players.values_mut() {
             send_msg(&mut p.connection, msg).await;
@@ -391,7 +391,7 @@ mod tests {
         }
     }
 
-    async fn send_msg(stream: &mut WebSocket, msg: Command) {
+    async fn send_msg<T: serde::Serialize>(stream: &mut WebSocket, msg: T) {
         let msg = serde_json::to_string(&msg).unwrap();
 
         stream.send(Message::Text(msg.into())).await.unwrap();

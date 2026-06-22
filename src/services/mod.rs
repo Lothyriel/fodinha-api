@@ -1,22 +1,12 @@
 use crate::{
     infra::AuthError,
-    models::{
-        BiddingError, Card, DealError, GameError,
-        commands::{Command, ServerMessage},
-        id::PlayerId,
-    },
+    models::{BiddingError, Card, DealError, GameError, id::PlayerId},
 };
 
 pub mod dispatcher;
 pub mod lobby;
 pub mod manager;
 pub mod repositories;
-
-type InboundSender = flume::Sender<Command>;
-type InboundReceiver = flume::Receiver<Command>;
-
-type OutboundSender = flume::Sender<ServerMessage>;
-type OutboundReceiver = flume::Receiver<ServerMessage>;
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, Clone)]
 pub struct GameInfoDto {

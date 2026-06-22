@@ -1,16 +1,13 @@
 use std::collections::HashMap;
 
-use tokio::sync::oneshot;
-
 use crate::{
     infra::UserClaims,
     models::{
         Card, Turn,
-        game::GameSettings,
         id::{LobbyId, PlayerId},
         lobby::PlayerStatus,
     },
-    services::{GameInfoDto, ManagerError},
+    services::GameInfoDto,
 };
 
 #[derive(serde::Serialize)]
@@ -19,17 +16,10 @@ pub struct GetLobbyDto {
     pub player_count: usize,
 }
 
-pub enum Command {
-    Lobby(LobbyCommand),
-    Game(GameCommand, PlayerId),
-}
-
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct CreateLobbyResponse {
     pub lobby_id: LobbyId,
 }
-
-pub type JoinLobbyResponse = Result<LobbyInfo, ManagerError>;
 
 #[derive(serde::Serialize, serde::Deserialize)]
 pub enum LobbyInfo {
@@ -37,26 +27,16 @@ pub enum LobbyInfo {
     Playing(GameInfoDto),
 }
 
-pub enum LobbyCommand {
-    CreateLobby(LobbyId, GameSettings),
-    StatusChange {
-        ready: bool,
-    },
-    JoinLobby {
-        lobby_id: LobbyId,
-        user_claims: UserClaims,
-        respond: oneshot::Sender<JoinLobbyResponse>,
-    },
-    GetLobbies(oneshot::Sender<Vec<GetLobbyDto>>),
-}
-
-impl From<LobbyCommand> for Command {
-    fn from(value: LobbyCommand) -> Self {
-        Command::Lobby(value)
-    }
-}
-
 type PlayerPoints = HashMap<PlayerId, usize>;
+
+#[derive(serde::Deserialize, serde::Serialize, Clone, Copy, Debug)]
+#[serde(tag = "type", content = "data")]
+pub enum ClientCommand {
+    PlayTurn { card: Card },
+    PutBid { bid: usize },
+    PlayerStatusChange { ready: bool },
+    Reconnect,
+}
 
 #[derive(serde::Deserialize, serde::Serialize, Clone, Copy, Debug)]
 #[serde(tag = "type", content = "data")]
@@ -71,7 +51,9 @@ pub enum ServerMessage {
     PlayerTurn {
         player_id: PlayerId,
     },
-    TurnPlayed(Turn),
+    TurnPlayed {
+        pile: Vec<Turn>,
+    },
     PlayerBidded {
         player_id: PlayerId,
         bid: usize,
@@ -96,4 +78,8 @@ pub enum ServerMessage {
         lifes: PlayerPoints,
     },
     PlayerJoined(UserClaims),
+    Reconnect(GameInfoDto),
+    Error {
+        msg: String,
+    },
 }

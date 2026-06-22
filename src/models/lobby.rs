@@ -2,7 +2,7 @@ use indexmap::{IndexMap, map::Entry};
 
 use crate::{
     infra::UserClaims,
-    models::{GameError, LobbyState, game::GameSettings, id::PlayerId, message::LobbyInfo},
+    models::{GameError, LobbyState, commands::LobbyInfo, game::GameSettings, id::PlayerId},
     services::LobbyError,
 };
 
@@ -34,11 +34,11 @@ impl Lobby {
         }
     }
 
-    fn get_players_id(&self) -> Vec<PlayerId> {
+    pub fn get_players_id(&self) -> Vec<PlayerId> {
         self.players.keys().cloned().collect()
     }
 
-    fn get_players(&self) -> Vec<PlayerStatus> {
+    pub fn get_players(&self) -> Vec<PlayerStatus> {
         self.players.values().cloned().collect()
     }
 

@@ -130,6 +130,8 @@ pub enum GameError {
 
 #[derive(Debug, thiserror::Error)]
 pub enum DealError {
+    #[error("Bidding stage active")]
+    BiddingStageActive,
     #[error("Expected {expected:?}")]
     NotYourTurn { expected: Option<PlayerId> },
     #[error("Invalid card")]
@@ -142,6 +144,7 @@ pub enum DealError {
 pub enum BiddingError {
     InvalidPlayer,
     AlreadyBidded,
+    DealingStageActive,
     NotYourTurn,
     BidOutOfRange,
 }

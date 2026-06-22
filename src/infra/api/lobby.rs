@@ -37,10 +37,10 @@ async fn join_lobby(
 async fn create_lobby(
     State(manager): State<ManagerHandle>,
     Extension(user_claims): Extension<UserClaims>,
-) -> Json<CreateLobbyResponse> {
+) -> Result<Json<CreateLobbyResponse>, ManagerError> {
     let response = manager
         .create_lobby(user_claims.id(), Default::default())
-        .await;
+        .await?;
 
-    Json(response)
+    Ok(Json(response))
 }

@@ -1,4 +1,4 @@
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct CyclicIterator {
     items: Vec<usize>,
     current_index: usize,
