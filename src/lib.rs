@@ -1,12 +1,8 @@
-pub mod api;
 pub mod infra;
 pub mod models;
 pub mod services;
-pub mod ssh;
 
 use config::{Config, ConfigError, Environment};
-
-pub use services::manager::Manager;
 
 #[derive(Debug, serde::Deserialize, Default)]
 pub struct AppSettings {

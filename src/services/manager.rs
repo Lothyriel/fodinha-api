@@ -1,119 +1,109 @@
-use std::{
-    borrow::BorrowMut,
-    collections::{HashMap, HashSet},
-    sync::Arc,
-};
+use std::{borrow::BorrowMut, collections::HashMap};
 
-use axum::extract::ws::{CloseFrame, Message, WebSocket};
-use futures::{SinkExt, stream::SplitSink};
 use indexmap::IndexMap;
-use tokio::sync::Mutex;
 
 use crate::{
-    AppSettings,
-    infra::{self, GetLobbyDto, ServerMessage, auth::UserClaims, generate_lobbyid},
     models::{
-        BiddingError, BiddingState, Card, Game, GameError, GameEvent, LobbyState, Turn, TurnError,
-    },
-    services::repositories::get_mongo_client,
+        commands::{Command, GameCommand, LobbyCommand, ServerMessage}, game::BiddingState, id::PlayerId, *
+    }, services::{
+        dispatcher::ManagerHandle, lobby::LobbiesManager, repositories::{game::TurnDto, get_mongo_client},
+        InboundReceiver, LobbyError, ManagerError, OutboundSender
+    }, AppSettings
 };
 
 use super::repositories::game::GamesRepository;
 
-#[derive(Clone)]
-pub struct Manager {
-    inner: Arc<InnerManager>,
-    pub games_repo: GamesRepository,
+pub struct GameManager {
+    lobby_manager: LobbiesManager,
+    connections: HashMap<PlayerId, Connection>,
 }
 
-impl Manager {
-    pub fn new(games: GamesRepository) -> Self {
-        let inner = InnerManager {
-            lobby: Mutex::new(LobbiesManager::new()),
-            connections: Mutex::new(HashMap::new()),
-        };
-
+impl GameManager {
+    pub fn new() -> Self {
         Self {
-            inner: Arc::new(inner),
-            games_repo: games,
+            lobby_manager: LobbiesManager::new(),
+            connections: HashMap::new(),
         }
     }
 
-    pub async fn from(settings: &AppSettings) -> Self {
+    pub async fn start(self, settings: &AppSettings) -> ManagerHandle {
+        let (tx, rx) = flume::unbounded();
+
+        tokio::spawn(self.inbound_handler(rx));
+
         let db = get_mongo_client(&settings.mongo_conn_string)
             .await
             .expect("Expected to create mongo client")
             .database("oh_hell");
 
-        Self::new(GamesRepository::new(&db))
+        let repo = GamesRepository::new(&db);
+
+        ManagerHandle::new(repo, tx)
     }
 
-    pub async fn create_lobby(&self, _user_id: PlayerId) -> LobbyId {
-        let mut manager = self.inner.lobby.lock().await;
-
-        let lobby_id = generate_lobbyid();
-
-        manager.lobbies.insert(lobby_id.clone(), Lobby::new());
-
-        lobby_id
-    }
-
-    pub async fn join_lobby(
-        &self,
-        lobby_id: LobbyId,
-        user_claims: UserClaims,
-    ) -> Result<(Vec<PlayerStatus>, bool), LobbyError> {
-        let (players_status, players, should_reconnect) = {
-            let mut manager = self.inner.lobby.lock().await;
-
-            let (players_status, info, should_reconnect) = {
-                let lobby = manager
-                    .lobbies
-                    .get_mut(&lobby_id)
-                    .ok_or(LobbyError::InvalidLobby)?;
-
-                let player_id = user_claims.id();
-
-                let should_reconnect = match lobby.state {
-                    LobbyState::NotStarted(_) => {
-                        let status = PlayerStatus::new(user_claims.clone());
-
-                        lobby.players.insert(player_id, status);
-
-                        false
-                    }
-                    LobbyState::Playing(_) => {
-                        _ = lobby
-                            .players
-                            .get(&player_id)
-                            .ok_or(LobbyError::WrongLobby)?;
-
-                        true
-                    }
-                };
-
-                (
-                    lobby.get_players(),
-                    lobby.get_players_id(),
-                    should_reconnect,
-                )
+    async fn inbound_handler(mut self, rx: InboundReceiver) {
+        loop {
+            let msg = match rx.recv_async().await {
+                Ok(m) => m,
+                Err(err) => {
+                    tracing::error!("Error GameMessage recv: {err}");
+                    panic!("{err}")
+                }
             };
 
-            manager.players_lobby.insert(user_claims.id(), lobby_id);
+            if let Err(err) = self.handle(msg) {
+                tracing::error!("Error GameMessage handle: {err}");
+            }
+        }
+    }
 
-            (players_status, info, should_reconnect)
-        };
+    fn handle(&mut self, msg: Command) -> Result<(), ManagerError> {
+        match msg {
+            Command::Lobby(msg) => self.handle_lobby(msg),
+            Command::Game(msg, id) => self.handle_game(msg, id),
+        }
+    }
 
-        let msg = ServerMessage::PlayerJoined(user_claims);
-        self.broadcast_msg(&players, &msg).await;
+    fn handle_game(&mut self, msg: GameCommand, id: PlayerId) -> Result<(), ManagerError> {
+        let lobby = self.lobby_manager.get(id)?;
 
-        Ok((players_status, should_reconnect))
+        match msg {
+            GameCommand::PlayTurn { card } => todo!(),
+            GameCommand::PutBid { bid } => todo!(),
+        }
+    }
+
+    fn handle_lobby(&mut self, msg: LobbyCommand) -> Result<(), ManagerError> {
+        match msg {
+            LobbyCommand::CreateLobby(lobby_id, settings) => {
+                self.lobby_manager.create_lobby(lobby_id, settings);
+                Ok(())
+            }
+            LobbyCommand::JoinLobby {
+                lobby_id,
+                user_claims,
+                respond,
+            } => {
+                let response = self.lobby_manager.join_lobby(&lobby_id, user_claims.clone());
+                respond
+                    .send(response)
+                    .map_err(|_| ManagerError::ReceiverDisposed)?;
+
+                self.broadcast(&lobby_id, ServerMessage::PlayerJoined(user_claims))
+            }
+            LobbyCommand::GetLobbies(respond) => {
+                let lobbies = self.lobby_manager.get_lobbies_info();
+
+        respond
+            .send(lobbies)
+            .map_err(|_| ManagerError::ReceiverDisposed)
+            },
+            LobbyCommand::StatusChange { ready } => todo!(),
+        }
     }
 
     pub async fn play_turn(&self, card: Card, player_id: PlayerId) -> Result<(), LobbyError> {
         let (players, state) = {
-            let mut manager = self.inner.lobby.lock().await;
-
             let game_id = manager
                 .players_lobby
                 .get(&player_id)
@@ -138,7 +128,23 @@ impl Manager {
 
             let state = game
                 .deal(turn)
-                .map_err(|e| LobbyError::GameError(GameError::InvalidTurn(e)))?;
+                .map_err(|e| LobbyError::GameError(GameError::InvalidDeal(e)))?;
+
+            let dto = TurnDto::new(&game_id, &player_id, set_id, round_id, card, i);
+            self.games_repo.insert_turn(dto);
+
+            match state.event {
+                GameEvent::SetEnded {
+                    lifes,
+                    upcard,
+                    decks,
+                    next,
+                    possible,
+                } => todo!(),
+                GameEvent::RoundEnded { next, rounds } => todo!(),
+                GameEvent::Ended { lifes } => todo!(),
+                GameEvent::TurnPlayed { next } => todo!(),
+            }
 
             (lobby.get_players_id(), state)
         };
@@ -179,8 +185,6 @@ impl Manager {
         }
 
         if game_ended {
-            let mut manager = self.inner.lobby.lock().await;
-
             let game_id = manager
                 .players_lobby
                 .get(&player_id)
@@ -188,6 +192,8 @@ impl Manager {
                 .cloned()?;
 
             manager.lobbies.remove(&game_id);
+
+            tracing::debug!("removing finished game from list");
 
             for p in &players {
                 manager.players_lobby.remove(p);
@@ -199,8 +205,6 @@ impl Manager {
 
     pub async fn bid(&self, bid: usize, player_id: PlayerId) -> Result<(), LobbyError> {
         let (players, state) = {
-            let mut manager = self.inner.lobby.lock().await;
-
             let lobby_id = {
                 manager
                     .players_lobby
@@ -237,23 +241,9 @@ impl Manager {
             BiddingState::Ended { next } => ServerMessage::PlayerTurn { player_id: next },
         };
 
-        self.broadcast_msg(&players, &msg).await;
+        self.broadcast(&players, msg);
 
         Ok(())
-    }
-
-    pub async fn get_lobbies(&self) -> Vec<GetLobbyDto> {
-        let manager = self.inner.lobby.lock().await;
-
-        manager
-            .lobbies
-            .iter()
-            .filter(|(_, lobby)| matches!(lobby.state, LobbyState::NotStarted(_)))
-            .map(|(id, lobby)| GetLobbyDto {
-                id: id.clone(),
-                player_count: lobby.players.len(),
-            })
-            .collect()
     }
 
     pub async fn store_player_connection(
@@ -261,6 +251,8 @@ impl Manager {
         player_id: PlayerId,
         sender: Connection,
     ) -> Result<(), ManagerError> {
+        let (tx, rx) = flume::unbounded();
+
         let mut manager = self.inner.connections.lock().await;
 
         manager.insert(player_id, sender);
@@ -268,80 +260,21 @@ impl Manager {
         Ok(())
     }
 
-    pub async fn unicast_msg(&self, player_id: &PlayerId, message: &ServerMessage) {
-        let mut manager = self.inner.connections.lock().await;
-
-        if let Some(connection) = manager.get_mut(player_id) {
-            send_msg(message, player_id, connection).await
-        }
-    }
-
-    pub async fn send_disconnect(&self, player_id: &PlayerId, reason: ManagerError) {
-        let mut manager = self.inner.connections.lock().await;
-
-        let connection = match manager.get_mut(player_id) {
-            Some(c) => c,
-            None => {
-                tracing::error!("{player_id:?} disconnected");
-                return;
-            }
-        };
-
-        let code = match reason {
-            ManagerError::PlayerDisconnected(_) => 1001,
-            ManagerError::InvalidWebsocketMessageType => 1003,
-            ManagerError::Lobby(_) => 1008,
-            ManagerError::Turn(_) | ManagerError::Bid(_) => 1008,
-            ManagerError::UnexpectedJsonMessage(_) => 1008,
-            ManagerError::Database(_) => 1011,
-            ManagerError::Unauthorized(_) => 3000,
-        };
-
-        let send_close = connection
-            .send(Message::Close(Some(CloseFrame {
-                code,
-                reason: reason.to_string().into(),
-            })))
-            .await;
-
-        if let Err(e) = send_close {
-            tracing::error!("Failed to send close message: {e}")
-        }
-    }
-
     pub async fn player_status_change(
         &self,
         player_id: PlayerId,
         ready: bool,
     ) -> Result<(), LobbyError> {
-        let (players, set_info) = {
-            let mut manager = self.inner.lobby.lock().await;
+            let lobby = self.lobby_manager.get(player_id)?;
 
-            let lobby_id = {
-                manager
-                    .players_lobby
-                    .get(&player_id)
-                    .ok_or(LobbyError::WrongLobby)
-                    .cloned()?
-            };
-
-            let lobby = manager
-                .lobbies
-                .get_mut(&lobby_id)
-                .ok_or(LobbyError::InvalidLobby)?;
-
-            let players_ready = match lobby.state.borrow_mut() {
-                LobbyState::NotStarted(p) => p,
+            let players = match lobby.state.borrow_mut() {
+                LobbyState::NotStarted(_) => lobby.players,
                 LobbyState::Playing(_) => return Err(LobbyError::GameAlreadyStarted),
             };
 
-            if ready {
-                players_ready.insert(player_id.clone())
-            } else {
-                players_ready.remove(&player_id)
-            };
+            players.get_mut(&player_id).expect("Player should be in the lobby").ready = ready;
 
-            let should_start = players_ready.len() == lobby.players.len();
+            let should_start = players.len() == lobby.players.len();
 
             let lobby_players = lobby.get_players_id();
 
@@ -361,8 +294,6 @@ impl Manager {
                 None
             };
 
-            (lobby_players, set_info)
-        };
 
         let msg = ServerMessage::PlayerStatusChange { player_id, ready };
         self.broadcast_msg(&players, &msg).await;
@@ -381,10 +312,8 @@ impl Manager {
         upcard: Card,
         possible_bids: Vec<usize>,
     ) {
-        let players: Vec<_> = decks.keys().cloned().collect();
-
         let msg = ServerMessage::SetStart { upcard };
-        self.broadcast_msg(&players, &msg).await;
+        self.broadcast(&, &msg).await;
 
         for (p, deck) in decks {
             let msg = ServerMessage::PlayerDeck(deck);
@@ -400,60 +329,28 @@ impl Manager {
         self.broadcast_msg(&players, &msg).await;
     }
 
-    async fn broadcast_msg(&self, players: &[PlayerId], msg: &ServerMessage) {
-        for p in players {
-            let mut connections = self.inner.connections.lock().await;
+    fn broadcast(&self, lobby_id: &LobbyId, msg: ServerMessage) -> Result<(), ManagerError> {
+        let players = self
+            .lobby_manager
+            .get_players(lobby_id)
+            .ok_or(LobbyError::InvalidLobby)?;
 
-            if let Some(c) = connections.get_mut(p) {
-                send_msg(msg, p, c).await;
+        for p in players {
+            match self.connections.get(p) {
+                Some(c) => send_msg(msg.clone(), p, c),
+                None => {
+                    tracing::error!("Connection {p:?} not found in lobby {lobby_id:?}");
+                }
             }
         }
-    }
-
-    pub async fn reconnect(&self, player_id: PlayerId) -> Result<(), LobbyError> {
-        let info = {
-            let mut manager = self.inner.lobby.lock().await;
-
-            let lobby_id = {
-                manager
-                    .players_lobby
-                    .get(&player_id)
-                    .ok_or(LobbyError::WrongLobby)
-                    .cloned()?
-            };
-
-            let lobby = manager
-                .lobbies
-                .get_mut(&lobby_id)
-                .ok_or(LobbyError::InvalidLobby)?;
-
-            lobby.get_game()?.get_game_info(&player_id)
-        };
-
-        let msg = ServerMessage::Reconnect(info);
-
-        self.unicast_msg(&player_id, &msg).await;
 
         Ok(())
     }
-
-    pub async fn send_error(&self, id: &PlayerId, error: ManagerError) {
-        let msg = ServerMessage::Error {
-            msg: error.to_string(),
-        };
-
-        self.unicast_msg(id, &msg).await;
-    }
 }
 
-async fn send_msg(msg: &ServerMessage, player: &PlayerId, connection: &mut Connection) {
-    let msg = serde_json::to_string(msg).expect("Should be valid json");
-
-    tracing::info!("Sending to {player:?}: {msg}");
-
+fn send_msg(msg: ServerMessage, player: &PlayerId, connection: &Connection) {
     let send = connection
-        .send(Message::Text(msg.into()))
-        .await
+        .send(msg)
         .map_err(|e| ManagerError::PlayerDisconnected(e.to_string()));
 
     if let Err(e) = send {
@@ -461,163 +358,4 @@ async fn send_msg(msg: &ServerMessage, player: &PlayerId, connection: &mut Conne
     }
 }
 
-#[derive(thiserror::Error, Debug)]
-pub enum ManagerError {
-    #[error("Player disconnected | {0}")]
-    PlayerDisconnected(String),
-    #[error("Error processing turn: {0:?}")]
-    Turn(#[from] TurnError),
-    #[error("Error processing bid: {0:?}")]
-    Bid(#[from] BiddingError),
-    #[error("Invalid websocket message type")]
-    InvalidWebsocketMessageType,
-    #[error("Unexpected valid json message: {0}")]
-    UnexpectedJsonMessage(#[from] serde_json::error::Error),
-    #[error("Database error: {0}")]
-    Database(#[from] mongodb::error::Error),
-    #[error("Unauthorized | {0}")]
-    Unauthorized(#[from] infra::auth::AuthError),
-    #[error("Lobby error | {0}")]
-    Lobby(#[from] LobbyError),
-}
-
-#[derive(thiserror::Error, Debug)]
-pub enum LobbyError {
-    #[error("Invalid lobby id")]
-    InvalidLobby,
-    #[error("This lobby is already playing")]
-    GameAlreadyStarted,
-    #[error("Game didn't started yet")]
-    GameNotStarted,
-    #[error("This is not your lobby")]
-    WrongLobby,
-    #[error("Game error | {0}")]
-    GameError(#[from] GameError),
-}
-
-struct InnerManager {
-    lobby: Mutex<LobbiesManager>,
-    connections: Mutex<HashMap<PlayerId, Connection>>,
-}
-
-type Connection = SplitSink<WebSocket, Message>;
-
-struct LobbiesManager {
-    lobbies: HashMap<LobbyId, Lobby>,
-    players_lobby: HashMap<PlayerId, LobbyId>,
-}
-
-#[derive(Debug, PartialEq, Eq, Hash, Clone)]
-pub struct PlayerId(pub Arc<str>);
-
-impl<'de> serde::Deserialize<'de> for PlayerId {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let s = <&str>::deserialize(deserializer)?;
-        Ok(PlayerId(Arc::from(s)))
-    }
-}
-
-impl serde::Serialize for PlayerId {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        serializer.serialize_str(&self.0)
-    }
-}
-
-impl AsRef<str> for PlayerId {
-    fn as_ref(&self) -> &str {
-        &self.0
-    }
-}
-
-impl PlayerId {
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-#[derive(Debug, PartialEq, Eq, Hash, Clone)]
-pub struct LobbyId(pub Arc<str>);
-
-impl serde::Serialize for LobbyId {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        serializer.serialize_str(&self.0)
-    }
-}
-
-impl<'de> serde::Deserialize<'de> for LobbyId {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let s = <&str>::deserialize(deserializer)?;
-        Ok(LobbyId(Arc::from(s)))
-    }
-}
-
-impl LobbyId {
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-struct Lobby {
-    players: IndexMap<PlayerId, PlayerStatus>,
-    state: LobbyState,
-}
-
-#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
-pub struct PlayerStatus {
-    pub ready: bool,
-    pub player: UserClaims,
-}
-
-impl PlayerStatus {
-    fn new(claims: UserClaims) -> Self {
-        Self {
-            ready: false,
-            player: claims,
-        }
-    }
-}
-
-impl Lobby {
-    fn new() -> Self {
-        Self {
-            players: IndexMap::new(),
-            state: LobbyState::NotStarted(HashSet::new()),
-        }
-    }
-
-    fn get_players_id(&self) -> Vec<PlayerId> {
-        self.players.keys().cloned().collect()
-    }
-
-    fn get_players(&self) -> Vec<PlayerStatus> {
-        self.players.values().cloned().collect()
-    }
-
-    fn get_game(&mut self) -> Result<&mut Game, LobbyError> {
-        match self.state.borrow_mut() {
-            LobbyState::NotStarted(_) => Err(LobbyError::GameNotStarted),
-            LobbyState::Playing(g) => Ok(g),
-        }
-    }
-}
-
-impl LobbiesManager {
-    fn new() -> Self {
-        Self {
-            lobbies: HashMap::new(),
-            players_lobby: HashMap::new(),
-        }
-    }
-}
+type Connection = OutboundSender;

@@ -1,10 +1,10 @@
 mod app;
 mod backend;
 
-use crate::{AppSettings, Manager, ssh::app::AppServer};
+use crate::{AppSettings, services::dispatcher::ManagerHandle};
 
-pub async fn start(_manager: Manager, settings: &AppSettings) {
-    AppServer::new()
+pub async fn start(_manager: ManagerHandle, settings: &AppSettings) {
+    app::Server::new()
         .run(settings)
         .await
         .expect("Failed running server");

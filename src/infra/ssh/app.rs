@@ -5,7 +5,10 @@ use ratatui::{
     style::{Color, Style},
     widgets::*,
 };
-use russh::{Channel, ChannelId, keys, server::*};
+use russh::{
+    Channel, ChannelId, keys,
+    server::{Server as _, *},
+};
 use std::{
     collections::HashMap,
     io::Error,
@@ -15,10 +18,9 @@ use std::{
 use std::{io, net::SocketAddr, sync::Arc};
 use tokio::{sync::Mutex, time::Duration};
 
-use crate::{
-    AppSettings,
-    ssh::{SshError, backend::SshBackend},
-};
+use crate::AppSettings;
+
+use super::{SshError, backend::SshBackend};
 
 type SshTerminal = Terminal<SshBackend>;
 
@@ -56,13 +58,13 @@ impl std::io::Write for TerminalHandle {
 }
 
 #[derive(Clone)]
-pub struct AppServer {
+pub struct Server {
     clients: Arc<Mutex<HashMap<usize, SshTerminal>>>,
     counter: Arc<AtomicUsize>,
     id: usize,
 }
 
-impl AppServer {
+impl Server {
     pub fn new() -> Self {
         Self {
             clients: Arc::new(Mutex::new(HashMap::new())),
@@ -100,7 +102,7 @@ impl AppServer {
     }
 }
 
-impl Server for AppServer {
+impl russh::server::Server for Server {
     type Handler = Self;
     fn new_client(&mut self, _: Option<SocketAddr>) -> Self {
         let s = self.clone();
@@ -109,7 +111,7 @@ impl Server for AppServer {
     }
 }
 
-impl Handler for AppServer {
+impl Handler for Server {
     type Error = SshError;
 
     async fn channel_open_session(
@@ -196,7 +198,7 @@ impl Handler for AppServer {
     ) -> Result<(), Self::Error> {
         {
             let mut clients = self.clients.lock().await;
-            let terminal = clients.get_mut(&self.id).unwrap();
+            let terminal = clients.get_mut(&self.id).expect("Client should be here");
             tracing::debug!("client {} resizing to {:?}", self.id, (height, width));
             let rect = Rect {
                 x: 0,
@@ -212,7 +214,7 @@ impl Handler for AppServer {
     }
 }
 
-async fn game_loop(app: AppServer) {
+async fn game_loop(app: Server) {
     let mut disconnected = vec![];
 
     loop {
@@ -240,6 +242,10 @@ async fn game_loop(app: AppServer) {
             if draw_result.is_err() {
                 disconnected.push(*id);
             }
+        }
+
+        if disconnected.is_empty() {
+            continue;
         }
 
         let mut clients = app.clients.lock().await;

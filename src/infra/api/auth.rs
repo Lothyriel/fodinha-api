@@ -12,9 +12,15 @@ use jsonwebtoken::{
 use reqwest::header;
 use serde_json::{Value, json};
 
-use crate::services::manager::{Manager, PlayerId};
+use crate::{
+    infra::{AuthError, GoogleUserClaims, UserClaims},
+    models::id::{PlayerId, gen_playerid},
+    services::dispatcher::ManagerHandle,
+};
 
-pub fn router() -> Router<Manager> {
+use super::models::*;
+
+pub fn router() -> Router<ManagerHandle> {
     let auth = axum::middleware::from_fn(middleware);
 
     Router::new()
@@ -52,11 +58,6 @@ struct AnonymousUserClaimsDto {
     exp: usize,
 }
 
-#[derive(serde::Serialize, serde::Deserialize)]
-pub struct TokenResponse {
-    pub token: String,
-}
-
 async fn update(
     Extension(user_claims): Extension<UserClaims>,
     Json(params): Json<Value>,
@@ -78,12 +79,12 @@ async fn update(
 }
 
 async fn sign_up(Json(params): Json<Value>) -> impl IntoResponse {
-    let token = generate_token(params, super::generate_playerid()).await;
+    let token = generate_token(params, gen_playerid()).await;
 
     Json(token)
 }
 
-async fn generate_token(data: Value, id: PlayerId) -> TokenResponse {
+async fn generate_token(data: Value, id: PlayerId) -> Auth {
     let claims = AnonymousUserClaimsDto {
         id,
         data,
@@ -98,7 +99,7 @@ async fn generate_token(data: Value, id: PlayerId) -> TokenResponse {
     )
     .expect("Should encode JWT");
 
-    TokenResponse { token }
+    Auth { token }
 }
 
 fn get_key_bytes() -> &'static [u8] {
@@ -156,51 +157,10 @@ async fn get_google_jwks() -> Result<JwkSet, reqwest::Error> {
     response.json().await
 }
 
-#[derive(thiserror::Error, Debug)]
-pub enum AuthError {
-    #[error("Auth token not found on the request headers")]
-    TokenNotPresent,
-    #[error("Invalid KeyId ('kid') on token")]
-    InvalidKid,
-    #[error("Invalid token: ({0})")]
-    JwtValidation(#[from] jsonwebtoken::errors::Error),
-    #[error("Error during certificate retrieval: ({0})")]
-    IO(#[from] reqwest::Error),
-}
-
 impl IntoResponse for AuthError {
     fn into_response(self) -> axum::response::Response {
         let body = Json(json!({"error": self.to_string() }));
 
         (StatusCode::UNAUTHORIZED, body).into_response()
     }
-}
-
-#[derive(serde::Serialize, serde::Deserialize, Clone, PartialEq, Eq, Debug)]
-#[serde(tag = "type", content = "data")]
-pub enum UserClaims {
-    Anonymous(AnonymousUserClaims),
-    Google(GoogleUserClaims),
-}
-
-impl UserClaims {
-    pub fn id(&self) -> PlayerId {
-        match self {
-            UserClaims::Anonymous(a) => a.id.clone(),
-            UserClaims::Google(g) => g.email.clone(),
-        }
-    }
-}
-
-#[derive(serde::Serialize, serde::Deserialize, Clone, PartialEq, Eq, Debug)]
-pub struct AnonymousUserClaims {
-    id: PlayerId,
-    data: Value,
-}
-
-#[derive(serde::Deserialize, serde::Serialize, Clone, PartialEq, Eq, Debug)]
-pub struct GoogleUserClaims {
-    pub email: PlayerId,
-    pub name: String,
-    pub picture: String,
 }

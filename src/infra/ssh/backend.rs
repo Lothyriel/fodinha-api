@@ -1,7 +1,7 @@
 use ratatui::{backend::WindowSize, buffer::Cell, prelude::*};
 use std::io::Result;
 
-use crate::ssh::app::TerminalHandle;
+use super::app::TerminalHandle;
 
 pub struct SshBackend {
     inner: CrosstermBackend<TerminalHandle>,

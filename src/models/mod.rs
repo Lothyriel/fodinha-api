@@ -1,20 +1,20 @@
-mod game;
-pub mod iter;
+pub mod commands;
+pub mod game;
+pub mod id;
+pub mod lobby;
+pub mod util;
 
-use std::collections::{HashMap, HashSet};
-
-pub use game::Game;
-
-use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use strum::IntoEnumIterator;
 
 use rand::seq::SliceRandom;
 use strum_macros::{Display, EnumIter};
 
-use crate::services::manager::PlayerId;
+use id::PlayerId;
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub use game::{Game, LobbyState};
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Turn {
     pub player_id: PlayerId,
     pub card: Card,
@@ -31,37 +31,7 @@ impl Ord for Turn {
         self.card.cmp(&other.card)
     }
 }
-
-#[derive(Debug)]
-pub struct Player {
-    lifes: usize,
-    deck: Vec<Card>,
-    bid: Option<usize>,
-    rounds: usize,
-}
-
-impl Player {
-    pub fn new(deck: Vec<Card>) -> Self {
-        Self {
-            lifes: 5,
-            deck,
-            bid: None,
-            rounds: 0,
-        }
-    }
-
-    pub fn is_alive(&self) -> bool {
-        self.lifes != 0
-    }
-
-    pub fn decrease_life(&mut self) {
-        self.lifes -= 1;
-    }
-}
-
-#[derive(
-    Debug, serde::Serialize, serde::Deserialize, Clone, Copy, PartialEq, PartialOrd, Eq, Ord,
-)]
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, PartialOrd, Eq, Ord)]
 pub struct Card {
     pub rank: Rank,
     pub suit: Suit,
@@ -90,6 +60,16 @@ impl Card {
         let rank = self.rank as u8 * 10;
         let suit = self.suit as u8;
         rank + suit
+    }
+
+    fn get_trump_value(&self, upcard: Card) -> u8 {
+        let card_value = self.get_value();
+
+        if upcard.rank.get_next() == self.rank {
+            card_value + 100
+        } else {
+            card_value
+        }
     }
 }
 
@@ -134,76 +114,27 @@ pub enum Suit {
     Clubs,
 }
 
-#[derive(Debug)]
-pub enum LobbyState {
-    NotStarted(HashSet<PlayerId>),
-    Playing(Game),
-}
-
-#[derive(Debug)]
-pub enum GameEvent {
-    SetEnded {
-        lifes: HashMap<PlayerId, usize>,
-        upcard: Card,
-        decks: IndexMap<PlayerId, Vec<Card>>,
-        next: PlayerId,
-        possible: Vec<usize>,
-    },
-    RoundEnded {
-        next: PlayerId,
-        rounds: HashMap<PlayerId, usize>,
-    },
-    Ended {
-        lifes: HashMap<PlayerId, usize>,
-    },
-    TurnPlayed {
-        next: PlayerId,
-    },
-}
-
-pub struct DealState {
-    pub event: GameEvent,
-    pub pile: Vec<Turn>,
-}
-
-#[derive(Debug, PartialEq, Eq)]
-pub enum BiddingState {
-    Active {
-        next: PlayerId,
-        possible_bids: Vec<usize>,
-    },
-    Ended {
-        next: PlayerId,
-    },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum DealingMode {
-    Increasing,
-    Decreasing,
-}
-
 #[derive(thiserror::Error, Debug)]
 pub enum GameError {
     #[error("Not enough players")]
     NotEnoughPlayers,
     #[error("Too many players")]
     TooManyPlayers,
-    #[error("Invalid turn | {0}")]
-    InvalidTurn(#[from] TurnError),
+    #[error("Invalid stage")]
+    InvalidStage,
+    #[error("Invalid deal | {0}")]
+    InvalidDeal(#[from] DealError),
     #[error("Invalid bid | {0}")]
     InvalidBid(#[from] BiddingError),
 }
 
 #[derive(Debug, thiserror::Error)]
-pub enum TurnError {
-    #[error("BiddingStageActive")]
-    BiddingStageActive,
+pub enum DealError {
     #[error("Expected {expected:?}")]
     NotYourTurn { expected: Option<PlayerId> },
-    #[error("NotYourCard")]
-    NotYourCard,
-    #[error("InvalidPlayer")]
+    #[error("Invalid card")]
+    InvalidCard,
+    #[error("Invalid player")]
     InvalidPlayer,
 }
 
@@ -211,7 +142,6 @@ pub enum TurnError {
 pub enum BiddingError {
     InvalidPlayer,
     AlreadyBidded,
-    DealingStageActive,
     NotYourTurn,
     BidOutOfRange,
 }
@@ -254,5 +184,11 @@ mod tests {
         assert!(Card::new(Rank::One, Suit::Clubs).get_value() == 73);
         assert!(Card::new(Rank::Three, Suit::Golds).get_value() == 90);
         assert!(Card::new(Rank::Three, Suit::Clubs).get_value() == 93);
+
+        let upcard = Card::new(Rank::Three, Suit::Clubs);
+        let gold_trump_value = Card::new(Rank::Four, Suit::Golds).get_trump_value(upcard);
+
+        assert!(gold_trump_value > upcard.get_value());
+        assert!(gold_trump_value == 100);
     }
 }

@@ -1,24 +1,121 @@
+mod auth;
+mod game;
+mod lobby;
+mod models;
+
+use std::net::Ipv6Addr;
+
+use axum::{Json, Router, response::IntoResponse, routing};
+use reqwest::StatusCode;
+use tower_http::cors::{Any, CorsLayer};
+
+use crate::{
+    AppSettings,
+    models::GameError,
+    services::{LobbyError, ManagerError, dispatcher::ManagerHandle},
+};
+
+pub async fn start(manager: ManagerHandle, settings: &AppSettings) {
+    auth::JWT_KEY
+        .set(settings.jwt_key.to_string())
+        .expect("Should set jwt key value");
+
+    let auth = axum::middleware::from_fn(auth::middleware);
+
+    let cors = CorsLayer::new()
+        .allow_origin(Any)
+        .allow_methods(Any)
+        .allow_headers(Any);
+
+    let app = Router::new()
+        .route("/game", routing::get(game::handler))
+        .nest("/lobby", lobby::router().layer(auth))
+        .nest("/auth", auth::router())
+        .fallback(fallback_handler)
+        .with_state(manager)
+        .layer(tower_http::trace::TraceLayer::new_for_http())
+        .layer(cors);
+
+    let address = (Ipv6Addr::UNSPECIFIED, 3000);
+
+    let listener = tokio::net::TcpListener::bind(address)
+        .await
+        .expect("Expected to bind to network address");
+
+    tracing::info!("Listening on {:?}", address);
+
+    axum::serve(listener, app)
+        .await
+        .expect("Expected to start axum");
+}
+
+async fn fallback_handler() -> (StatusCode, &'static str) {
+    (StatusCode::NOT_FOUND, "this resource doesn't exist")
+}
+
+impl IntoResponse for LobbyError {
+    fn into_response(self) -> axum::response::Response {
+        let code = match &self {
+            LobbyError::InvalidLobby => StatusCode::NOT_FOUND,
+            LobbyError::GameAlreadyStarted => StatusCode::CONFLICT,
+            LobbyError::GameNotStarted => StatusCode::PRECONDITION_FAILED,
+            LobbyError::WrongLobby => StatusCode::FORBIDDEN,
+            LobbyError::PlayerNotInLobby => todo!(),
+            LobbyError::GameError(e) => match e {
+                GameError::NotEnoughPlayers => StatusCode::CONFLICT,
+                GameError::TooManyPlayers => StatusCode::CONFLICT,
+                GameError::InvalidDeal(_) => StatusCode::UNPROCESSABLE_ENTITY,
+                GameError::InvalidBid(_) => StatusCode::UNPROCESSABLE_ENTITY,
+                GameError::InvalidStage => todo!(),
+            },
+        };
+
+        (code, Json(serde_json::json!({"error": self.to_string()}))).into_response()
+    }
+}
+
+impl IntoResponse for ManagerError {
+    fn into_response(self) -> axum::response::Response {
+        let code = match self {
+            ManagerError::PlayerDisconnected(_) => StatusCode::GONE,
+            ManagerError::Deal(_) => StatusCode::UNPROCESSABLE_ENTITY,
+            ManagerError::Bid(_) => StatusCode::UNPROCESSABLE_ENTITY,
+            ManagerError::InvalidWebsocketMessageType => StatusCode::BAD_REQUEST,
+            ManagerError::UnexpectedMessage(_) => StatusCode::BAD_REQUEST,
+            ManagerError::Database(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            ManagerError::ReceiverDisposed => StatusCode::from_u16(499).expect("valid http code"),
+            ManagerError::Unauthorized(e) => return e.into_response(),
+            ManagerError::Lobby(e) => return e.into_response(),
+        };
+
+        (code, Json(serde_json::json!({"error": self.to_string()}))).into_response()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
 
     use futures::{SinkExt, StreamExt, stream::FusedStream};
-    use oh_hell::{
-        AppSettings, api,
-        infra::{
-            auth::{TokenResponse, get_claims_from_token},
-            lobby::CreateLobbyResponse,
-            *,
-        },
-        models::Card,
-        services::manager::{LobbyId, Manager, PlayerId},
-    };
+
     use reqwest::Client;
     use tokio::{net::TcpStream, task};
     use tokio_tungstenite::{
         MaybeTlsStream, WebSocketStream, connect_async,
         tungstenite::{Message, client::IntoClientRequest},
     };
+
+    use crate::{
+        AppSettings,
+        models::{
+            Card,
+            commands::{Command, GameCommand, LobbyCommand, LobbyInfo, ServerMessage},
+            id::{LobbyId, PlayerId},
+        },
+        services::manager::GameManager,
+    };
+
+    use super::{auth::get_claims_from_token, models::*, start};
 
     const URL: &str = "http://localhost:3000";
 
@@ -42,9 +139,9 @@ mod tests {
                 ..Default::default()
             };
 
-            let manager = Manager::from(&settings).await;
+            let handle = GameManager::new().start(&settings).await;
 
-            api::start(manager, &settings).await
+            start(handle, &settings).await
         });
 
         let client = reqwest::Client::new();
@@ -126,8 +223,8 @@ mod tests {
 
         let next = players.get_mut(&next).unwrap();
 
-        let msg = ClientMessage::PlayTurn {
-            card: next.deck.swap_remove(0),
+        let msg = GameCommand::PlayTurn {
+            card: next.deck.pop().unwrap(),
         };
 
         send_msg(&mut next.connection, msg).await;
@@ -154,7 +251,7 @@ mod tests {
 
         let next = players.get_mut(&next).unwrap();
 
-        send_msg(&mut next.connection, ClientMessage::PutBid { bid }).await;
+        send_msg(&mut next.connection, GameCommand::PutBid { bid }).await;
 
         for p in players.values_mut() {
             assert_game_msg(&mut p.connection, validate_player_bidded).await;
@@ -176,7 +273,7 @@ mod tests {
 
         for (i, p) in tokens.iter().enumerate() {
             let lobby = join_lobby_http(client, p, &lobby_id).await;
-            assert!(lobby.players.len() == i + 1);
+            assert!(matches!(lobby, LobbyInfo::NotStarted(players) if players.len() == i + 1));
         }
 
         let mut connections = HashMap::new();
@@ -196,7 +293,7 @@ mod tests {
     }
 
     async fn ready(players: &mut TestPlayersData) {
-        let msg = ClientMessage::PlayerStatusChange { ready: true };
+        let msg = LobbyCommand::StatusChange { ready: true };
 
         for p in players.values_mut() {
             send_msg(&mut p.connection, msg).await;
@@ -294,7 +391,7 @@ mod tests {
         }
     }
 
-    async fn send_msg(stream: &mut WebSocket, msg: ClientMessage) {
+    async fn send_msg(stream: &mut WebSocket, msg: Command) {
         let msg = serde_json::to_string(&msg).unwrap();
 
         stream.send(Message::Text(msg.into())).await.unwrap();
@@ -323,7 +420,7 @@ mod tests {
         }
     }
 
-    async fn join_lobby_http(client: &Client, token: &str, lobby_id: &LobbyId) -> JoinLobbyDto {
+    async fn join_lobby_http(client: &Client, token: &str, lobby_id: &LobbyId) -> LobbyInfo {
         let lobby_id = lobby_id.as_str();
 
         let res = client
@@ -361,7 +458,7 @@ mod tests {
             .await
             .unwrap();
 
-        let res: TokenResponse = res.json().await.unwrap();
+        let res: Auth = res.json().await.unwrap();
 
         res.token
     }

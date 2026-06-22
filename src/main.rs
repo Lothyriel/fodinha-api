@@ -1,4 +1,4 @@
-use oh_hell::{AppSettings, Manager};
+use oh_hell::{AppSettings, infra, services::manager::GameManager};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 #[tokio::main]
@@ -12,10 +12,10 @@ async fn main() {
 
     let settings = AppSettings::from_env().expect("to load env variables");
 
-    let manager = Manager::from(&settings).await;
+    let handle = GameManager::new().start(&settings).await;
 
     tokio::select! {
-        _ = oh_hell::api::start(manager.clone(), &settings) => {}
-        _ = oh_hell::ssh::start(manager.clone(), &settings) => {}
+        _ = infra::api::start(handle.clone(), &settings) => {}
+        _ = infra::ssh::start(handle.clone(), &settings) => {}
     }
 }
