@@ -16,6 +16,12 @@ use crate::{
     services::{LobbyError, ManagerError, dispatcher::ManagerHandle},
 };
 
+#[derive(Clone)]
+pub struct ApiState {
+    manager: ManagerHandle,
+    jwt_key: String,
+}
+
 pub async fn start(manager: ManagerHandle, settings: &AppSettings) {
     let address = (Ipv6Addr::UNSPECIFIED, 3000);
 
@@ -40,9 +46,11 @@ pub async fn serve_listener(listener: TcpListener, manager: ManagerHandle, setti
 }
 
 fn build_app(manager: ManagerHandle, settings: &AppSettings) -> Router {
-    init_jwt_key(settings);
-
-    let auth = axum::middleware::from_fn(auth::middleware);
+    let state = ApiState {
+        manager,
+        jwt_key: settings.jwt_key.clone(),
+    };
+    let auth = axum::middleware::from_fn_with_state(state.clone(), auth::middleware);
 
     let cors = CorsLayer::new()
         .allow_origin(Any)
@@ -52,19 +60,11 @@ fn build_app(manager: ManagerHandle, settings: &AppSettings) -> Router {
     Router::new()
         .route("/game", routing::get(game::handler))
         .nest("/lobby", lobby::router().layer(auth))
-        .nest("/auth", auth::router())
+        .nest("/auth", auth::router(state.clone()))
         .fallback(fallback_handler)
-        .with_state(manager)
+        .with_state(state)
         .layer(tower_http::trace::TraceLayer::new_for_http())
         .layer(cors)
-}
-
-fn init_jwt_key(settings: &AppSettings) {
-    let key = auth::JWT_KEY.get_or_init(|| settings.jwt_key.to_string());
-
-    if key != &settings.jwt_key {
-        panic!("JWT key was already initialized with a different value");
-    }
 }
 
 async fn fallback_handler() -> (StatusCode, &'static str) {
@@ -148,6 +148,7 @@ mod tests {
     const MONGO_CONN_STRING: &str = "mongodb://localhost/?retryWrites=true";
     const SERVER_START_TIMEOUT: Duration = Duration::from_millis(200);
     const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
+    const TEST_JWT_KEY: &str = "very-random-secret-key";
     const WS_TIMEOUT: Duration = Duration::from_secs(5);
 
     type Deck = Vec<Card>;
@@ -183,7 +184,7 @@ mod tests {
         async fn start_with_database(mongo_database: String) -> Self {
             let mongo_conn_string = MONGO_CONN_STRING.to_string();
             let settings = AppSettings {
-                jwt_key: "very-random-secret-key".to_string(),
+                jwt_key: TEST_JWT_KEY.to_string(),
                 mongo_conn_string: mongo_conn_string.clone(),
                 mongo_database: mongo_database.clone(),
                 ..Default::default()
@@ -356,7 +357,9 @@ mod tests {
             assert!(matches!(lobby, LobbyInfo::NotStarted(players) if players.len() == i + 1));
         }
 
-        let claims = get_claims_from_token(&tokens[0]).await.unwrap();
+        let claims = get_claims_from_token(&tokens[0], TEST_JWT_KEY)
+            .await
+            .unwrap();
         let mut first_connection = connect_ws(&server, &tokens[0]).await;
         let snapshot = get_snapshot(&mut first_connection).await;
 
@@ -526,7 +529,7 @@ mod tests {
         let mut connections = HashMap::new();
 
         for p in tokens {
-            let claims = get_claims_from_token(&p).await.unwrap();
+            let claims = get_claims_from_token(&p, TEST_JWT_KEY).await.unwrap();
 
             let mut connection = connect_ws(server, &p).await;
             let snapshot = get_snapshot(&mut connection).await;

@@ -20,17 +20,18 @@ use crate::{
     },
 };
 
-use super::{auth::get_claims_from_token, models::*};
+use super::{ApiState, auth::get_claims_from_token, models::*};
 
 pub async fn handler(
     ws: WebSocketUpgrade,
-    State(manager): State<ManagerHandle>,
+    State(state): State<ApiState>,
     Query(query): Query<Auth>,
 ) -> impl IntoResponse {
-    let claims = match get_claims_from_token(&query.token).await {
+    let claims = match get_claims_from_token(&query.token, &state.jwt_key).await {
         Ok(c) => c,
         Err(e) => return e.into_response(),
     };
+    let manager = state.manager.clone();
 
     let who = claims.id();
 

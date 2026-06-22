@@ -1,8 +1,10 @@
-use std::sync::OnceLock;
-
 use axum::{
-    Extension, Json, Router, extract::Request, http::StatusCode, middleware::Next,
-    response::IntoResponse, routing,
+    Extension, Json, Router,
+    extract::{Request, State},
+    http::StatusCode,
+    middleware::Next,
+    response::IntoResponse,
+    routing,
 };
 use jsonwebtoken::{
     DecodingKey, EncodingKey, Header, TokenData, Validation,
@@ -15,28 +17,30 @@ use serde_json::{Value, json};
 use crate::{
     infra::{AuthError, GoogleUserClaims, UserClaims},
     models::id::{PlayerId, gen_playerid},
-    services::dispatcher::ManagerHandle,
 };
 
-use super::models::*;
+use super::{ApiState, models::*};
 
-pub fn router() -> Router<ManagerHandle> {
-    let auth = axum::middleware::from_fn(middleware);
+pub fn router(state: ApiState) -> Router<ApiState> {
+    let auth = axum::middleware::from_fn_with_state(state, middleware);
 
     Router::new()
         .route("/signup", routing::post(sign_up))
         .route("/profile", routing::post(update).layer(auth))
 }
 
-pub static JWT_KEY: OnceLock<String> = OnceLock::new();
 const ISSUER: &str = "fodinha.loty.click";
 
-pub async fn middleware(mut req: Request, next: Next) -> Result<impl IntoResponse, AuthError> {
+pub async fn middleware(
+    State(state): State<ApiState>,
+    mut req: Request,
+    next: Next,
+) -> Result<impl IntoResponse, AuthError> {
     let token = get_token_from_req(&mut req)
         .await
         .ok_or(AuthError::TokenNotPresent)?;
 
-    let claims = get_claims_from_token(token).await?;
+    let claims = get_claims_from_token(token, &state.jwt_key).await?;
 
     req.extensions_mut().insert(claims);
 
@@ -59,6 +63,7 @@ struct AnonymousUserClaimsDto {
 }
 
 async fn update(
+    State(state): State<ApiState>,
     Extension(user_claims): Extension<UserClaims>,
     Json(params): Json<Value>,
 ) -> impl IntoResponse {
@@ -73,18 +78,18 @@ async fn update(
         }
     };
 
-    let token = generate_token(params, claim.id).await;
+    let token = generate_token(params, claim.id, &state.jwt_key);
 
     Json(token).into_response()
 }
 
-async fn sign_up(Json(params): Json<Value>) -> impl IntoResponse {
-    let token = generate_token(params, gen_playerid()).await;
+async fn sign_up(State(state): State<ApiState>, Json(params): Json<Value>) -> impl IntoResponse {
+    let token = generate_token(params, gen_playerid(), &state.jwt_key);
 
     Json(token)
 }
 
-async fn generate_token(data: Value, id: PlayerId) -> Auth {
+fn generate_token(data: Value, id: PlayerId, jwt_key: &str) -> Auth {
     let claims = AnonymousUserClaimsDto {
         id,
         data,
@@ -95,26 +100,22 @@ async fn generate_token(data: Value, id: PlayerId) -> Auth {
     let token = jsonwebtoken::encode(
         &Header::default(),
         &claims,
-        &EncodingKey::from_secret(get_key_bytes()),
+        &EncodingKey::from_secret(jwt_key.as_bytes()),
     )
     .expect("Should encode JWT");
 
     Auth { token }
 }
 
-fn get_key_bytes() -> &'static [u8] {
-    JWT_KEY.get().expect("JWT_KEY should be set").as_bytes()
-}
-
-pub async fn get_claims_from_token(token: &str) -> Result<UserClaims, AuthError> {
-    match get_anonymous_claims(token) {
+pub async fn get_claims_from_token(token: &str, jwt_key: &str) -> Result<UserClaims, AuthError> {
+    match get_anonymous_claims(token, jwt_key) {
         Ok(c) => Ok(c),
         Err(_) => get_google_claims(token).await,
     }
 }
 
-fn get_anonymous_claims(token: &str) -> Result<UserClaims, AuthError> {
-    let key = DecodingKey::from_secret(get_key_bytes());
+fn get_anonymous_claims(token: &str, jwt_key: &str) -> Result<UserClaims, AuthError> {
+    let key = DecodingKey::from_secret(jwt_key.as_bytes());
 
     let mut validation = Validation::new(jsonwebtoken::Algorithm::HS256);
 
