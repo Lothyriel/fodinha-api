@@ -1,7 +1,6 @@
 use crate::models::id::PlayerId;
 
 pub mod api;
-pub mod ssh;
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, PartialEq, Eq, Debug)]
 #[serde(tag = "type", content = "data")]
