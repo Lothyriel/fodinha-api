@@ -417,6 +417,38 @@ mod tests {
         server.shutdown().await;
     }
 
+    #[tokio::test]
+    async fn test_create_lobby_accepts_custom_lifes() {
+        let server = TestServer::start().await;
+
+        let client = http_client();
+        let tokens = get_players(&client, &server, 2).await;
+        let lobby_id = create_lobby_with_lifes(&client, &server, &tokens[0], 1).await;
+
+        for (i, token) in tokens.iter().enumerate() {
+            let lobby = join_lobby_http(&client, &server, token, &lobby_id).await;
+            assert!(matches!(lobby, LobbyInfo::NotStarted(players) if players.len() == i + 1));
+        }
+
+        let mut player_data = connect_players(&server, tokens).await;
+
+        ready(&mut player_data).await;
+        get_decks(&mut player_data).await;
+        play_set(&mut player_data).await;
+
+        for p in player_data.values_mut() {
+            assert!(matches!(
+                recv_game_or_set_ended(&mut p.connection).await,
+                EndMessage::Game
+            ));
+        }
+
+        server.wait_until_match_actor_stopped().await;
+
+        drop(player_data);
+        server.shutdown().await;
+    }
+
     async fn get_players(client: &Client, server: &TestServer, count: usize) -> Vec<String> {
         let mut players = vec![];
 
@@ -527,12 +559,17 @@ mod tests {
         tokens: Vec<String>,
     ) -> TestPlayersData {
         let lobby_id = create_lobby(client, server, &tokens[0]).await;
-        let player_count = tokens.len();
 
         for (i, p) in tokens.iter().enumerate() {
             let lobby = join_lobby_http(client, server, p, &lobby_id).await;
             assert!(matches!(lobby, LobbyInfo::NotStarted(players) if players.len() == i + 1));
         }
+
+        connect_players(server, tokens).await
+    }
+
+    async fn connect_players(server: &TestServer, tokens: Vec<String>) -> TestPlayersData {
+        let player_count = tokens.len();
 
         let mut connections = HashMap::new();
 
@@ -736,12 +773,31 @@ mod tests {
     }
 
     async fn create_lobby(client: &Client, server: &TestServer, token: &str) -> LobbyId {
-        let res = client
-            .post(server.url("/lobby"))
-            .bearer_auth(token)
-            .send()
-            .await
-            .unwrap();
+        create_lobby_with_optional_lifes(client, server, token, None).await
+    }
+
+    async fn create_lobby_with_lifes(
+        client: &Client,
+        server: &TestServer,
+        token: &str,
+        lifes: usize,
+    ) -> LobbyId {
+        create_lobby_with_optional_lifes(client, server, token, Some(lifes)).await
+    }
+
+    async fn create_lobby_with_optional_lifes(
+        client: &Client,
+        server: &TestServer,
+        token: &str,
+        lifes: Option<usize>,
+    ) -> LobbyId {
+        let mut request = client.post(server.url("/lobby")).bearer_auth(token);
+
+        if let Some(lifes) = lifes {
+            request = request.json(&serde_json::json!({ "lifes": lifes }));
+        }
+
+        let res = request.send().await.unwrap();
         let status = res.status();
         let body = res.text().await.unwrap();
 

@@ -8,6 +8,7 @@ use crate::{
     infra::UserClaims,
     models::{
         commands::{CreateLobbyResponse, GetLobbyDto, LobbyInfo},
+        game::GameSettings,
         id::LobbyId,
     },
     services::ManagerError,
@@ -39,11 +40,32 @@ async fn join_lobby(
 async fn create_lobby(
     State(state): State<ApiState>,
     Extension(user_claims): Extension<UserClaims>,
+    body: Option<Json<CreateLobbyRequest>>,
 ) -> Result<Json<CreateLobbyResponse>, ManagerError> {
+    let settings = body
+        .map(|Json(body)| body.into_settings())
+        .unwrap_or_default();
     let response = state
         .manager
-        .create_lobby(user_claims.id(), Default::default())
+        .create_lobby(user_claims.id(), settings)
         .await?;
 
     Ok(Json(response))
+}
+
+#[derive(Default, serde::Deserialize)]
+struct CreateLobbyRequest {
+    lifes: Option<usize>,
+}
+
+impl CreateLobbyRequest {
+    fn into_settings(self) -> GameSettings {
+        let mut settings = GameSettings::default();
+
+        if let Some(lifes) = self.lifes {
+            settings.lifes = lifes.max(1);
+        }
+
+        settings
+    }
 }
