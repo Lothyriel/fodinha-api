@@ -4,7 +4,7 @@ use crate::{
     infra::UserClaims,
     models::{
         GameError, LobbyState,
-        commands::{LobbyInfo, MatchSnapshot},
+        commands::{LobbyInfo, MatchSnapshot, PlayingMatchSnapshot},
         game::GameSettings,
         id::PlayerId,
     },
@@ -93,7 +93,18 @@ impl Lobby {
 
                 MatchSnapshot::Waiting(players)
             }
-            LobbyState::Playing(game) => MatchSnapshot::Playing(game.get_game_info(player_id)),
+            LobbyState::Playing(game) => {
+                let players = self
+                    .players
+                    .iter()
+                    .map(|(id, p)| (id.clone(), p.clone()))
+                    .collect();
+
+                MatchSnapshot::Playing(PlayingMatchSnapshot {
+                    players,
+                    game: game.get_game_info(player_id),
+                })
+            }
         }
     }
 }

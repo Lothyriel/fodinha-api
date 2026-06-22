@@ -31,7 +31,13 @@ pub enum LobbyInfo {
 #[serde(tag = "type", content = "data")]
 pub enum MatchSnapshot {
     Waiting(HashMap<PlayerId, PlayerStatus>),
-    Playing(GameInfoDto),
+    Playing(PlayingMatchSnapshot),
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, Clone)]
+pub struct PlayingMatchSnapshot {
+    pub players: HashMap<PlayerId, PlayerStatus>,
+    pub game: GameInfoDto,
 }
 
 type PlayerPoints = HashMap<PlayerId, usize>;
