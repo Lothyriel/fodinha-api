@@ -20,15 +20,3 @@ primary_region = 'gru'
   memory = '512mb'
   cpu_kind = 'shared'
   cpus = 1
-
-[[services]]
-  internal_port = 2222
-  protocol = "tcp"
-  processes = ["app"]
-
-  [[services.ports]]
-    port = 22
-
-  [[services.tcp_checks]]
-    interval = "30s"
-    timeout = "5s"
