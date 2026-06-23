@@ -18,4 +18,3 @@ COPY --from=builder /target/release/oh_hell /usr/local/bin/
 ENTRYPOINT ["oh_hell"]
 
 EXPOSE 3000
-EXPOSE 2222

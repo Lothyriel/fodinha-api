@@ -192,7 +192,6 @@ mod tests {
                 jwt_key: TEST_JWT_KEY.to_string(),
                 mongo_conn_string: mongo_conn_string.clone(),
                 mongo_database: mongo_database.clone(),
-                ..Default::default()
             };
 
             let client = get_mongo_client(&mongo_conn_string)
