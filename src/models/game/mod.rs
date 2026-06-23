@@ -647,7 +647,13 @@ impl Game {
                 .players
                 .get_full_mut(&id)
                 .expect("Player should exist here");
-            player.lifes = player.lifes.saturating_sub(1);
+
+            let diff = player
+                .bid
+                .expect("Player should have a bid here")
+                .saturating_sub(player.rounds);
+
+            player.lifes = diff;
 
             if player.lifes == 0 {
                 self.round_iter.remove(idx);
