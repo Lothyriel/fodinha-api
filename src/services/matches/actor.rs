@@ -95,15 +95,10 @@ impl MatchActor {
             MatchActorMessage::DisconnectPlayer {
                 player_id,
                 outbound_tx,
-            } => {
-                if self
-                    .connections
-                    .get(&player_id)
-                    .is_some_and(|current| current.same_channel(&outbound_tx))
-                {
-                    self.connections.remove(&player_id);
-                }
-            }
+            } => match self.handle_disconnect_player(player_id, outbound_tx).await {
+                Ok(should_continue) => return should_continue,
+                Err(e) => tracing::error!("Error handling player disconnect: {e}"),
+            },
             MatchActorMessage::CreateMatch { settings, respond } => {
                 respond_once(respond, self.handle_create_match(settings).await);
             }
@@ -201,6 +196,53 @@ impl MatchActor {
             .await;
 
         Ok(self.lobby()?.get_info(&player_id))
+    }
+
+    async fn handle_disconnect_player(
+        &mut self,
+        player_id: PlayerId,
+        outbound_tx: PlayerSender,
+    ) -> Result<bool, ManagerError> {
+        let is_current_connection = self
+            .connections
+            .get(&player_id)
+            .is_some_and(|current| current.same_channel(&outbound_tx));
+
+        if !is_current_connection {
+            return Ok(true);
+        }
+
+        self.connections.remove(&player_id);
+
+        let Some(lobby) = self.lobby.as_ref() else {
+            return Ok(true);
+        };
+
+        if matches!(lobby.state, LobbyState::Playing(_)) {
+            return Ok(true);
+        }
+
+        if !lobby.players.contains_key(&player_id) {
+            return Ok(true);
+        }
+
+        self.repo
+            .remove_metadata_player(&self.match_id, &player_id)
+            .await?;
+        self.apply_player_left(&player_id)?;
+        self.broadcast(OutboundMessage::PlayerLeft {
+            player_id: player_id.clone(),
+        })
+        .await;
+
+        if self.lobby()?.players.is_empty() {
+            self.repo.delete_metadata(&self.match_id).await?;
+            self.stop_match();
+
+            return Ok(false);
+        }
+
+        Ok(true)
     }
 
     async fn handle_status_change(
@@ -591,6 +633,15 @@ impl MatchActor {
             .ok_or(LobbyError::WrongLobby)?;
 
         player.ready = ready;
+
+        Ok(())
+    }
+
+    fn apply_player_left(&mut self, player_id: &PlayerId) -> Result<(), ManagerError> {
+        let lobby = self.lobby_mut()?;
+
+        lobby.players.shift_remove(player_id);
+        self.player_routes.remove(player_id);
 
         Ok(())
     }

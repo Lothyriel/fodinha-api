@@ -52,6 +52,9 @@ pub enum OutboundMessage {
         lifes: PlayerPoints,
     },
     PlayerJoined(PlayerId),
+    PlayerLeft {
+        player_id: PlayerId,
+    },
     Snapshot(MatchSnapshotInternal),
 }
 

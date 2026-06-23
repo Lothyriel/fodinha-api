@@ -95,6 +95,9 @@ pub enum ServerMessage {
         lifes: PlayerPoints,
     },
     PlayerJoined(UserClaims),
+    PlayerLeft {
+        player_id: PlayerId,
+    },
     Snapshot(MatchSnapshot),
     Error {
         msg: String,

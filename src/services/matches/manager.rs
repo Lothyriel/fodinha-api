@@ -284,6 +284,9 @@ impl ManagerHandle {
 
                 Ok(ServerMessage::PlayerJoined(player))
             }
+            OutboundMessage::PlayerLeft { player_id } => {
+                Ok(ServerMessage::PlayerLeft { player_id })
+            }
             OutboundMessage::Snapshot(snapshot) => Ok(ServerMessage::Snapshot(
                 self.hydrate_snapshot(snapshot).await?,
             )),

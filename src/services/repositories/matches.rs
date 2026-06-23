@@ -76,6 +76,34 @@ impl MatchesRepository {
         Ok(())
     }
 
+    pub async fn remove_metadata_player(
+        &self,
+        match_id: &MatchId,
+        player_id: &PlayerId,
+    ) -> mongodb::error::Result<()> {
+        self.metadata
+            .update_one(
+                doc! { "match_id": match_id.as_str() },
+                doc! {
+                    "$pull": {
+                        "players": player_id.as_str(),
+                        "ready_players": player_id.as_str(),
+                    }
+                },
+            )
+            .await?;
+
+        Ok(())
+    }
+
+    pub async fn delete_metadata(&self, match_id: &MatchId) -> mongodb::error::Result<()> {
+        self.metadata
+            .delete_one(doc! { "match_id": match_id.as_str() })
+            .await?;
+
+        Ok(())
+    }
+
     pub async fn set_metadata_player_ready(
         &self,
         match_id: &MatchId,

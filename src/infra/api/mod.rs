@@ -358,33 +358,26 @@ mod tests {
 
         let client = http_client();
         let tokens = get_players(&client, &server, 2).await;
-        let lobby_id = create_lobby(&client, &server, &tokens[0]).await;
-
-        for (i, token) in tokens.iter().enumerate() {
-            let lobby = join_lobby_http(&client, &server, token, &lobby_id).await;
-            assert!(matches!(lobby, LobbyInfo::NotStarted(players) if players.len() == i + 1));
-        }
-
         let claims = get_claims_from_token(&tokens[0], TEST_JWT_KEY)
             .await
             .unwrap();
-        let mut first_connection = connect_ws(&server, &tokens[0]).await;
-        let snapshot = get_snapshot(&mut first_connection).await;
+        let first_token = tokens[0].clone();
+        let mut player_data = join_lobby(&client, &server, tokens).await;
 
-        assert!(
-            matches!(snapshot, MatchSnapshot::Waiting(players) if players.contains_key(&claims.id()))
-        );
+        ready(&mut player_data).await;
 
+        let mut first_connection = player_data.remove(&claims.id()).unwrap().connection;
         first_connection.close(None).await.unwrap();
 
-        let mut reconnected = connect_ws(&server, &tokens[0]).await;
+        let mut reconnected = connect_ws(&server, &first_token).await;
         let snapshot = get_snapshot(&mut reconnected).await;
 
         assert!(
-            matches!(snapshot, MatchSnapshot::Waiting(players) if players.contains_key(&claims.id()))
+            matches!(snapshot, MatchSnapshot::Playing(data) if data.players.contains_key(&claims.id()))
         );
 
         drop(reconnected);
+        drop(player_data);
         server.shutdown().await;
     }
 
@@ -477,6 +470,49 @@ mod tests {
             .unwrap();
 
         assert_eq!(events, 0);
+
+        server.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn test_waiting_lobby_disconnect_removes_player_and_empty_room() {
+        let server = TestServer::start().await;
+        let client = http_client();
+        let tokens = get_players(&client, &server, 2).await;
+        let lobby_id = create_lobby(&client, &server, &tokens[0]).await;
+
+        for token in &tokens {
+            join_lobby_http(&client, &server, token, &lobby_id).await;
+        }
+
+        let second_player_id = get_claims_from_token(&tokens[1], TEST_JWT_KEY)
+            .await
+            .unwrap()
+            .id();
+        let mut first_connection = connect_ws(&server, &tokens[0]).await;
+        let mut second_connection = connect_ws(&server, &tokens[1]).await;
+
+        assert!(
+            matches!(get_snapshot(&mut first_connection).await, MatchSnapshot::Waiting(players) if players.len() == 2)
+        );
+        assert!(
+            matches!(get_snapshot(&mut second_connection).await, MatchSnapshot::Waiting(players) if players.len() == 2)
+        );
+
+        second_connection.close(None).await.unwrap();
+
+        assert!(matches!(
+            recv_msg(&mut first_connection).await,
+            ServerMessage::PlayerLeft { player_id } if player_id == second_player_id
+        ));
+
+        let lobbies = server.manager.get_lobbies().await;
+        assert_eq!(lobbies.len(), 1);
+        assert_eq!(lobbies[0].player_count, 1);
+
+        first_connection.close(None).await.unwrap();
+        server.wait_until_match_actor_stopped().await;
+        assert!(server.manager.get_lobbies().await.is_empty());
 
         server.shutdown().await;
     }
