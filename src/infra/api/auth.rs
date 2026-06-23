@@ -30,6 +30,7 @@ pub fn router(state: ApiState) -> Router<ApiState> {
 }
 
 const ISSUER: &str = "fodinha.loty.click";
+const MAX_NICKNAME_LENGTH: usize = 24;
 
 pub async fn middleware(
     State(state): State<ApiState>,
@@ -67,6 +68,10 @@ async fn update(
     Extension(user_claims): Extension<UserClaims>,
     Json(params): Json<Value>,
 ) -> impl IntoResponse {
+    if let Err(response) = validate_nickname(&params) {
+        return response;
+    }
+
     let claim = match user_claims {
         UserClaims::Anonymous(c) => c,
         UserClaims::Google(_) => {
@@ -84,9 +89,29 @@ async fn update(
 }
 
 async fn sign_up(State(state): State<ApiState>, Json(params): Json<Value>) -> impl IntoResponse {
+    if let Err(response) = validate_nickname(&params) {
+        return response;
+    }
+
     let token = generate_token(params, gen_playerid(), &state.jwt_key);
 
-    Json(token)
+    Json(token).into_response()
+}
+
+fn validate_nickname(params: &Value) -> Result<(), axum::response::Response> {
+    let Some(nickname) = params.get("nickname").and_then(Value::as_str) else {
+        return Ok(());
+    };
+
+    if nickname.chars().count() <= MAX_NICKNAME_LENGTH {
+        return Ok(());
+    }
+
+    let body = Json(json!({
+        "error": format!("Nickname must be at most {MAX_NICKNAME_LENGTH} characters")
+    }));
+
+    Err((StatusCode::BAD_REQUEST, body).into_response())
 }
 
 fn generate_token(data: Value, id: PlayerId, jwt_key: &str) -> Auth {

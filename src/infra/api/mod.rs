@@ -119,7 +119,7 @@ mod tests {
     use futures::{SinkExt, StreamExt, stream::FusedStream};
     use mongodb::Database;
 
-    use reqwest::Client;
+    use reqwest::{Client, StatusCode};
     use tokio::{
         net::{TcpListener, TcpStream},
         task::JoinHandle,
@@ -418,6 +418,26 @@ mod tests {
 
         drop(first_connection);
         drop(second_connection);
+        server.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn test_signup_rejects_long_nickname() {
+        let server = TestServer::start().await;
+        let client = http_client();
+        let params = serde_json::json!({
+            "nickname": "x".repeat(25),
+        });
+
+        let res = client
+            .post(server.url("/auth/signup"))
+            .json(&params)
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+
         server.shutdown().await;
     }
 
