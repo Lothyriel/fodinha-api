@@ -649,9 +649,8 @@ impl Game {
                 .expect("Player should exist here");
 
             let diff = player
-                .bid
-                .expect("Player should have a bid here")
-                .saturating_sub(player.rounds);
+                .rounds
+                .saturating_sub(player.bid.expect("should have bid here"));
 
             player.lifes = player.lifes.saturating_sub(diff);
 
