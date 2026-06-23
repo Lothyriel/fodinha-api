@@ -3,21 +3,20 @@ use std::collections::HashMap;
 use indexmap::IndexMap;
 
 use crate::{
-    infra::UserClaims,
     models::{
         Card, Game, GameError, GameOutcome, LobbyState, Turn,
-        commands::{GetLobbyDto, LobbyInfo, ServerMessage},
+        commands::GetLobbyDto,
         game::{AppliedGameChange, BiddingState, GameSettings, MatchEvent, NewSet},
         id::{MatchId, PlayerId},
-        lobby::{Lobby, PlayerStatus},
+        lobby::{Lobby, LobbyInfoInternal, LobbyPlayerStatus},
     },
     services::{
         LobbyError, ManagerError,
         matches::{
-            MatchActorMessage, MatchEntries, MatchReceiver, PlayerRoutes, PlayerSender,
-            project_match_metadata,
+            MatchActorMessage, MatchEntries, MatchReceiver, OutboundMessage, PlayerRoutes,
+            PlayerSender, project_match_metadata,
         },
-        repositories::matches::MatchesRepository,
+        repositories::matches::{MatchMetadataDto, MatchesRepository},
         stats::StatsProjectorHandle,
     },
 };
@@ -35,13 +34,8 @@ pub(crate) struct MatchActor {
 
 enum AppliedEvent {
     None,
-    PlayerJoined {
-        user_claims: UserClaims,
-    },
-    PlayerStatusChanged {
-        player_id: PlayerId,
-        ready: bool,
-    },
+    PlayerJoined,
+    PlayerStatusChanged,
     GameStarted {
         set: NewSet,
         next: PlayerId,
@@ -113,11 +107,8 @@ impl MatchActor {
             MatchActorMessage::CreateMatch { settings, respond } => {
                 respond_once(respond, self.handle_create_match(settings).await);
             }
-            MatchActorMessage::JoinLobby {
-                user_claims,
-                respond,
-            } => {
-                respond_once(respond, self.handle_join_lobby(user_claims).await);
+            MatchActorMessage::JoinLobby { player_id, respond } => {
+                respond_once(respond, self.handle_join_lobby(player_id).await);
             }
             MatchActorMessage::StatusChange {
                 player_id,
@@ -149,8 +140,10 @@ impl MatchActor {
             return Ok(());
         }
 
-        self.persist_apply(MatchEvent::MatchCreated { settings })
+        self.repo
+            .create_metadata(&self.match_id, settings.clone())
             .await?;
+        self.lobby = Some(Lobby::new(settings));
 
         Ok(())
     }
@@ -171,7 +164,7 @@ impl MatchActor {
         };
 
         self.connections.insert(player_id.clone(), outbound_tx);
-        self.send_to_player(&player_id, ServerMessage::Snapshot(snapshot))
+        self.send_to_player(&player_id, OutboundMessage::Snapshot(snapshot))
             .await;
 
         Ok(())
@@ -179,10 +172,8 @@ impl MatchActor {
 
     async fn handle_join_lobby(
         &mut self,
-        user_claims: UserClaims,
-    ) -> Result<LobbyInfo, ManagerError> {
-        let player_id = user_claims.id();
-
+        player_id: PlayerId,
+    ) -> Result<LobbyInfoInternal, ManagerError> {
         if let Some(lobby) = self.lobby.as_ref() {
             if lobby.players.contains_key(&player_id) {
                 self.player_routes
@@ -202,16 +193,12 @@ impl MatchActor {
             return Err(LobbyError::InvalidLobby.into());
         }
 
-        let applied = self
-            .persist_apply(MatchEvent::PlayerJoined {
-                user_claims: user_claims.clone(),
-            })
+        self.repo
+            .add_metadata_player(&self.match_id, &player_id)
             .await?;
-
-        if let AppliedEvent::PlayerJoined { user_claims } = applied {
-            self.broadcast(ServerMessage::PlayerJoined(user_claims))
-                .await;
-        }
+        self.apply_player_joined(player_id.clone())?;
+        self.broadcast(OutboundMessage::PlayerJoined(player_id.clone()))
+            .await;
 
         Ok(self.lobby()?.get_info(&player_id))
     }
@@ -233,17 +220,12 @@ impl MatchActor {
             }
         }
 
-        let applied = self
-            .persist_apply(MatchEvent::PlayerStatusChanged {
-                player_id: player_id.clone(),
-                ready,
-            })
+        self.repo
+            .set_metadata_player_ready(&self.match_id, &player_id, ready)
             .await?;
-
-        if let AppliedEvent::PlayerStatusChanged { player_id, ready } = applied {
-            let msg = ServerMessage::PlayerStatusChange { player_id, ready };
-            self.broadcast(msg).await;
-        }
+        self.apply_player_status_changed(&player_id, ready)?;
+        let msg = OutboundMessage::PlayerStatusChange { player_id, ready };
+        self.broadcast(msg).await;
 
         if let Some((players, settings)) = self.start_game_data()? {
             let event = Game::start_match_event(&players, settings)
@@ -337,39 +319,44 @@ impl MatchActor {
         self.apply_event(event).map(|_| ())
     }
 
+    pub(crate) fn restore_from_metadata(&mut self, metadata: MatchMetadataDto) {
+        let ready_players: std::collections::HashSet<_> =
+            metadata.ready_players.into_iter().collect();
+        let mut lobby = Lobby::new(metadata.settings.unwrap_or_default());
+
+        for player_id in metadata.players {
+            let id = PlayerId(player_id.into());
+
+            lobby.players.insert(
+                id.clone(),
+                LobbyPlayerStatus {
+                    ready: ready_players.contains(id.as_str()),
+                },
+            );
+            self.player_routes.insert(id, self.match_id.clone());
+        }
+
+        self.lobby = Some(lobby);
+    }
+
     fn apply_event(&mut self, event: MatchEvent) -> Result<AppliedEvent, ManagerError> {
         match event {
             MatchEvent::MatchCreated { settings } => {
-                self.lobby = Some(Lobby::new(settings));
+                if self.lobby.is_none() {
+                    self.lobby = Some(Lobby::new(settings));
+                }
 
                 Ok(AppliedEvent::None)
             }
             MatchEvent::PlayerJoined { user_claims } => {
-                let player_id = user_claims.id();
-                let lobby = self.lobby_mut()?;
+                self.apply_player_joined(user_claims.id())?;
 
-                lobby.players.insert(
-                    player_id.clone(),
-                    PlayerStatus {
-                        ready: false,
-                        player: user_claims.clone(),
-                    },
-                );
-
-                self.player_routes.insert(player_id, self.match_id.clone());
-
-                Ok(AppliedEvent::PlayerJoined { user_claims })
+                Ok(AppliedEvent::PlayerJoined)
             }
             MatchEvent::PlayerStatusChanged { player_id, ready } => {
-                let lobby = self.lobby_mut()?;
-                let player = lobby
-                    .players
-                    .get_mut(&player_id)
-                    .ok_or(LobbyError::WrongLobby)?;
+                self.apply_player_status_changed(&player_id, ready)?;
 
-                player.ready = ready;
-
-                Ok(AppliedEvent::PlayerStatusChanged { player_id, ready })
+                Ok(AppliedEvent::PlayerStatusChanged)
             }
             MatchEvent::GameStarted { settings, set } => {
                 let lobby = self.lobby_mut()?;
@@ -420,7 +407,7 @@ impl MatchActor {
     }
 
     async fn broadcast_bid(&self, player_id: PlayerId, bid: usize, state: BiddingState) {
-        let msg = ServerMessage::PlayerBidded {
+        let msg = OutboundMessage::PlayerBidded {
             player_id: player_id.clone(),
             bid,
         };
@@ -430,18 +417,18 @@ impl MatchActor {
             BiddingState::Active {
                 possible_bids,
                 next,
-            } => ServerMessage::PlayerBiddingTurn {
+            } => OutboundMessage::PlayerBiddingTurn {
                 player_id: next,
                 possible_bids,
             },
-            BiddingState::Ended { next } => ServerMessage::PlayerTurn { player_id: next },
+            BiddingState::Ended { next } => OutboundMessage::PlayerTurn { player_id: next },
         };
 
         self.broadcast(msg).await;
     }
 
     async fn broadcast_turn(&self, state: crate::models::game::DealState) -> bool {
-        let msg = ServerMessage::TurnPlayed { pile: state.pile };
+        let msg = OutboundMessage::TurnPlayed { pile: state.pile };
         self.broadcast(msg).await;
 
         match state.outcome {
@@ -452,7 +439,7 @@ impl MatchActor {
                 next,
                 possible,
             } => {
-                let msg = ServerMessage::SetEnded { lifes };
+                let msg = OutboundMessage::SetEnded { lifes };
                 self.broadcast(msg).await;
 
                 self.init_set(decks, upcard, next, possible).await;
@@ -460,22 +447,22 @@ impl MatchActor {
                 false
             }
             GameOutcome::RoundEnded { rounds, next } => {
-                let msg = ServerMessage::RoundEnded(rounds);
+                let msg = OutboundMessage::RoundEnded(rounds);
                 self.broadcast(msg).await;
 
-                let msg = ServerMessage::PlayerTurn { player_id: next };
+                let msg = OutboundMessage::PlayerTurn { player_id: next };
                 self.broadcast(msg).await;
 
                 false
             }
             GameOutcome::TurnPlayed { next } => {
-                let msg = ServerMessage::PlayerTurn { player_id: next };
+                let msg = OutboundMessage::PlayerTurn { player_id: next };
                 self.broadcast(msg).await;
 
                 false
             }
             GameOutcome::Ended { lifes } => {
-                let msg = ServerMessage::GameEnded { lifes };
+                let msg = OutboundMessage::GameEnded { lifes };
                 self.broadcast(msg).await;
 
                 true
@@ -490,21 +477,21 @@ impl MatchActor {
         next: PlayerId,
         possible_bids: Vec<usize>,
     ) {
-        self.broadcast(ServerMessage::SetStart { upcard }).await;
+        self.broadcast(OutboundMessage::SetStart { upcard }).await;
 
         for (player, deck) in decks {
-            self.send_to_player(&player, ServerMessage::PlayerDeck(deck))
+            self.send_to_player(&player, OutboundMessage::PlayerDeck(deck))
                 .await;
         }
 
-        self.broadcast(ServerMessage::PlayerBiddingTurn {
+        self.broadcast(OutboundMessage::PlayerBiddingTurn {
             player_id: next,
             possible_bids,
         })
         .await;
     }
 
-    async fn send_to_player(&self, player_id: &PlayerId, msg: ServerMessage) {
+    async fn send_to_player(&self, player_id: &PlayerId, msg: OutboundMessage) {
         let Some(sender) = self.connections.get(player_id).cloned() else {
             tracing::debug!("No active connection for player {player_id:?}");
             return;
@@ -515,7 +502,7 @@ impl MatchActor {
         }
     }
 
-    async fn broadcast(&self, msg: ServerMessage) {
+    async fn broadcast(&self, msg: OutboundMessage) {
         let connections: Vec<_> = self
             .connections
             .iter()
@@ -572,6 +559,40 @@ impl MatchActor {
         self.lobby
             .as_mut()
             .ok_or_else(|| LobbyError::InvalidLobby.into())
+    }
+
+    fn apply_player_joined(&mut self, player_id: PlayerId) -> Result<(), ManagerError> {
+        let lobby = self.lobby_mut()?;
+
+        if lobby.players.contains_key(&player_id) {
+            self.player_routes
+                .insert(player_id.clone(), self.match_id.clone());
+            return Ok(());
+        }
+
+        lobby
+            .players
+            .insert(player_id.clone(), LobbyPlayerStatus { ready: false });
+
+        self.player_routes.insert(player_id, self.match_id.clone());
+
+        Ok(())
+    }
+
+    fn apply_player_status_changed(
+        &mut self,
+        player_id: &PlayerId,
+        ready: bool,
+    ) -> Result<(), ManagerError> {
+        let lobby = self.lobby_mut()?;
+        let player = lobby
+            .players
+            .get_mut(player_id)
+            .ok_or(LobbyError::WrongLobby)?;
+
+        player.ready = ready;
+
+        Ok(())
     }
 }
 

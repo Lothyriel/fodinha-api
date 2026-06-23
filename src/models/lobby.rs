@@ -1,34 +1,44 @@
+use std::collections::HashMap;
+
 use indexmap::{IndexMap, map::Entry};
 
 use crate::{
-    infra::UserClaims,
-    models::{
-        GameError, LobbyState,
-        commands::{LobbyInfo, MatchSnapshot, PlayingMatchSnapshot},
-        game::GameSettings,
-        id::PlayerId,
-    },
-    services::LobbyError,
+    models::{GameError, LobbyState, game::GameSettings, id::PlayerId},
+    services::{GameInfoDto, LobbyError},
 };
 
-#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq, Eq)]
-pub struct PlayerStatus {
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LobbyPlayerStatus {
     pub ready: bool,
-    pub player: UserClaims,
 }
 
-impl PlayerStatus {
-    fn new(claims: UserClaims) -> Self {
-        Self {
-            ready: false,
-            player: claims,
-        }
+impl LobbyPlayerStatus {
+    fn new() -> Self {
+        Self { ready: false }
     }
 }
 
 pub struct Lobby {
-    pub players: IndexMap<PlayerId, PlayerStatus>,
+    pub players: IndexMap<PlayerId, LobbyPlayerStatus>,
     pub state: LobbyState,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LobbyInfoInternal {
+    NotStarted(HashMap<PlayerId, LobbyPlayerStatus>),
+    Playing(GameInfoDto),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MatchSnapshotInternal {
+    Waiting(HashMap<PlayerId, LobbyPlayerStatus>),
+    Playing(PlayingMatchSnapshotInternal),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PlayingMatchSnapshotInternal {
+    pub players: HashMap<PlayerId, LobbyPlayerStatus>,
+    pub game: GameInfoDto,
 }
 
 impl Lobby {
@@ -43,11 +53,11 @@ impl Lobby {
         self.players.keys().cloned().collect()
     }
 
-    pub fn get_players(&self) -> Vec<PlayerStatus> {
+    pub fn get_players(&self) -> Vec<LobbyPlayerStatus> {
         self.players.values().cloned().collect()
     }
 
-    pub fn join(&mut self, user_claims: UserClaims) -> Result<(), LobbyError> {
+    pub fn join(&mut self, player_id: PlayerId) -> Result<(), LobbyError> {
         let max_players = match &self.state {
             LobbyState::NotStarted(s) => Ok(s.max_players),
             LobbyState::Playing(_) => Err(LobbyError::GameAlreadyStarted),
@@ -55,19 +65,19 @@ impl Lobby {
 
         let player_count = self.players.len();
 
-        match self.players.entry(user_claims.id()) {
+        match self.players.entry(player_id) {
             Entry::Occupied(_) => Ok(()),
             Entry::Vacant(e) => {
                 if player_count == max_players? {
                     return Err(LobbyError::GameError(GameError::TooManyPlayers).into());
                 }
-                e.insert(PlayerStatus::new(user_claims));
+                e.insert(LobbyPlayerStatus::new());
                 Ok(())
             }
         }
     }
 
-    pub fn get_info(&self, player_id: &PlayerId) -> LobbyInfo {
+    pub fn get_info(&self, player_id: &PlayerId) -> LobbyInfoInternal {
         match &self.state {
             LobbyState::NotStarted(_) => {
                 let players = self
@@ -76,13 +86,13 @@ impl Lobby {
                     .map(|(id, p)| (id.clone(), p.clone()))
                     .collect();
 
-                LobbyInfo::NotStarted(players)
+                LobbyInfoInternal::NotStarted(players)
             }
-            LobbyState::Playing(game) => LobbyInfo::Playing(game.get_game_info(player_id)),
+            LobbyState::Playing(game) => LobbyInfoInternal::Playing(game.get_game_info(player_id)),
         }
     }
 
-    pub fn get_snapshot(&self, player_id: &PlayerId) -> MatchSnapshot {
+    pub fn get_snapshot(&self, player_id: &PlayerId) -> MatchSnapshotInternal {
         match &self.state {
             LobbyState::NotStarted(_) => {
                 let players = self
@@ -91,7 +101,7 @@ impl Lobby {
                     .map(|(id, p)| (id.clone(), p.clone()))
                     .collect();
 
-                MatchSnapshot::Waiting(players)
+                MatchSnapshotInternal::Waiting(players)
             }
             LobbyState::Playing(game) => {
                 let players = self
@@ -100,7 +110,7 @@ impl Lobby {
                     .map(|(id, p)| (id.clone(), p.clone()))
                     .collect();
 
-                MatchSnapshot::Playing(PlayingMatchSnapshot {
+                MatchSnapshotInternal::Playing(PlayingMatchSnapshotInternal {
                     players,
                     game: game.get_game_info(player_id),
                 })

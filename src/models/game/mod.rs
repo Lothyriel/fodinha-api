@@ -48,7 +48,7 @@ impl Player {
     }
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct GameSettings {
     pub cards_count: usize,
     pub lifes: usize,

@@ -4,7 +4,10 @@ use chrono::{DateTime, Utc};
 use futures::TryStreamExt;
 use mongodb::{Collection, Database, bson::doc};
 
-use crate::models::{game::MatchEvent, id::*};
+use crate::models::{
+    game::{GameSettings, MatchEvent},
+    id::*,
+};
 
 #[derive(Clone)]
 pub struct MatchesRepository {
@@ -46,9 +49,13 @@ impl MatchesRepository {
         cursor.try_collect().await
     }
 
-    pub async fn create_metadata(&self, match_id: &MatchId) -> mongodb::error::Result<()> {
+    pub async fn create_metadata(
+        &self,
+        match_id: &MatchId,
+        settings: GameSettings,
+    ) -> mongodb::error::Result<()> {
         self.metadata
-            .insert_one(MatchMetadataDto::new(match_id))
+            .insert_one(MatchMetadataDto::new(match_id, settings))
             .await?;
 
         Ok(())
@@ -64,6 +71,24 @@ impl MatchesRepository {
                 doc! { "match_id": match_id.as_str() },
                 doc! { "$addToSet": { "players": player_id.as_str() } },
             )
+            .await?;
+
+        Ok(())
+    }
+
+    pub async fn set_metadata_player_ready(
+        &self,
+        match_id: &MatchId,
+        player_id: &PlayerId,
+        ready: bool,
+    ) -> mongodb::error::Result<()> {
+        let update = match ready {
+            true => doc! { "$addToSet": { "ready_players": player_id.as_str() } },
+            false => doc! { "$pull": { "ready_players": player_id.as_str() } },
+        };
+
+        self.metadata
+            .update_one(doc! { "match_id": match_id.as_str() }, update)
             .await?;
 
         Ok(())
@@ -145,15 +170,21 @@ impl MatchesRepository {
 pub struct MatchMetadataDto {
     pub match_id: String,
     pub status: MatchMetadataStatus,
+    pub settings: Option<GameSettings>,
+    #[serde(default)]
     pub players: Vec<String>,
+    #[serde(default)]
+    pub ready_players: Vec<String>,
 }
 
 impl MatchMetadataDto {
-    fn new(match_id: &MatchId) -> Self {
+    fn new(match_id: &MatchId, settings: GameSettings) -> Self {
         Self {
             match_id: match_id.as_str().to_string(),
             status: MatchMetadataStatus::Waiting,
+            settings: Some(settings),
             players: Vec::new(),
+            ready_players: Vec::new(),
         }
     }
 

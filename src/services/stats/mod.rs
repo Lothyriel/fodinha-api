@@ -15,7 +15,6 @@ pub use projector::{StatsProjector, StatsProjectorHandle};
 pub struct MatchPlayerStats {
     pub match_id: String,
     pub player_id: String,
-    pub player: Option<UserClaims>,
     pub games_played: i64,
     pub matches_won: i64,
     pub rounds_won: i64,
@@ -28,11 +27,10 @@ pub struct MatchPlayerStats {
 }
 
 impl MatchPlayerStats {
-    pub(crate) fn new(match_id: String, player_id: String, player: Option<UserClaims>) -> Self {
+    pub(crate) fn new(match_id: String, player_id: String) -> Self {
         Self {
             match_id,
             player_id,
-            player,
             games_played: 0,
             matches_won: 0,
             rounds_won: 0,
@@ -49,7 +47,6 @@ impl MatchPlayerStats {
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct PlayerStats {
     pub player_id: String,
-    pub player: Option<UserClaims>,
     pub games_played: i64,
     pub matches_won: i64,
     pub rounds_won: i64,
@@ -70,10 +67,6 @@ impl PlayerStats {
     }
 
     pub(crate) fn apply_match(&mut self, stats: &MatchPlayerStats) {
-        if let Some(player) = stats.player.clone() {
-            self.player = Some(player);
-        }
-
         self.games_played += stats.games_played;
         self.matches_won += stats.matches_won;
         self.rounds_won += stats.rounds_won;
@@ -108,25 +101,25 @@ pub struct PlayerStatsResponse {
     pub favorite_card_wins: i64,
 }
 
-impl From<PlayerStats> for PlayerStatsResponse {
-    fn from(stats: PlayerStats) -> Self {
-        let average_bid = ratio(stats.total_bid, stats.bid_count);
-        let bid_accuracy = percent(stats.bids_hit, stats.bid_count);
-        let win_rate = percent(stats.matches_won, stats.games_played);
-        let (favorite_card, favorite_card_wins) = favorite_card(&stats.winning_cards);
+impl PlayerStats {
+    pub(crate) fn into_response(self, player: Option<UserClaims>) -> PlayerStatsResponse {
+        let average_bid = ratio(self.total_bid, self.bid_count);
+        let bid_accuracy = percent(self.bids_hit, self.bid_count);
+        let win_rate = percent(self.matches_won, self.games_played);
+        let (favorite_card, favorite_card_wins) = favorite_card(&self.winning_cards);
 
-        Self {
-            player_id: stats.player_id,
-            player: stats.player,
-            games_played: stats.games_played,
-            matches_won: stats.matches_won,
-            rounds_won: stats.rounds_won,
-            trump_cards: stats.trump_cards,
-            bid_count: stats.bid_count,
-            total_bid: stats.total_bid,
+        PlayerStatsResponse {
+            player_id: self.player_id,
+            player,
+            games_played: self.games_played,
+            matches_won: self.matches_won,
+            rounds_won: self.rounds_won,
+            trump_cards: self.trump_cards,
+            bid_count: self.bid_count,
+            total_bid: self.total_bid,
             average_bid,
-            bids_hit: stats.bids_hit,
-            bids_missed: stats.bids_missed,
+            bids_hit: self.bids_hit,
+            bids_missed: self.bids_missed,
             bid_accuracy,
             win_rate,
             favorite_card,

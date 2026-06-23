@@ -43,10 +43,18 @@ pub(crate) fn project_match_stats(
             MatchEvent::PlayerJoined { user_claims } => {
                 let player_id = user_claims.id();
                 players.insert(player_id.clone(), user_claims.clone());
-                ensure_player_stats(&mut stats, match_id, &players, &player_id);
+                ensure_player_stats(&mut stats, match_id, &player_id);
             }
             MatchEvent::GameStarted { settings, set } => {
-                let player_ids = players.keys().cloned().collect::<Vec<_>>();
+                let player_ids = match players.is_empty() {
+                    true => set.decks.keys().cloned().collect::<Vec<_>>(),
+                    false => players.keys().cloned().collect::<Vec<_>>(),
+                };
+
+                for player_id in &player_ids {
+                    ensure_player_stats(&mut stats, match_id, player_id);
+                }
+
                 game = Some(Game::from_started(
                     &player_ids,
                     settings.clone(),
@@ -55,7 +63,7 @@ pub(crate) fn project_match_stats(
                 current_upcard = Some(set.upcard);
                 current_bids.clear();
                 current_rounds.clear();
-                add_dealt_trumps(&mut stats, match_id, &players, &set.decks, set.upcard);
+                add_dealt_trumps(&mut stats, match_id, &set.decks, set.upcard);
             }
             MatchEvent::BidPlaced { player_id, bid } => {
                 let game = game.as_mut().ok_or(StatsProjectionError::GameNotStarted)?;
@@ -64,7 +72,7 @@ pub(crate) fn project_match_stats(
                     return Err(StatsProjectionError::UnexpectedAppliedChange);
                 };
 
-                let player_stats = ensure_player_stats(&mut stats, match_id, &players, player_id);
+                let player_stats = ensure_player_stats(&mut stats, match_id, player_id);
                 player_stats.total_bid += *bid as i64;
                 player_stats.bid_count += 1;
                 current_bids.insert(player_id.clone(), *bid);
@@ -83,7 +91,6 @@ pub(crate) fn project_match_stats(
                         record_round_win(
                             &mut stats,
                             match_id,
-                            &players,
                             &mut current_rounds,
                             &next,
                             &state.pile,
@@ -100,7 +107,6 @@ pub(crate) fn project_match_stats(
                             record_round_win(
                                 &mut stats,
                                 match_id,
-                                &players,
                                 &mut current_rounds,
                                 &winner,
                                 &state.pile,
@@ -108,17 +114,11 @@ pub(crate) fn project_match_stats(
                             );
                         }
 
-                        finish_set(
-                            &mut stats,
-                            match_id,
-                            &players,
-                            &current_bids,
-                            &current_rounds,
-                        );
+                        finish_set(&mut stats, match_id, &current_bids, &current_rounds);
                         current_bids.clear();
                         current_rounds.clear();
                         current_upcard = Some(next_upcard);
-                        add_dealt_trumps(&mut stats, match_id, &players, &decks, next_upcard);
+                        add_dealt_trumps(&mut stats, match_id, &decks, next_upcard);
                     }
                     GameOutcome::Ended { lifes } => {
                         if let Some(winner) = winning_turn(&state.pile, upcard) {
@@ -126,7 +126,6 @@ pub(crate) fn project_match_stats(
                             record_round_win(
                                 &mut stats,
                                 match_id,
-                                &players,
                                 &mut current_rounds,
                                 &winner,
                                 &state.pile,
@@ -134,13 +133,7 @@ pub(crate) fn project_match_stats(
                             );
                         }
 
-                        finish_set(
-                            &mut stats,
-                            match_id,
-                            &players,
-                            &current_bids,
-                            &current_rounds,
-                        );
+                        finish_set(&mut stats, match_id, &current_bids, &current_rounds);
                         finished_lifes = Some(lifes);
                     }
                 }
@@ -161,7 +154,7 @@ pub(crate) fn project_match_stats(
     if max_life > 0 {
         for (player_id, life) in lifes {
             if life == max_life {
-                ensure_player_stats(&mut stats, match_id, &players, &player_id).matches_won = 1;
+                ensure_player_stats(&mut stats, match_id, &player_id).matches_won = 1;
             }
         }
     }
@@ -172,20 +165,18 @@ pub(crate) fn project_match_stats(
 fn add_dealt_trumps(
     stats: &mut HashMap<PlayerId, MatchPlayerStats>,
     match_id: &MatchId,
-    players: &IndexMap<PlayerId, UserClaims>,
     decks: &IndexMap<PlayerId, Vec<Card>>,
     upcard: Card,
 ) {
     for (player_id, deck) in decks {
         let trump_cards = deck.iter().filter(|card| card.is_trump(upcard)).count() as i64;
-        ensure_player_stats(stats, match_id, players, player_id).trump_cards += trump_cards;
+        ensure_player_stats(stats, match_id, player_id).trump_cards += trump_cards;
     }
 }
 
 fn record_round_win(
     stats: &mut HashMap<PlayerId, MatchPlayerStats>,
     match_id: &MatchId,
-    players: &IndexMap<PlayerId, UserClaims>,
     current_rounds: &mut HashMap<PlayerId, usize>,
     winner: &PlayerId,
     pile: &[Turn],
@@ -196,7 +187,7 @@ fn record_round_win(
         .find(|turn| &turn.player_id == winner)
         .or_else(|| winning_turn(pile, upcard));
 
-    let player_stats = ensure_player_stats(stats, match_id, players, winner);
+    let player_stats = ensure_player_stats(stats, match_id, winner);
     player_stats.rounds_won += 1;
     *current_rounds.entry(winner.clone()).or_default() += 1;
 
@@ -211,13 +202,12 @@ fn record_round_win(
 fn finish_set(
     stats: &mut HashMap<PlayerId, MatchPlayerStats>,
     match_id: &MatchId,
-    players: &IndexMap<PlayerId, UserClaims>,
     current_bids: &HashMap<PlayerId, usize>,
     current_rounds: &HashMap<PlayerId, usize>,
 ) {
     for (player_id, bid) in current_bids {
         let rounds = current_rounds.get(player_id).copied().unwrap_or_default();
-        let player_stats = ensure_player_stats(stats, match_id, players, player_id);
+        let player_stats = ensure_player_stats(stats, match_id, player_id);
 
         if rounds == *bid {
             player_stats.bids_hit += 1;
@@ -230,14 +220,12 @@ fn finish_set(
 fn ensure_player_stats<'a>(
     stats: &'a mut HashMap<PlayerId, MatchPlayerStats>,
     match_id: &MatchId,
-    players: &IndexMap<PlayerId, UserClaims>,
     player_id: &PlayerId,
 ) -> &'a mut MatchPlayerStats {
     stats.entry(player_id.clone()).or_insert_with(|| {
         MatchPlayerStats::new(
             match_id.as_str().to_string(),
             player_id.as_str().to_string(),
-            players.get(player_id).cloned(),
         )
     })
 }

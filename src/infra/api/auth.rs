@@ -15,7 +15,7 @@ use reqwest::header;
 use serde_json::{Value, json};
 
 use crate::{
-    infra::{AuthError, GoogleUserClaims, UserClaims},
+    infra::{AnonymousUserClaims, AuthError, GoogleUserClaims, UserClaims},
     models::id::{PlayerId, gen_playerid},
 };
 
@@ -42,6 +42,10 @@ pub async fn middleware(
         .ok_or(AuthError::TokenNotPresent)?;
 
     let claims = get_claims_from_token(token, &state.jwt_key).await?;
+
+    if let Err(e) = state.manager.upsert_user(&claims).await {
+        tracing::error!("Error upserting authenticated user: {e}");
+    }
 
     req.extensions_mut().insert(claims);
 
@@ -83,7 +87,17 @@ async fn update(
         }
     };
 
-    let token = generate_token(params, claim.id, &state.jwt_key);
+    let claims = AnonymousUserClaims {
+        id: claim.id,
+        data: params,
+    };
+    let user = UserClaims::Anonymous(claims.clone());
+
+    if let Err(e) = state.manager.upsert_user(&user).await {
+        return e.into_response();
+    }
+
+    let token = generate_token(&claims, &state.jwt_key);
 
     Json(token).into_response()
 }
@@ -93,7 +107,17 @@ async fn sign_up(State(state): State<ApiState>, Json(params): Json<Value>) -> im
         return response;
     }
 
-    let token = generate_token(params, gen_playerid(), &state.jwt_key);
+    let claims = AnonymousUserClaims {
+        id: gen_playerid(),
+        data: params,
+    };
+    let user = UserClaims::Anonymous(claims.clone());
+
+    if let Err(e) = state.manager.upsert_user(&user).await {
+        return e.into_response();
+    }
+
+    let token = generate_token(&claims, &state.jwt_key);
 
     Json(token).into_response()
 }
@@ -114,10 +138,10 @@ fn validate_nickname(params: &Value) -> Result<(), axum::response::Response> {
     Err((StatusCode::BAD_REQUEST, body).into_response())
 }
 
-fn generate_token(data: Value, id: PlayerId, jwt_key: &str) -> Auth {
+fn generate_token(claim: &AnonymousUserClaims, jwt_key: &str) -> Auth {
     let claims = AnonymousUserClaimsDto {
-        id,
-        data,
+        id: claim.id.clone(),
+        data: claim.data.clone(),
         iss: ISSUER,
         exp: 10000000000,
     };

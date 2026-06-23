@@ -10,7 +10,9 @@ pub(crate) async fn project_match_metadata(
     match_finished: bool,
 ) -> mongodb::error::Result<()> {
     match event {
-        MatchEvent::MatchCreated { .. } => repo.create_metadata(match_id).await,
+        MatchEvent::MatchCreated { settings } => {
+            repo.create_metadata(match_id, settings.clone()).await
+        }
         MatchEvent::PlayerJoined { user_claims } => {
             let player_id = user_claims.id();
 

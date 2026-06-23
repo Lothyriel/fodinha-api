@@ -117,7 +117,10 @@ mod tests {
     use std::{collections::HashMap, net::Ipv4Addr};
 
     use futures::{SinkExt, StreamExt, stream::FusedStream};
-    use mongodb::Database;
+    use mongodb::{
+        Database,
+        bson::{Document, doc},
+    };
 
     use reqwest::{Client, StatusCode};
     use tokio::{
@@ -132,6 +135,7 @@ mod tests {
 
     use crate::{
         AppSettings,
+        infra::UserClaims,
         models::{
             Card,
             commands::{
@@ -442,6 +446,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_lobby_changes_do_not_write_match_events() {
+        let server = TestServer::start().await;
+        let client = http_client();
+        let tokens = get_players(&client, &server, 2).await;
+        let lobby_id = create_lobby(&client, &server, &tokens[0]).await;
+
+        for token in &tokens {
+            join_lobby_http(&client, &server, token, &lobby_id).await;
+        }
+
+        let player_id = get_claims_from_token(&tokens[0], TEST_JWT_KEY)
+            .await
+            .unwrap()
+            .id();
+
+        server
+            .manager
+            .player_status_change(player_id, true)
+            .await
+            .unwrap();
+
+        let events = server
+            .database
+            .as_ref()
+            .unwrap()
+            .collection::<Document>("MatchEvents")
+            .count_documents(doc! { "match_id": lobby_id.as_str() })
+            .await
+            .unwrap();
+
+        assert_eq!(events, 0);
+
+        server.shutdown().await;
+    }
+
+    #[tokio::test]
     async fn test_create_lobby_accepts_custom_lifes() {
         let server = TestServer::start().await;
 
@@ -469,9 +509,11 @@ mod tests {
 
         server.wait_until_match_actor_stopped().await;
 
-        let my_stats = wait_for_my_stats(&client, &server, &tokens[0]).await;
+        let updated_token = update_profile(&client, &server, &tokens[0], "Renamed Player").await;
+        let my_stats = wait_for_my_stats(&client, &server, &updated_token).await;
         assert_eq!(my_stats.games_played, 1);
         assert_eq!(my_stats.bid_count, 1);
+        assert_eq!(stats_nickname(&my_stats), Some("Renamed Player"));
 
         let leaderboard = wait_for_leaderboard(&client, &server, 2).await;
         assert_eq!(
@@ -487,6 +529,11 @@ mod tests {
                 .map(|stats| stats.matches_won)
                 .sum::<i64>(),
             1
+        );
+        assert!(
+            leaderboard
+                .iter()
+                .any(|stats| stats_nickname(stats) == Some("Renamed Player"))
         );
 
         drop(player_data);
@@ -879,6 +926,38 @@ mod tests {
             .json()
             .await
             .unwrap()
+    }
+
+    async fn update_profile(
+        client: &Client,
+        server: &TestServer,
+        token: &str,
+        nickname: &str,
+    ) -> String {
+        let params = serde_json::json!({
+            "nickname": nickname,
+        });
+
+        let res = client
+            .post(server.url("/auth/profile"))
+            .bearer_auth(token)
+            .json(&params)
+            .send()
+            .await
+            .unwrap();
+
+        assert!(res.status().is_success());
+
+        let res: Auth = res.json().await.unwrap();
+
+        res.token
+    }
+
+    fn stats_nickname(stats: &PlayerStatsResponse) -> Option<&str> {
+        match stats.player.as_ref()? {
+            UserClaims::Anonymous(claims) => claims.data.get("nickname")?.as_str(),
+            UserClaims::Google(claims) => Some(claims.name.as_str()),
+        }
     }
 
     async fn create_lobby(client: &Client, server: &TestServer, token: &str) -> LobbyId {

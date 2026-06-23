@@ -1,23 +1,31 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use tokio::sync::{mpsc, oneshot};
 
 use crate::{
-    infra::UserClaims,
+    infra::{AnonymousUserClaims, UserClaims},
     models::{
         Card,
-        commands::{CreateLobbyResponse, GameCommand, GetLobbyDto, LobbyInfo},
+        commands::{
+            CreateLobbyResponse, GameCommand, GetLobbyDto, LobbyInfo, MatchSnapshot, PlayerStatus,
+            PlayingMatchSnapshot, ServerMessage,
+        },
         game::GameSettings,
         id::{self, MatchId, PlayerId},
+        lobby::{
+            LobbyInfoInternal, LobbyPlayerStatus, MatchSnapshotInternal,
+            PlayingMatchSnapshotInternal,
+        },
     },
     services::{
         LobbyError, ManagerError,
         matches::{
             MatchActor, MatchActorMessage, MatchReceiver, MatchRegistry, MatchSender,
-            PlayerReceiver, PlayerSender, SenderLookup,
+            OutboundMessage, PlayerReceiver, PlayerSender, SenderLookup,
         },
-        repositories::matches::MatchesRepository,
+        repositories::matches::{MatchMetadataStatus, MatchesRepository},
         repositories::stats::StatsRepository,
+        repositories::users::UsersRepository,
         stats::{PlayerStatsResponse, StatsProjectorHandle},
     },
 };
@@ -27,7 +35,15 @@ pub struct ManagerHandle {
     pub(crate) registry: MatchRegistry,
     repo: MatchesRepository,
     stats_repo: StatsRepository,
+    users_repo: UsersRepository,
     stats_projector: StatsProjectorHandle,
+}
+
+fn fallback_user_claims(player_id: &PlayerId) -> UserClaims {
+    UserClaims::Anonymous(AnonymousUserClaims {
+        id: player_id.clone(),
+        data: serde_json::json!({ "nickname": player_id.as_str() }),
+    })
 }
 
 pub struct PlayerConnectionContext {
@@ -40,12 +56,14 @@ impl ManagerHandle {
     pub fn new(
         repo: MatchesRepository,
         stats_repo: StatsRepository,
+        users_repo: UsersRepository,
         stats_projector: StatsProjectorHandle,
     ) -> Self {
         Self {
             registry: MatchRegistry::new(),
             repo,
             stats_repo,
+            users_repo,
             stats_projector,
         }
     }
@@ -88,13 +106,17 @@ impl ManagerHandle {
         match_id: MatchId,
         user_claims: UserClaims,
     ) -> Result<LobbyInfo, ManagerError> {
+        self.users_repo.upsert_user(&user_claims).await?;
+        let player_id = user_claims.id();
         let sender = self.sender_for_match(&match_id).await?;
 
-        Self::request(&sender, |respond| MatchActorMessage::JoinLobby {
-            user_claims,
+        let info = Self::request(&sender, |respond| MatchActorMessage::JoinLobby {
+            player_id,
             respond,
         })
-        .await
+        .await?;
+
+        self.hydrate_lobby_info(info).await
     }
 
     pub async fn get_lobbies(&self) -> Vec<GetLobbyDto> {
@@ -135,12 +157,19 @@ impl ManagerHandle {
     }
 
     pub async fn leaderboard(&self, limit: i64) -> Result<Vec<PlayerStatsResponse>, ManagerError> {
-        let stats = self
-            .stats_repo
-            .leaderboard(limit)
-            .await?
+        let stats = self.stats_repo.leaderboard(limit).await?;
+        let player_ids = stats
+            .iter()
+            .map(|stats| stats.player_id.clone())
+            .collect::<Vec<_>>();
+        let users = self.users_repo.users_by_id(&player_ids).await?;
+        let stats = stats
             .into_iter()
-            .map(Into::into)
+            .map(|stats| {
+                let player = users.get(&stats.player_id).cloned();
+
+                stats.into_response(player)
+            })
             .collect();
 
         Ok(stats)
@@ -150,11 +179,18 @@ impl ManagerHandle {
         &self,
         player_id: &PlayerId,
     ) -> Result<Option<PlayerStatsResponse>, ManagerError> {
-        Ok(self
-            .stats_repo
-            .player_stats(player_id)
-            .await?
-            .map(Into::into))
+        let Some(stats) = self.stats_repo.player_stats(player_id).await? else {
+            return Ok(None);
+        };
+        let user = self.users_repo.user(player_id.as_str()).await?;
+
+        Ok(Some(stats.into_response(user)))
+    }
+
+    pub async fn upsert_user(&self, user: &UserClaims) -> Result<(), ManagerError> {
+        self.users_repo.upsert_user(user).await?;
+
+        Ok(())
     }
 
     pub async fn play_turn(&self, card: Card, player_id: PlayerId) -> Result<(), ManagerError> {
@@ -216,6 +252,44 @@ impl ManagerHandle {
         })
     }
 
+    pub async fn hydrate_outbound_message(
+        &self,
+        msg: OutboundMessage,
+    ) -> Result<ServerMessage, ManagerError> {
+        match msg {
+            OutboundMessage::PlayerTurn { player_id } => {
+                Ok(ServerMessage::PlayerTurn { player_id })
+            }
+            OutboundMessage::TurnPlayed { pile } => Ok(ServerMessage::TurnPlayed { pile }),
+            OutboundMessage::PlayerBidded { player_id, bid } => {
+                Ok(ServerMessage::PlayerBidded { player_id, bid })
+            }
+            OutboundMessage::PlayerBiddingTurn {
+                player_id,
+                possible_bids,
+            } => Ok(ServerMessage::PlayerBiddingTurn {
+                player_id,
+                possible_bids,
+            }),
+            OutboundMessage::PlayerStatusChange { player_id, ready } => {
+                Ok(ServerMessage::PlayerStatusChange { player_id, ready })
+            }
+            OutboundMessage::RoundEnded(rounds) => Ok(ServerMessage::RoundEnded(rounds)),
+            OutboundMessage::PlayerDeck(deck) => Ok(ServerMessage::PlayerDeck(deck)),
+            OutboundMessage::SetStart { upcard } => Ok(ServerMessage::SetStart { upcard }),
+            OutboundMessage::SetEnded { lifes } => Ok(ServerMessage::SetEnded { lifes }),
+            OutboundMessage::GameEnded { lifes } => Ok(ServerMessage::GameEnded { lifes }),
+            OutboundMessage::PlayerJoined(player_id) => {
+                let player = self.user_or_fallback(&player_id).await?;
+
+                Ok(ServerMessage::PlayerJoined(player))
+            }
+            OutboundMessage::Snapshot(snapshot) => Ok(ServerMessage::Snapshot(
+                self.hydrate_snapshot(snapshot).await?,
+            )),
+        }
+    }
+
     pub async fn disconnect_player(
         &self,
         match_id: &MatchId,
@@ -232,6 +306,71 @@ impl ManagerHandle {
                 outbound_tx,
             })
             .await;
+    }
+
+    async fn hydrate_lobby_info(&self, info: LobbyInfoInternal) -> Result<LobbyInfo, ManagerError> {
+        match info {
+            LobbyInfoInternal::NotStarted(players) => {
+                Ok(LobbyInfo::NotStarted(self.hydrate_players(players).await?))
+            }
+            LobbyInfoInternal::Playing(game) => Ok(LobbyInfo::Playing(game)),
+        }
+    }
+
+    async fn hydrate_snapshot(
+        &self,
+        snapshot: MatchSnapshotInternal,
+    ) -> Result<MatchSnapshot, ManagerError> {
+        match snapshot {
+            MatchSnapshotInternal::Waiting(players) => {
+                Ok(MatchSnapshot::Waiting(self.hydrate_players(players).await?))
+            }
+            MatchSnapshotInternal::Playing(PlayingMatchSnapshotInternal { players, game }) => {
+                Ok(MatchSnapshot::Playing(PlayingMatchSnapshot {
+                    players: self.hydrate_players(players).await?,
+                    game,
+                }))
+            }
+        }
+    }
+
+    async fn hydrate_players(
+        &self,
+        players: HashMap<PlayerId, LobbyPlayerStatus>,
+    ) -> Result<HashMap<PlayerId, PlayerStatus>, ManagerError> {
+        let player_ids = players
+            .keys()
+            .map(|player_id| player_id.as_str().to_string())
+            .collect::<Vec<_>>();
+        let users = self.users_repo.users_by_id(&player_ids).await?;
+
+        let players = players
+            .into_iter()
+            .map(|(player_id, status)| {
+                let player = users
+                    .get(player_id.as_str())
+                    .cloned()
+                    .unwrap_or_else(|| fallback_user_claims(&player_id));
+
+                (
+                    player_id,
+                    PlayerStatus {
+                        ready: status.ready,
+                        player,
+                    },
+                )
+            })
+            .collect();
+
+        Ok(players)
+    }
+
+    async fn user_or_fallback(&self, player_id: &PlayerId) -> Result<UserClaims, ManagerError> {
+        Ok(self
+            .users_repo
+            .user(player_id.as_str())
+            .await?
+            .unwrap_or_else(|| fallback_user_claims(player_id)))
     }
 
     async fn request<T>(
@@ -278,17 +417,21 @@ impl ManagerHandle {
     }
 
     async fn load_match_actor(&self, match_id: &MatchId) -> Result<MatchSender, ManagerError> {
-        if self.repo.active_metadata(match_id).await?.is_none() {
-            return Err(LobbyError::InvalidLobby.into());
-        }
-
+        let metadata = self
+            .repo
+            .active_metadata(match_id)
+            .await?
+            .ok_or(LobbyError::InvalidLobby)?;
+        let metadata_status = metadata.status;
         let events = self.repo.load_events(match_id).await?;
 
-        if events.is_empty() {
+        if events.is_empty() && metadata_status != MatchMetadataStatus::Waiting {
             return Err(LobbyError::InvalidLobby.into());
         }
 
         let mut actor = self.new_actor(match_id.clone());
+
+        actor.restore_from_metadata(metadata);
 
         for event in events {
             actor.version = actor.version.max(event.sequence + 1);

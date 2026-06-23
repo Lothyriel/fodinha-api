@@ -5,7 +5,6 @@ use crate::{
     models::{
         Card, Turn,
         id::{LobbyId, PlayerId},
-        lobby::PlayerStatus,
     },
     services::GameInfoDto,
 };
@@ -19,6 +18,12 @@ pub struct GetLobbyDto {
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct CreateLobbyResponse {
     pub lobby_id: LobbyId,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct PlayerStatus {
+    pub ready: bool,
+    pub player: UserClaims,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, Clone)]

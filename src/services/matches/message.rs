@@ -1,21 +1,59 @@
 use tokio::sync::{mpsc, oneshot};
 
+use std::collections::HashMap;
+
 use crate::{
-    infra::UserClaims,
     models::{
-        commands::{GameCommand, GetLobbyDto, LobbyInfo},
+        Card, Turn,
+        commands::{GameCommand, GetLobbyDto},
         game::GameSettings,
         id::PlayerId,
+        lobby::{LobbyInfoInternal, MatchSnapshotInternal},
     },
     services::ManagerError,
 };
 
-use crate::models::commands::ServerMessage;
-
 pub type MatchSender = flume::Sender<MatchActorMessage>;
 pub type MatchReceiver = flume::Receiver<MatchActorMessage>;
-pub type PlayerSender = mpsc::Sender<ServerMessage>;
-pub type PlayerReceiver = mpsc::Receiver<ServerMessage>;
+pub type PlayerSender = mpsc::Sender<OutboundMessage>;
+pub type PlayerReceiver = mpsc::Receiver<OutboundMessage>;
+
+type PlayerPoints = HashMap<PlayerId, usize>;
+
+#[derive(Clone, Debug)]
+pub enum OutboundMessage {
+    PlayerTurn {
+        player_id: PlayerId,
+    },
+    TurnPlayed {
+        pile: Vec<Turn>,
+    },
+    PlayerBidded {
+        player_id: PlayerId,
+        bid: usize,
+    },
+    PlayerBiddingTurn {
+        player_id: PlayerId,
+        possible_bids: Vec<usize>,
+    },
+    PlayerStatusChange {
+        player_id: PlayerId,
+        ready: bool,
+    },
+    RoundEnded(PlayerPoints),
+    PlayerDeck(Vec<Card>),
+    SetStart {
+        upcard: Card,
+    },
+    SetEnded {
+        lifes: PlayerPoints,
+    },
+    GameEnded {
+        lifes: PlayerPoints,
+    },
+    PlayerJoined(PlayerId),
+    Snapshot(MatchSnapshotInternal),
+}
 
 pub enum MatchActorMessage {
     ConnectPlayer {
@@ -32,8 +70,8 @@ pub enum MatchActorMessage {
         respond: oneshot::Sender<Result<(), ManagerError>>,
     },
     JoinLobby {
-        user_claims: UserClaims,
-        respond: oneshot::Sender<Result<LobbyInfo, ManagerError>>,
+        player_id: PlayerId,
+        respond: oneshot::Sender<Result<LobbyInfoInternal, ManagerError>>,
     },
     StatusChange {
         player_id: PlayerId,

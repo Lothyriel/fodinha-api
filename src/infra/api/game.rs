@@ -50,6 +50,7 @@ async fn handle_connection(
     auth: UserClaims,
 ) -> Result<(), ManagerError> {
     let player_id = auth.id();
+    manager.upsert_user(&auth).await?;
     let context = manager.connect_player(player_id.clone()).await?;
     let connection = PlayerConnection {
         player_id,
@@ -101,6 +102,7 @@ impl PlayerConnection {
                         return Ok(());
                     };
 
+                    let msg = self.manager.hydrate_outbound_message(msg).await?;
                     self.send_server_msg(msg).await?;
                 }
                 inbound = self.socket.next() => {
