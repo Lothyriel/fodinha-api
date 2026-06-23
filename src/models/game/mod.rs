@@ -653,7 +653,7 @@ impl Game {
                 .expect("Player should have a bid here")
                 .saturating_sub(player.rounds);
 
-            player.lifes = diff;
+            player.lifes = player.lifes.saturating_sub(diff);
 
             if player.lifes == 0 {
                 self.round_iter.remove(idx);
