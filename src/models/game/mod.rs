@@ -648,9 +648,8 @@ impl Game {
                 .get_full_mut(&id)
                 .expect("Player should exist here");
 
-            let diff = player
-                .rounds
-                .saturating_sub(player.bid.expect("should have bid here"));
+            let bid = player.bid.expect("should have bid here");
+            let diff = player.rounds.abs_diff(bid);
 
             player.lifes = player.lifes.saturating_sub(diff);
 
