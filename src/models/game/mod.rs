@@ -373,7 +373,8 @@ impl Game {
             .expect("Player should exist here");
 
         let info = self
-            .alive_players()
+            .players
+            .iter()
             .map(|(id, p)| PlayerInfoDto {
                 id: id.clone(),
                 lifes: p.lifes,
