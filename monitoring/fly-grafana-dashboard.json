@@ -153,7 +153,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(http_server_request_duration_bucket{app=~\"$app\",region=~\"$region\"}[5m])))"
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(http_server_request_duration_seconds_bucket{app=~\"$app\",region=~\"$region\"}[5m])))"
         }
       ],
       "fieldConfig": {
@@ -190,7 +190,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(db_client_operation_duration_bucket{app=~\"$app\",region=~\"$region\"}[5m])))"
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(db_client_operation_duration_seconds_bucket{app=~\"$app\",region=~\"$region\"}[5m])))"
         }
       ],
       "fieldConfig": {
@@ -248,7 +248,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "histogram_quantile(0.95, sum by (le, http_route) (rate(http_server_request_duration_bucket{app=~\"$app\",region=~\"$region\"}[5m])))",
+          "expr": "histogram_quantile(0.95, sum by (le, http_route) (rate(http_server_request_duration_seconds_bucket{app=~\"$app\",region=~\"$region\"}[5m])))",
           "legendFormat": "{{http_route}}"
         }
       ],
@@ -294,7 +294,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "histogram_quantile(0.95, sum by (le, db_collection_name, db_operation_name) (rate(db_client_operation_duration_bucket{app=~\"$app\",region=~\"$region\"}[5m])))",
+          "expr": "histogram_quantile(0.95, sum by (le, db_collection_name, db_operation_name) (rate(db_client_operation_duration_seconds_bucket{app=~\"$app\",region=~\"$region\"}[5m])))",
           "legendFormat": "{{db_collection_name}} {{db_operation_name}}"
         }
       ],
@@ -361,7 +361,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "histogram_quantile(0.95, sum by (le, actor_message) (rate(actor_message_duration_bucket{app=~\"$app\",region=~\"$region\"}[5m])))",
+          "expr": "histogram_quantile(0.95, sum by (le, actor_message) (rate(actor_message_duration_seconds_bucket{app=~\"$app\",region=~\"$region\"}[5m])))",
           "legendFormat": "{{actor_message}}"
         }
       ],
@@ -386,7 +386,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "histogram_quantile(0.95, sum by (le, actor_startup_kind) (rate(actor_startup_duration_bucket{app=~\"$app\",region=~\"$region\"}[5m])))",
+          "expr": "histogram_quantile(0.95, sum by (le, actor_startup_kind) (rate(actor_startup_duration_seconds_bucket{app=~\"$app\",region=~\"$region\"}[5m])))",
           "legendFormat": "{{actor_startup_kind}}"
         }
       ],

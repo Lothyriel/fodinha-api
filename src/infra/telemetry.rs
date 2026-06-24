@@ -18,12 +18,19 @@ use opentelemetry::{
 };
 use opentelemetry_otlp::{Protocol, WithExportConfig};
 use opentelemetry_prometheus::PrometheusExporter;
-use opentelemetry_sdk::{Resource, metrics::SdkMeterProvider, trace::SdkTracerProvider};
+use opentelemetry_sdk::{
+    Resource,
+    metrics::{Aggregation, Instrument as MetricInstrument, InstrumentKind, SdkMeterProvider, Stream},
+    trace::SdkTracerProvider,
+};
 use prometheus::{Encoder, Registry, TextEncoder};
 use tracing::Instrument;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 const DEFAULT_FILTER: &str = "debug,hyper=off,rustls=error,tungstenite=error";
+const LATENCY_HISTOGRAM_BUCKETS: &[f64] = &[
+    0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0,
+];
 
 static INSTRUMENTS: LazyLock<Instruments> = LazyLock::new(Instruments::new);
 static PROMETHEUS_REGISTRY: LazyLock<Registry> = LazyLock::new(Registry::new);
@@ -175,6 +182,7 @@ fn init_meter_provider(resource: Resource) -> Option<SdkMeterProvider> {
 
     let mut provider = SdkMeterProvider::builder()
         .with_resource(resource)
+        .with_view(latency_histogram_view)
         .with_reader(prometheus_exporter);
 
     if let Some(exporter) = init_otlp_metric_exporter() {
@@ -185,6 +193,26 @@ fn init_meter_provider(resource: Resource) -> Option<SdkMeterProvider> {
     global::set_meter_provider(provider.clone());
 
     Some(provider)
+}
+
+fn latency_histogram_view(instrument: &MetricInstrument) -> Option<Stream> {
+    if instrument.kind() != InstrumentKind::Histogram {
+        return None;
+    }
+
+    match instrument.name() {
+        "http.server.request.duration"
+        | "db.client.operation.duration"
+        | "actor.startup.duration"
+        | "actor.message.duration" => Stream::builder()
+            .with_aggregation(Aggregation::ExplicitBucketHistogram {
+                boundaries: LATENCY_HISTOGRAM_BUCKETS.to_vec(),
+                record_min_max: true,
+            })
+            .build()
+            .ok(),
+        _ => None,
+    }
 }
 
 fn init_prometheus_exporter() -> Option<PrometheusExporter> {
