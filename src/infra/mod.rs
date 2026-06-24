@@ -1,6 +1,7 @@
 use crate::models::id::PlayerId;
 
 pub mod api;
+pub mod telemetry;
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, PartialEq, Eq, Debug)]
 #[serde(tag = "type", content = "data")]

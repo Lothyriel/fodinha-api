@@ -4,9 +4,12 @@ use chrono::{DateTime, Utc};
 use futures::TryStreamExt;
 use mongodb::{Collection, Database, bson::doc};
 
-use crate::models::{
-    game::{GameSettings, MatchEvent},
-    id::*,
+use crate::{
+    infra::telemetry,
+    models::{
+        game::{GameSettings, MatchEvent},
+        id::*,
+    },
 };
 
 #[derive(Clone)]
@@ -29,9 +32,12 @@ impl MatchesRepository {
         sequence: usize,
         event: MatchEvent,
     ) -> mongodb::error::Result<()> {
-        self.events
-            .insert_one(MatchEventDto::new(match_id, sequence, event))
-            .await?;
+        telemetry::db_query("MatchEvents", "insert_one", async {
+            self.events
+                .insert_one(MatchEventDto::new(match_id, sequence, event))
+                .await
+        })
+        .await?;
 
         Ok(())
     }
@@ -40,13 +46,16 @@ impl MatchesRepository {
         &self,
         match_id: &MatchId,
     ) -> mongodb::error::Result<Vec<MatchEventDto>> {
-        let cursor = self
-            .events
-            .find(doc! { "match_id": match_id.as_str() })
-            .sort(doc! { "sequence": 1 })
-            .await?;
+        telemetry::db_query("MatchEvents", "find", async {
+            let cursor = self
+                .events
+                .find(doc! { "match_id": match_id.as_str() })
+                .sort(doc! { "sequence": 1 })
+                .await?;
 
-        cursor.try_collect().await
+            cursor.try_collect().await
+        })
+        .await
     }
 
     pub async fn create_metadata(
@@ -54,9 +63,12 @@ impl MatchesRepository {
         match_id: &MatchId,
         settings: GameSettings,
     ) -> mongodb::error::Result<()> {
-        self.metadata
-            .insert_one(MatchMetadataDto::new(match_id, settings))
-            .await?;
+        telemetry::db_query("MatchMetadata", "insert_one", async {
+            self.metadata
+                .insert_one(MatchMetadataDto::new(match_id, settings))
+                .await
+        })
+        .await?;
 
         Ok(())
     }
@@ -66,12 +78,15 @@ impl MatchesRepository {
         match_id: &MatchId,
         player_id: &PlayerId,
     ) -> mongodb::error::Result<()> {
-        self.metadata
-            .update_one(
-                doc! { "match_id": match_id.as_str() },
-                doc! { "$addToSet": { "players": player_id.as_str() } },
-            )
-            .await?;
+        telemetry::db_query("MatchMetadata", "update_one.add_player", async {
+            self.metadata
+                .update_one(
+                    doc! { "match_id": match_id.as_str() },
+                    doc! { "$addToSet": { "players": player_id.as_str() } },
+                )
+                .await
+        })
+        .await?;
 
         Ok(())
     }
@@ -81,25 +96,31 @@ impl MatchesRepository {
         match_id: &MatchId,
         player_id: &PlayerId,
     ) -> mongodb::error::Result<()> {
-        self.metadata
-            .update_one(
-                doc! { "match_id": match_id.as_str() },
-                doc! {
-                    "$pull": {
-                        "players": player_id.as_str(),
-                        "ready_players": player_id.as_str(),
-                    }
-                },
-            )
-            .await?;
+        telemetry::db_query("MatchMetadata", "update_one.remove_player", async {
+            self.metadata
+                .update_one(
+                    doc! { "match_id": match_id.as_str() },
+                    doc! {
+                        "$pull": {
+                            "players": player_id.as_str(),
+                            "ready_players": player_id.as_str(),
+                        }
+                    },
+                )
+                .await
+        })
+        .await?;
 
         Ok(())
     }
 
     pub async fn delete_metadata(&self, match_id: &MatchId) -> mongodb::error::Result<()> {
-        self.metadata
-            .delete_one(doc! { "match_id": match_id.as_str() })
-            .await?;
+        telemetry::db_query("MatchMetadata", "delete_one", async {
+            self.metadata
+                .delete_one(doc! { "match_id": match_id.as_str() })
+                .await
+        })
+        .await?;
 
         Ok(())
     }
@@ -115,9 +136,12 @@ impl MatchesRepository {
             false => doc! { "$pull": { "ready_players": player_id.as_str() } },
         };
 
-        self.metadata
-            .update_one(doc! { "match_id": match_id.as_str() }, update)
-            .await?;
+        telemetry::db_query("MatchMetadata", "update_one.set_ready", async {
+            self.metadata
+                .update_one(doc! { "match_id": match_id.as_str() }, update)
+                .await
+        })
+        .await?;
 
         Ok(())
     }
@@ -136,44 +160,56 @@ impl MatchesRepository {
         &self,
         match_id: &MatchId,
     ) -> mongodb::error::Result<Option<MatchMetadataDto>> {
-        self.metadata
-            .find_one(doc! {
-                "match_id": match_id.as_str(),
-                "status": { "$ne": MatchMetadataStatus::Finished.as_str() },
-            })
-            .await
+        telemetry::db_query("MatchMetadata", "find_one.active_by_match", async {
+            self.metadata
+                .find_one(doc! {
+                    "match_id": match_id.as_str(),
+                    "status": { "$ne": MatchMetadataStatus::Finished.as_str() },
+                })
+                .await
+        })
+        .await
     }
 
     pub async fn active_metadata_for_player(
         &self,
         player_id: &PlayerId,
     ) -> mongodb::error::Result<Option<MatchMetadataDto>> {
-        self.metadata
-            .find_one(doc! {
-                "players": player_id.as_str(),
-                "status": { "$ne": MatchMetadataStatus::Finished.as_str() },
-            })
-            .await
+        telemetry::db_query("MatchMetadata", "find_one.active_by_player", async {
+            self.metadata
+                .find_one(doc! {
+                    "players": player_id.as_str(),
+                    "status": { "$ne": MatchMetadataStatus::Finished.as_str() },
+                })
+                .await
+        })
+        .await
     }
 
     pub async fn waiting_match_ids(&self) -> mongodb::error::Result<Vec<MatchId>> {
-        let cursor = self
-            .metadata
-            .find(doc! { "status": MatchMetadataStatus::Waiting.as_str() })
-            .await?;
+        let metadata: Vec<MatchMetadataDto> = telemetry::db_query("MatchMetadata", "find.waiting", async {
+            let cursor = self
+                .metadata
+                .find(doc! { "status": MatchMetadataStatus::Waiting.as_str() })
+                .await?;
 
-        let metadata: Vec<MatchMetadataDto> = cursor.try_collect().await?;
+            cursor.try_collect().await
+        })
+        .await?;
 
         Ok(metadata.into_iter().map(|m| m.match_id()).collect())
     }
 
     pub async fn finished_match_ids(&self) -> mongodb::error::Result<Vec<MatchId>> {
-        let cursor = self
-            .metadata
-            .find(doc! { "status": MatchMetadataStatus::Finished.as_str() })
-            .await?;
+        let metadata: Vec<MatchMetadataDto> = telemetry::db_query("MatchMetadata", "find.finished", async {
+            let cursor = self
+                .metadata
+                .find(doc! { "status": MatchMetadataStatus::Finished.as_str() })
+                .await?;
 
-        let metadata: Vec<MatchMetadataDto> = cursor.try_collect().await?;
+            cursor.try_collect().await
+        })
+        .await?;
 
         Ok(metadata.into_iter().map(|m| m.match_id()).collect())
     }
@@ -183,12 +219,15 @@ impl MatchesRepository {
         match_id: &MatchId,
         status: MatchMetadataStatus,
     ) -> mongodb::error::Result<()> {
-        self.metadata
-            .update_one(
-                doc! { "match_id": match_id.as_str() },
-                doc! { "$set": { "status": status.as_str() } },
-            )
-            .await?;
+        telemetry::db_query("MatchMetadata", "update_one.set_status", async {
+            self.metadata
+                .update_one(
+                    doc! { "match_id": match_id.as_str() },
+                    doc! { "$set": { "status": status.as_str() } },
+                )
+                .await
+        })
+        .await?;
 
         Ok(())
     }

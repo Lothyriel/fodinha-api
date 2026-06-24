@@ -1,9 +1,12 @@
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    time::Instant,
+};
 
 use tokio::sync::{mpsc, oneshot};
 
 use crate::{
-    infra::{AnonymousUserClaims, UserClaims},
+    infra::{AnonymousUserClaims, UserClaims, telemetry},
     models::{
         Card,
         commands::{
@@ -78,6 +81,7 @@ impl ManagerHandle {
         _player_id: PlayerId,
         settings: GameSettings,
     ) -> Result<CreateLobbyResponse, ManagerError> {
+        let started = Instant::now();
         let match_id = id::gen_matchid();
         let (tx, rx) = flume::unbounded();
 
@@ -91,6 +95,7 @@ impl ManagerHandle {
             respond,
         })
         .await;
+        telemetry::record_actor_start("new", started.elapsed(), result.is_ok());
 
         if result.is_err() {
             self.registry.remove_match(&match_id);
@@ -303,12 +308,18 @@ impl ManagerHandle {
             return;
         };
 
-        let _ = sender
-            .send_async(MatchActorMessage::DisconnectPlayer {
-                player_id,
-                outbound_tx,
-            })
-            .await;
+        let message = MatchActorMessage::DisconnectPlayer {
+            player_id,
+            outbound_tx,
+        };
+        let kind = message.kind();
+        let started = Instant::now();
+        let result = sender.send_async(message).await;
+        telemetry::record_actor_message(kind, started.elapsed());
+
+        if let Err(e) = result {
+            tracing::warn!("Error enqueueing actor disconnect message: {e}");
+        }
     }
 
     async fn hydrate_lobby_info(&self, info: LobbyInfoInternal) -> Result<LobbyInfo, ManagerError> {
@@ -381,13 +392,19 @@ impl ManagerHandle {
         build: impl FnOnce(oneshot::Sender<Result<T, ManagerError>>) -> MatchActorMessage,
     ) -> Result<T, ManagerError> {
         let (tx, rx) = oneshot::channel();
+        let message = build(tx);
+        let kind = message.kind();
+        let started = Instant::now();
 
         sender
-            .send_async(build(tx))
+            .send_async(message)
             .await
             .map_err(|_| ManagerError::ReceiverDisposed)?;
 
-        rx.await.map_err(|_| ManagerError::ReceiverDisposed)?
+        let result = rx.await.map_err(|_| ManagerError::ReceiverDisposed)?;
+        telemetry::record_actor_message(kind, started.elapsed());
+
+        result
     }
 
     async fn sender_for_player(&self, player_id: &PlayerId) -> Result<MatchSender, ManagerError> {
@@ -420,6 +437,7 @@ impl ManagerHandle {
     }
 
     async fn load_match_actor(&self, match_id: &MatchId) -> Result<MatchSender, ManagerError> {
+        let started = Instant::now();
         let metadata = self
             .repo
             .active_metadata(match_id)
@@ -429,6 +447,7 @@ impl ManagerHandle {
         let events = self.repo.load_events(match_id).await?;
 
         if events.is_empty() && metadata_status != MatchMetadataStatus::Waiting {
+            telemetry::record_actor_start("load", started.elapsed(), false);
             return Err(LobbyError::InvalidLobby.into());
         }
 
@@ -441,6 +460,7 @@ impl ManagerHandle {
 
             if let Err(e) = actor.replay_event(event.event) {
                 self.registry.remove_match(match_id);
+                telemetry::record_actor_start("load", started.elapsed(), false);
 
                 return Err(e);
             }
@@ -454,6 +474,7 @@ impl ManagerHandle {
             }
 
             self.stats_projector.notify_match_finished(match_id);
+            telemetry::record_actor_start("load", started.elapsed(), false);
 
             return Err(LobbyError::InvalidLobby.into());
         }
@@ -462,6 +483,7 @@ impl ManagerHandle {
 
         self.registry.mark_ready(match_id.clone(), tx.clone());
         tokio::spawn(actor.run(rx));
+        telemetry::record_actor_start("load", started.elapsed(), true);
 
         Ok(tx)
     }
