@@ -162,8 +162,7 @@ async fn exchange_google_token(
     };
 
     if let Some(token) = get_token_from_headers(&headers) {
-        if let Ok(UserClaims::Anonymous(guest)) =
-            get_claims_from_token(token, &state.jwt_key, &state.google_client_id).await
+        if let Ok(UserClaims::Anonymous(guest)) = get_access_token_claims(token, &state.jwt_key)
         {
             claims = merge_guest_profile(claims, &guest);
         }
@@ -281,10 +280,7 @@ pub async fn get_claims_from_token(
 ) -> Result<UserClaims, AuthError> {
     match get_access_token_claims(token, jwt_key) {
         Ok(c) => Ok(c),
-        Err(_) => match get_anonymous_claims(token, jwt_key) {
-            Ok(c) => Ok(c),
-            Err(_) => get_google_claims(token, google_client_id).await,
-        },
+        Err(_) => get_google_claims(token, google_client_id).await,
     }
 }
 
@@ -297,19 +293,6 @@ fn get_access_token_claims(token: &str, jwt_key: &str) -> Result<UserClaims, Aut
     let claims = jsonwebtoken::decode::<AccessTokenClaimsDto>(token, &key, &validation)?.claims;
 
     Ok(claims.user)
-}
-
-fn get_anonymous_claims(token: &str, jwt_key: &str) -> Result<UserClaims, AuthError> {
-    let key = DecodingKey::from_secret(jwt_key.as_bytes());
-
-    let mut validation = Validation::new(jsonwebtoken::Algorithm::HS256);
-
-    validation.validate_exp = false;
-    validation.set_issuer(&[ISSUER]);
-
-    let claims = jsonwebtoken::decode(token, &key, &validation)?.claims;
-
-    Ok(UserClaims::Anonymous(claims))
 }
 
 async fn get_google_claims(token: &str, google_client_id: &str) -> Result<UserClaims, AuthError> {
@@ -352,11 +335,21 @@ impl IntoResponse for AuthError {
 
 #[cfg(test)]
 mod tests {
-    use super::merge_guest_profile;
+    use jsonwebtoken::{EncodingKey, Header};
+
+    use super::{ISSUER, get_claims_from_token, merge_guest_profile};
     use crate::{
         infra::{AnonymousUserClaims, GoogleUserClaims, UserClaims},
         models::id::PlayerId,
     };
+
+    #[derive(serde::Serialize, serde::Deserialize)]
+    struct LegacyAnonymousUserClaimsDto {
+        id: PlayerId,
+        data: serde_json::Value,
+        iss: &'static str,
+        exp: usize,
+    }
 
     #[test]
     fn merge_guest_profile_prefers_existing_guest_nickname_and_picture() {
@@ -385,5 +378,26 @@ mod tests {
         assert_eq!(merged.picture_override.as_deref(), Some("guest-picture"));
         assert_eq!(merged.name, "Google Name");
         assert_eq!(merged.picture, "google-picture");
+    }
+
+    #[tokio::test]
+    async fn legacy_anonymous_token_is_not_accepted_as_app_session() {
+        let legacy = LegacyAnonymousUserClaimsDto {
+            id: PlayerId("guest-id".into()),
+            data: serde_json::json!({ "nickname": "Guest Hero" }),
+            iss: ISSUER,
+            exp: 10_000_000_000,
+        };
+        let jwt_key = "test-jwt-key";
+        let token = jsonwebtoken::encode(
+            &Header::default(),
+            &legacy,
+            &EncodingKey::from_secret(jwt_key.as_bytes()),
+        )
+        .unwrap();
+
+        assert!(get_claims_from_token(&token, jwt_key, "google-client-id")
+            .await
+            .is_err());
     }
 }
