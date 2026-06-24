@@ -1047,7 +1047,7 @@ mod tests {
     fn stats_nickname(stats: &PlayerStatsResponse) -> Option<&str> {
         match stats.player.as_ref()? {
             UserClaims::Anonymous(claims) => claims.data.get("nickname")?.as_str(),
-            UserClaims::Google(claims) => Some(claims.name.as_str()),
+            UserClaims::Google(claims) => claims.nickname.as_deref().or(Some(claims.name.as_str())),
         }
     }
 

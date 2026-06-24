@@ -29,6 +29,10 @@ pub struct GoogleUserClaims {
     pub email: PlayerId,
     pub name: String,
     pub picture: String,
+    #[serde(default)]
+    pub nickname: Option<String>,
+    #[serde(default)]
+    pub picture_override: Option<String>,
 }
 
 #[derive(thiserror::Error, Debug)]

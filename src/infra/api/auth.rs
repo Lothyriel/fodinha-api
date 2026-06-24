@@ -1,7 +1,7 @@
 use axum::{
     Extension, Json, Router,
     extract::{Request, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     middleware::Next,
     response::IntoResponse,
     routing,
@@ -58,7 +58,11 @@ pub async fn middleware(
 }
 
 async fn get_token_from_req(req: &mut Request) -> Option<&str> {
-    req.headers()
+    get_token_from_headers(req.headers())
+}
+
+fn get_token_from_headers(headers: &HeaderMap) -> Option<&str> {
+    headers
         .get(header::AUTHORIZATION)
         .and_then(|header| header.to_str().ok())
         .and_then(|value| value.starts_with("Bearer ").then(|| &value[7..]))
@@ -90,22 +94,27 @@ async fn update(
         return response;
     }
 
-    let claim = match user_claims {
-        UserClaims::Anonymous(c) => c,
-        UserClaims::Google(_) => {
-            let response = (
-                StatusCode::NOT_IMPLEMENTED,
-                "Google claim not supported for now...",
-            );
-            return response.into_response();
-        }
+    let user = match user_claims {
+        UserClaims::Anonymous(claim) => UserClaims::Anonymous(AnonymousUserClaims {
+            id: claim.id,
+            data: params,
+        }),
+        UserClaims::Google(claim) => UserClaims::Google(GoogleUserClaims {
+            email: claim.email,
+            name: claim.name,
+            picture: claim.picture,
+            nickname: params
+                .get("nickname")
+                .and_then(Value::as_str)
+                .filter(|nickname| !nickname.is_empty())
+                .map(ToOwned::to_owned),
+            picture_override: params
+                .get("picture")
+                .and_then(Value::as_str)
+                .filter(|picture| !picture.is_empty())
+                .map(ToOwned::to_owned),
+        }),
     };
-
-    let claims = AnonymousUserClaims {
-        id: claim.id,
-        data: params,
-    };
-    let user = UserClaims::Anonymous(claims.clone());
 
     if let Err(e) = state.manager.upsert_user(&user).await {
         return e.into_response();
@@ -144,12 +153,21 @@ async fn sign_up(State(state): State<ApiState>, Json(params): Json<Value>) -> im
 
 async fn exchange_google_token(
     State(state): State<ApiState>,
+    headers: HeaderMap,
     Json(params): Json<GoogleExchangeRequest>,
 ) -> impl IntoResponse {
-    let claims = match get_google_claims(&params.credential, &state.google_client_id).await {
+    let mut claims = match get_google_claims(&params.credential, &state.google_client_id).await {
         Ok(claims) => claims,
         Err(error) => return error.into_response(),
     };
+
+    if let Some(token) = get_token_from_headers(&headers) {
+        if let Ok(UserClaims::Anonymous(guest)) =
+            get_claims_from_token(token, &state.jwt_key, &state.google_client_id).await
+        {
+            claims = merge_guest_profile(claims, &guest);
+        }
+    }
 
     if let Err(error) = state.manager.upsert_user(&claims).await {
         return error.into_response();
@@ -235,6 +253,27 @@ async fn issue_auth_session(state: &ApiState, user: UserClaims) -> Result<Auth, 
     })
 }
 
+fn merge_guest_profile(mut google: UserClaims, guest: &AnonymousUserClaims) -> UserClaims {
+    let UserClaims::Google(claims) = &mut google else {
+        return google;
+    };
+
+    claims.nickname = guest
+        .data
+        .get("nickname")
+        .and_then(Value::as_str)
+        .filter(|nickname| !nickname.is_empty())
+        .map(ToOwned::to_owned);
+    claims.picture_override = guest
+        .data
+        .get("picture")
+        .and_then(Value::as_str)
+        .filter(|picture| !picture.is_empty())
+        .map(ToOwned::to_owned);
+
+    google
+}
+
 pub async fn get_claims_from_token(
     token: &str,
     jwt_key: &str,
@@ -308,5 +347,43 @@ impl IntoResponse for AuthError {
         let body = Json(json!({"error": self.to_string() }));
 
         (StatusCode::UNAUTHORIZED, body).into_response()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::merge_guest_profile;
+    use crate::{
+        infra::{AnonymousUserClaims, GoogleUserClaims, UserClaims},
+        models::id::PlayerId,
+    };
+
+    #[test]
+    fn merge_guest_profile_prefers_existing_guest_nickname_and_picture() {
+        let google = UserClaims::Google(GoogleUserClaims {
+            email: PlayerId("player@example.com".into()),
+            name: "Google Name".to_string(),
+            picture: "google-picture".to_string(),
+            nickname: None,
+            picture_override: None,
+        });
+        let guest = AnonymousUserClaims {
+            id: PlayerId("guest-id".into()),
+            data: serde_json::json!({
+                "nickname": "Guest Hero",
+                "picture": "guest-picture"
+            }),
+        };
+
+        let merged = merge_guest_profile(google, &guest);
+
+        let UserClaims::Google(merged) = merged else {
+            panic!("Expected Google claims");
+        };
+
+        assert_eq!(merged.nickname.as_deref(), Some("Guest Hero"));
+        assert_eq!(merged.picture_override.as_deref(), Some("guest-picture"));
+        assert_eq!(merged.name, "Google Name");
+        assert_eq!(merged.picture, "google-picture");
     }
 }
