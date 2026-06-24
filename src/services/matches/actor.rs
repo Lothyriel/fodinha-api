@@ -280,6 +280,7 @@ impl MatchActor {
                 possible_bids,
             } = applied
             {
+                self.broadcast_snapshots().await;
                 self.init_set(set.decks, set.upcard, next, possible_bids)
                     .await;
             }
@@ -555,6 +556,25 @@ impl MatchActor {
             if let Err(e) = sender.send(msg.clone()).await {
                 tracing::error!("Error enqueueing message to {player_id:?}: {e}");
             }
+        }
+    }
+
+    async fn broadcast_snapshots(&self) {
+        let Some(lobby) = self.lobby.as_ref() else {
+            return;
+        };
+
+        let player_ids: Vec<_> = self
+            .connections
+            .iter()
+            .map(|(player_id, _)| player_id.clone())
+            .collect();
+
+        for player_id in player_ids {
+            let snapshot = lobby.get_snapshot(&player_id);
+
+            self.send_to_player(&player_id, OutboundMessage::Snapshot(snapshot))
+                .await;
         }
     }
 
