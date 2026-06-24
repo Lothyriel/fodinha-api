@@ -1,5 +1,5 @@
 use axum::{
-    Extension, Json, Router,
+    Extension, Json, Router, middleware,
     extract::{Query, State},
     routing,
 };
@@ -17,6 +17,7 @@ pub fn router(state: ApiState) -> Router<ApiState> {
     Router::new()
         .route("/", routing::get(leaderboard))
         .route("/me", routing::get(my_stats).layer(auth))
+        .layer(middleware::from_fn(crate::infra::telemetry::http_middleware))
 }
 
 #[derive(serde::Deserialize)]

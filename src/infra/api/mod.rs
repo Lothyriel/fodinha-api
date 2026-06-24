@@ -13,6 +13,7 @@ use tower_http::cors::{Any, CorsLayer};
 
 use crate::{
     AppSettings,
+    infra::telemetry,
     models::GameError,
     services::{LobbyError, ManagerError, matches::ManagerHandle},
 };
@@ -61,6 +62,7 @@ fn build_app(manager: ManagerHandle, settings: &AppSettings) -> Router {
         .allow_headers(Any);
 
     Router::new()
+        .route("/metrics", routing::get(telemetry::metrics_handler))
         .route("/game", routing::get(game::handler))
         .nest("/lobby", lobby::router().layer(auth))
         .nest("/stats", stats::router(state.clone()))

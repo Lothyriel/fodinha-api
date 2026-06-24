@@ -90,3 +90,20 @@ pub enum MatchActorMessage {
         respond: oneshot::Sender<Result<Option<GetLobbyDto>, ManagerError>>,
     },
 }
+
+impl MatchActorMessage {
+    pub(crate) fn kind(&self) -> &'static str {
+        match self {
+            Self::ConnectPlayer { .. } => "connect_player",
+            Self::DisconnectPlayer { .. } => "disconnect_player",
+            Self::CreateMatch { .. } => "create_match",
+            Self::JoinLobby { .. } => "join_lobby",
+            Self::StatusChange { .. } => "status_change",
+            Self::GameCommand { command, .. } => match command {
+                GameCommand::PlayTurn { .. } => "game.play_turn",
+                GameCommand::PutBid { .. } => "game.put_bid",
+            },
+            Self::GetLobbySummary { .. } => "get_lobby_summary",
+        }
+    }
+}

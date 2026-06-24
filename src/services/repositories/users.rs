@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use futures::TryStreamExt;
 use mongodb::{Collection, Database, IndexModel, bson::doc};
 
-use crate::infra::UserClaims;
+use crate::infra::{UserClaims, telemetry};
 
 #[derive(Clone)]
 pub struct UsersRepository {
@@ -18,9 +18,12 @@ impl UsersRepository {
     }
 
     pub async fn ensure_indexes(&self) -> mongodb::error::Result<()> {
-        self.users
-            .create_index(IndexModel::builder().keys(doc! { "player_id": 1 }).build())
-            .await?;
+        telemetry::db_query("Users", "create_index", async {
+            self.users
+                .create_index(IndexModel::builder().keys(doc! { "player_id": 1 }).build())
+                .await
+        })
+        .await?;
 
         Ok(())
     }
@@ -29,19 +32,23 @@ impl UsersRepository {
         let existing = self.users.find_one(doc! { "player_id": user.id().as_str() }).await?;
         let dto = UserDto::new(user.clone(), existing);
 
-        self.users
-            .replace_one(doc! { "player_id": &dto.player_id }, &dto)
-            .upsert(true)
-            .await?;
+        telemetry::db_query("Users", "replace_one.upsert", async {
+            self.users
+                .replace_one(doc! { "player_id": &dto.player_id }, &dto)
+                .upsert(true)
+                .await
+        })
+        .await?;
 
         Ok(())
     }
 
     pub async fn user(&self, player_id: &str) -> mongodb::error::Result<Option<UserClaims>> {
-        self.users
-            .find_one(doc! { "player_id": player_id })
-            .await
-            .map(|user| user.map(|user| user.user))
+        telemetry::db_query("Users", "find_one", async {
+            self.users.find_one(doc! { "player_id": player_id }).await
+        })
+        .await
+        .map(|user| user.map(|user| user.user))
     }
 
     pub async fn users_by_id(
@@ -52,11 +59,15 @@ impl UsersRepository {
             return Ok(HashMap::new());
         }
 
-        let cursor = self
-            .users
-            .find(doc! { "player_id": { "$in": player_ids } })
-            .await?;
-        let users: Vec<UserDto> = cursor.try_collect().await?;
+        let users: Vec<UserDto> = telemetry::db_query("Users", "find.by_ids", async {
+            let cursor = self
+                .users
+                .find(doc! { "player_id": { "$in": player_ids } })
+                .await?;
+
+            cursor.try_collect().await
+        })
+        .await?;
 
         Ok(users
             .into_iter()

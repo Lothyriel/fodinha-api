@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 use axum::{
     extract::{
         Query, State, WebSocketUpgrade,
@@ -8,7 +10,7 @@ use axum::{
 use futures::StreamExt;
 
 use crate::{
-    infra::UserClaims,
+    infra::{UserClaims, telemetry},
     models::{
         commands::{ClientCommand, ServerMessage},
         id::{MatchId, PlayerId},
@@ -25,29 +27,40 @@ pub async fn handler(
     ws: WebSocketUpgrade,
     State(state): State<ApiState>,
     Query(query): Query<Auth>,
-) -> impl IntoResponse {
-    let claims = match get_claims_from_token(
-        &query.token,
-        &state.jwt_key,
-        &state.google_client_id,
-    )
-    .await
-    {
+) -> axum::response::Response {
+    let started = Instant::now();
+
+    let claims = get_claims_from_token(&query.token, &state.jwt_key, &state.google_client_id).await;
+
+    let claims = match claims {
         Ok(c) => c,
-        Err(e) => return e.into_response(),
+        Err(e) => {
+            let response = e.into_response();
+            telemetry::record_http_endpoint("GET", "/game", response.status(), started.elapsed());
+            return response;
+        }
     };
+
     let manager = state.manager.clone();
 
     let who = claims.id();
 
     tracing::info!(">>>> {who:?} connected");
 
-    ws.on_upgrade(|socket| async move {
-        match handle_connection(socket, manager, claims).await {
-            Ok(_) => tracing::warn!(">>>> {who:?} closed normally"),
-            Err(e) => tracing::error!(">>>> {who:?} closed from error: {e}"),
-        }
-    })
+    let response = ws
+        .on_upgrade(|socket| async move {
+            match handle_connection(socket, manager, claims).await {
+                Ok(_) => tracing::warn!(">>>> {who:?} closed normally"),
+                Err(e) => tracing::error!(">>>> {who:?} closed from error: {e}"),
+            }
+        })
+        .into_response();
+
+    let status = response.status();
+
+    telemetry::record_http_endpoint("GET", "/game", status, started.elapsed());
+
+    response
 }
 
 async fn handle_connection(
@@ -56,8 +69,11 @@ async fn handle_connection(
     auth: UserClaims,
 ) -> Result<(), ManagerError> {
     let player_id = auth.id();
+
     manager.upsert_user(&auth).await?;
+
     let context = manager.connect_player(player_id.clone()).await?;
+
     let connection = PlayerConnection {
         player_id,
         match_id: context.match_id,

@@ -1,5 +1,5 @@
 use axum::{
-    Extension, Json, Router,
+    Extension, Json, Router, middleware,
     extract::{Request, State},
     http::{HeaderMap, StatusCode},
     middleware::Next,
@@ -30,6 +30,7 @@ pub fn router(state: ApiState) -> Router<ApiState> {
         .route("/refresh", routing::post(refresh))
         .route("/signup", routing::post(sign_up))
         .route("/profile", routing::post(update).layer(auth))
+        .layer(middleware::from_fn(crate::infra::telemetry::http_middleware))
 }
 
 const ISSUER: &str = "fodinha.loty.click";
