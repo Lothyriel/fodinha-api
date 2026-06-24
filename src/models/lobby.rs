@@ -69,7 +69,7 @@ impl Lobby {
             Entry::Occupied(_) => Ok(()),
             Entry::Vacant(e) => {
                 if player_count == max_players? {
-                    return Err(LobbyError::GameError(GameError::TooManyPlayers).into());
+                    return Err(LobbyError::GameError(GameError::TooManyPlayers));
                 }
                 e.insert(LobbyPlayerStatus::new());
                 Ok(())

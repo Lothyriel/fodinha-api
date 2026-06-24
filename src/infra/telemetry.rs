@@ -20,7 +20,9 @@ use opentelemetry_otlp::{Protocol, WithExportConfig};
 use opentelemetry_prometheus::PrometheusExporter;
 use opentelemetry_sdk::{
     Resource,
-    metrics::{Aggregation, Instrument as MetricInstrument, InstrumentKind, SdkMeterProvider, Stream},
+    metrics::{
+        Aggregation, Instrument as MetricInstrument, InstrumentKind, SdkMeterProvider, Stream,
+    },
     trace::SdkTracerProvider,
 };
 use prometheus::{Encoder, Registry, TextEncoder};
@@ -175,10 +177,7 @@ fn init_tracer_provider(resource: Resource) -> Option<SdkTracerProvider> {
 }
 
 fn init_meter_provider(resource: Resource) -> Option<SdkMeterProvider> {
-    let prometheus_exporter = match init_prometheus_exporter() {
-        Some(exporter) => exporter,
-        None => return None,
-    };
+    let prometheus_exporter = init_prometheus_exporter()?;
 
     let mut provider = SdkMeterProvider::builder()
         .with_resource(resource)

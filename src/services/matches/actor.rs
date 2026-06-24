@@ -564,11 +564,7 @@ impl MatchActor {
             return;
         };
 
-        let player_ids: Vec<_> = self
-            .connections
-            .iter()
-            .map(|(player_id, _)| player_id.clone())
-            .collect();
+        let player_ids: Vec<_> = self.connections.keys().cloned().collect();
 
         for player_id in player_ids {
             let snapshot = lobby.get_snapshot(&player_id);

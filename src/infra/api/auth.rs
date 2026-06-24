@@ -1,7 +1,8 @@
 use axum::{
-    Extension, Json, Router, middleware,
+    Extension, Json, Router,
     extract::{Request, State},
     http::{HeaderMap, StatusCode},
+    middleware,
     middleware::Next,
     response::IntoResponse,
     routing,
@@ -30,7 +31,9 @@ pub fn router(state: ApiState) -> Router<ApiState> {
         .route("/refresh", routing::post(refresh))
         .route("/signup", routing::post(sign_up))
         .route("/profile", routing::post(update).layer(auth))
-        .layer(middleware::from_fn(crate::infra::telemetry::http_middleware))
+        .layer(middleware::from_fn(
+            crate::infra::telemetry::http_middleware,
+        ))
 }
 
 const ISSUER: &str = "fodinha.loty.click";
@@ -92,7 +95,7 @@ async fn update(
     Json(params): Json<Value>,
 ) -> impl IntoResponse {
     if let Err(response) = validate_nickname(&params) {
-        return response;
+        return response.into_response();
     }
 
     let user = match user_claims {
@@ -131,7 +134,7 @@ async fn update(
 
 async fn sign_up(State(state): State<ApiState>, Json(params): Json<Value>) -> impl IntoResponse {
     if let Err(response) = validate_nickname(&params) {
-        return response;
+        return response.into_response();
     }
 
     let claims = AnonymousUserClaims {
@@ -162,11 +165,10 @@ async fn exchange_google_token(
         Err(error) => return error.into_response(),
     };
 
-    if let Some(token) = get_token_from_headers(&headers) {
-        if let Ok(UserClaims::Anonymous(guest)) = get_access_token_claims(token, &state.jwt_key)
-        {
-            claims = merge_guest_profile(claims, &guest);
-        }
+    if let Some(token) = get_token_from_headers(&headers)
+        && let Ok(UserClaims::Anonymous(guest)) = get_access_token_claims(token, &state.jwt_key)
+    {
+        claims = merge_guest_profile(claims, &guest);
     }
 
     if let Err(error) = state.manager.upsert_user(&claims).await {
@@ -205,7 +207,7 @@ async fn refresh(
     Json(token).into_response()
 }
 
-fn validate_nickname(params: &Value) -> Result<(), axum::response::Response> {
+fn validate_nickname(params: &Value) -> Result<(), (StatusCode, Json<Value>)> {
     let Some(nickname) = params.get("nickname").and_then(Value::as_str) else {
         return Ok(());
     };
@@ -218,7 +220,7 @@ fn validate_nickname(params: &Value) -> Result<(), axum::response::Response> {
         "error": format!("Nickname must be at most {MAX_NICKNAME_LENGTH} characters")
     }));
 
-    Err((StatusCode::BAD_REQUEST, body).into_response())
+    Err((StatusCode::BAD_REQUEST, body))
 }
 
 fn generate_access_token(claims: &UserClaims, jwt_key: &str) -> String {
@@ -228,17 +230,18 @@ fn generate_access_token(claims: &UserClaims, jwt_key: &str) -> String {
         exp: (Utc::now() + Duration::seconds(ACCESS_TOKEN_TTL_SECONDS)).timestamp() as usize,
     };
 
-    let token = jsonwebtoken::encode(
+    jsonwebtoken::encode(
         &Header::default(),
         &claims,
         &EncodingKey::from_secret(jwt_key.as_bytes()),
     )
-    .expect("Should encode JWT");
-
-    token
+    .expect("Should encode JWT")
 }
 
-async fn issue_auth_session(state: &ApiState, user: UserClaims) -> Result<Auth, crate::services::ManagerError> {
+async fn issue_auth_session(
+    state: &ApiState,
+    user: UserClaims,
+) -> Result<Auth, crate::services::ManagerError> {
     let refresh_token = nanoid::nanoid!(48);
     let expires_at = (Utc::now() + Duration::days(REFRESH_TOKEN_TTL_DAYS)).timestamp();
 
@@ -397,8 +400,10 @@ mod tests {
         )
         .unwrap();
 
-        assert!(get_claims_from_token(&token, jwt_key, "google-client-id")
-            .await
-            .is_err());
+        assert!(
+            get_claims_from_token(&token, jwt_key, "google-client-id")
+                .await
+                .is_err()
+        );
     }
 }
