@@ -21,6 +21,7 @@ use crate::{
 pub struct ApiState {
     manager: ManagerHandle,
     jwt_key: String,
+    google_client_id: String,
 }
 
 pub async fn start(manager: ManagerHandle, settings: &AppSettings) {
@@ -50,6 +51,7 @@ fn build_app(manager: ManagerHandle, settings: &AppSettings) -> Router {
     let state = ApiState {
         manager,
         jwt_key: settings.jwt_key.clone(),
+        google_client_id: settings.google_client_id.clone(),
     };
     let auth = axum::middleware::from_fn_with_state(state.clone(), auth::middleware);
 
@@ -157,6 +159,8 @@ mod tests {
     const MONGO_CONN_STRING: &str = "mongodb://localhost/?retryWrites=true";
     const SERVER_START_TIMEOUT: Duration = Duration::from_millis(200);
     const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
+    const TEST_GOOGLE_CLIENT_ID: &str =
+        "824653628296-ahr9jr3aqgr367mul4p359dj4plsl67a.apps.googleusercontent.com";
     const TEST_JWT_KEY: &str = "very-random-secret-key";
     const WS_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -194,6 +198,7 @@ mod tests {
             let mongo_conn_string = MONGO_CONN_STRING.to_string();
             let settings = AppSettings {
                 jwt_key: TEST_JWT_KEY.to_string(),
+                google_client_id: TEST_GOOGLE_CLIENT_ID.to_string(),
                 mongo_conn_string: mongo_conn_string.clone(),
                 mongo_database: mongo_database.clone(),
             };
@@ -358,7 +363,7 @@ mod tests {
 
         let client = http_client();
         let tokens = get_players(&client, &server, 2).await;
-        let claims = get_claims_from_token(&tokens[0], TEST_JWT_KEY)
+        let claims = get_claims_from_token(&tokens[0], TEST_JWT_KEY, TEST_GOOGLE_CLIENT_ID)
             .await
             .unwrap();
         let first_token = tokens[0].clone();
@@ -439,6 +444,54 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_refresh_renews_anonymous_session() {
+        let server = TestServer::start().await;
+        let client = http_client();
+        let auth = login_auth(&client, &server, 1).await;
+        let refresh_token = auth.refresh_token.clone().expect("refresh token missing");
+        let original_player_id = get_claims_from_token(
+            &auth.token,
+            TEST_JWT_KEY,
+            TEST_GOOGLE_CLIENT_ID,
+        )
+        .await
+        .unwrap()
+        .id();
+
+        let refreshed = refresh_auth(&client, &server, &refresh_token).await;
+        let refreshed_player_id = get_claims_from_token(
+            &refreshed.token,
+            TEST_JWT_KEY,
+            TEST_GOOGLE_CLIENT_ID,
+        )
+        .await
+        .unwrap()
+        .id();
+
+        assert_eq!(refreshed_player_id, original_player_id);
+        assert!(refreshed.refresh_token.is_some());
+        assert_ne!(refreshed.refresh_token, auth.refresh_token);
+
+        server.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn test_refresh_rejects_invalid_token() {
+        let server = TestServer::start().await;
+        let client = http_client();
+        let res = client
+            .post(server.url("/auth/refresh"))
+            .json(&serde_json::json!({ "refresh_token": "invalid-token" }))
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+
+        server.shutdown().await;
+    }
+
+    #[tokio::test]
     async fn test_lobby_changes_do_not_write_match_events() {
         let server = TestServer::start().await;
         let client = http_client();
@@ -449,7 +502,7 @@ mod tests {
             join_lobby_http(&client, &server, token, &lobby_id).await;
         }
 
-        let player_id = get_claims_from_token(&tokens[0], TEST_JWT_KEY)
+        let player_id = get_claims_from_token(&tokens[0], TEST_JWT_KEY, TEST_GOOGLE_CLIENT_ID)
             .await
             .unwrap()
             .id();
@@ -485,7 +538,7 @@ mod tests {
             join_lobby_http(&client, &server, token, &lobby_id).await;
         }
 
-        let second_player_id = get_claims_from_token(&tokens[1], TEST_JWT_KEY)
+        let second_player_id = get_claims_from_token(&tokens[1], TEST_JWT_KEY, TEST_GOOGLE_CLIENT_ID)
             .await
             .unwrap()
             .id();
@@ -701,7 +754,9 @@ mod tests {
         let mut connections = HashMap::new();
 
         for p in tokens {
-            let claims = get_claims_from_token(&p, TEST_JWT_KEY).await.unwrap();
+            let claims = get_claims_from_token(&p, TEST_JWT_KEY, TEST_GOOGLE_CLIENT_ID)
+                .await
+                .unwrap();
 
             let mut connection = connect_ws(server, &p).await;
             let snapshot = get_snapshot(&mut connection).await;
@@ -1036,6 +1091,10 @@ mod tests {
     }
 
     async fn login(client: &Client, server: &TestServer, number: usize) -> String {
+        login_auth(client, server, number).await.token
+    }
+
+    async fn login_auth(client: &Client, server: &TestServer, number: usize) -> Auth {
         let params = serde_json::json!({
             "nickname": format!("Player {number}"),
         });
@@ -1047,8 +1106,19 @@ mod tests {
             .await
             .unwrap();
 
-        let res: Auth = res.json().await.unwrap();
+        res.json().await.unwrap()
+    }
 
-        res.token
+    async fn refresh_auth(client: &Client, server: &TestServer, refresh_token: &str) -> Auth {
+        let res = client
+            .post(server.url("/auth/refresh"))
+            .json(&serde_json::json!({ "refresh_token": refresh_token }))
+            .send()
+            .await
+            .unwrap();
+
+        assert!(res.status().is_success());
+
+        res.json().await.unwrap()
     }
 }

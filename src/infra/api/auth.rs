@@ -6,6 +6,7 @@ use axum::{
     response::IntoResponse,
     routing,
 };
+use chrono::{Duration, Utc};
 use jsonwebtoken::{
     DecodingKey, EncodingKey, Header, TokenData, Validation,
     errors::Error,
@@ -16,7 +17,7 @@ use serde_json::{Value, json};
 
 use crate::{
     infra::{AnonymousUserClaims, AuthError, GoogleUserClaims, UserClaims},
-    models::id::{PlayerId, gen_playerid},
+    models::id::gen_playerid,
 };
 
 use super::{ApiState, models::*};
@@ -25,12 +26,16 @@ pub fn router(state: ApiState) -> Router<ApiState> {
     let auth = axum::middleware::from_fn_with_state(state, middleware);
 
     Router::new()
+        .route("/google", routing::post(exchange_google_token))
+        .route("/refresh", routing::post(refresh))
         .route("/signup", routing::post(sign_up))
         .route("/profile", routing::post(update).layer(auth))
 }
 
 const ISSUER: &str = "fodinha.loty.click";
+const ACCESS_TOKEN_TTL_SECONDS: i64 = 60 * 60;
 const MAX_NICKNAME_LENGTH: usize = 24;
+const REFRESH_TOKEN_TTL_DAYS: i64 = 30;
 
 pub async fn middleware(
     State(state): State<ApiState>,
@@ -41,7 +46,7 @@ pub async fn middleware(
         .await
         .ok_or(AuthError::TokenNotPresent)?;
 
-    let claims = get_claims_from_token(token, &state.jwt_key).await?;
+    let claims = get_claims_from_token(token, &state.jwt_key, &state.google_client_id).await?;
 
     if let Err(e) = state.manager.upsert_user(&claims).await {
         tracing::error!("Error upserting authenticated user: {e}");
@@ -60,11 +65,20 @@ async fn get_token_from_req(req: &mut Request) -> Option<&str> {
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
-struct AnonymousUserClaimsDto {
-    id: PlayerId,
-    data: Value,
-    iss: &'static str,
+struct AccessTokenClaimsDto {
+    user: UserClaims,
+    iss: String,
     exp: usize,
+}
+
+#[derive(serde::Deserialize)]
+struct GoogleExchangeRequest {
+    credential: String,
+}
+
+#[derive(serde::Deserialize)]
+struct RefreshRequest {
+    refresh_token: String,
 }
 
 async fn update(
@@ -97,7 +111,10 @@ async fn update(
         return e.into_response();
     }
 
-    let token = generate_token(&claims, &state.jwt_key);
+    let token = match issue_auth_session(&state, user).await {
+        Ok(token) => token,
+        Err(error) => return error.into_response(),
+    };
 
     Json(token).into_response()
 }
@@ -117,7 +134,55 @@ async fn sign_up(State(state): State<ApiState>, Json(params): Json<Value>) -> im
         return e.into_response();
     }
 
-    let token = generate_token(&claims, &state.jwt_key);
+    let token = match issue_auth_session(&state, user).await {
+        Ok(token) => token,
+        Err(error) => return error.into_response(),
+    };
+
+    Json(token).into_response()
+}
+
+async fn exchange_google_token(
+    State(state): State<ApiState>,
+    Json(params): Json<GoogleExchangeRequest>,
+) -> impl IntoResponse {
+    let claims = match get_google_claims(&params.credential, &state.google_client_id).await {
+        Ok(claims) => claims,
+        Err(error) => return error.into_response(),
+    };
+
+    if let Err(error) = state.manager.upsert_user(&claims).await {
+        return error.into_response();
+    }
+
+    let token = match issue_auth_session(&state, claims).await {
+        Ok(token) => token,
+        Err(error) => return error.into_response(),
+    };
+
+    Json(token).into_response()
+}
+
+async fn refresh(
+    State(state): State<ApiState>,
+    Json(params): Json<RefreshRequest>,
+) -> impl IntoResponse {
+    let player_id = match state.manager.refresh_player_id(&params.refresh_token).await {
+        Ok(Some(player_id)) => player_id,
+        Ok(None) => return AuthError::InvalidRefreshToken.into_response(),
+        Err(error) => return error.into_response(),
+    };
+
+    let user = match state.manager.user(&player_id).await {
+        Ok(Some(user)) => user,
+        Ok(None) => return AuthError::InvalidRefreshToken.into_response(),
+        Err(error) => return error.into_response(),
+    };
+
+    let token = match issue_auth_session(&state, user).await {
+        Ok(token) => token,
+        Err(error) => return error.into_response(),
+    };
 
     Json(token).into_response()
 }
@@ -138,12 +203,11 @@ fn validate_nickname(params: &Value) -> Result<(), axum::response::Response> {
     Err((StatusCode::BAD_REQUEST, body).into_response())
 }
 
-fn generate_token(claim: &AnonymousUserClaims, jwt_key: &str) -> Auth {
-    let claims = AnonymousUserClaimsDto {
-        id: claim.id.clone(),
-        data: claim.data.clone(),
-        iss: ISSUER,
-        exp: 10000000000,
+fn generate_access_token(claims: &UserClaims, jwt_key: &str) -> String {
+    let claims = AccessTokenClaimsDto {
+        user: claims.clone(),
+        iss: ISSUER.to_string(),
+        exp: (Utc::now() + Duration::seconds(ACCESS_TOKEN_TTL_SECONDS)).timestamp() as usize,
     };
 
     let token = jsonwebtoken::encode(
@@ -153,14 +217,47 @@ fn generate_token(claim: &AnonymousUserClaims, jwt_key: &str) -> Auth {
     )
     .expect("Should encode JWT");
 
-    Auth { token }
+    token
 }
 
-pub async fn get_claims_from_token(token: &str, jwt_key: &str) -> Result<UserClaims, AuthError> {
-    match get_anonymous_claims(token, jwt_key) {
+async fn issue_auth_session(state: &ApiState, user: UserClaims) -> Result<Auth, crate::services::ManagerError> {
+    let refresh_token = nanoid::nanoid!(48);
+    let expires_at = (Utc::now() + Duration::days(REFRESH_TOKEN_TTL_DAYS)).timestamp();
+
+    state
+        .manager
+        .store_refresh_token(&user.id(), &refresh_token, expires_at)
+        .await?;
+
+    Ok(Auth {
+        token: generate_access_token(&user, &state.jwt_key),
+        refresh_token: Some(refresh_token),
+    })
+}
+
+pub async fn get_claims_from_token(
+    token: &str,
+    jwt_key: &str,
+    google_client_id: &str,
+) -> Result<UserClaims, AuthError> {
+    match get_access_token_claims(token, jwt_key) {
         Ok(c) => Ok(c),
-        Err(_) => get_google_claims(token).await,
+        Err(_) => match get_anonymous_claims(token, jwt_key) {
+            Ok(c) => Ok(c),
+            Err(_) => get_google_claims(token, google_client_id).await,
+        },
     }
+}
+
+fn get_access_token_claims(token: &str, jwt_key: &str) -> Result<UserClaims, AuthError> {
+    let key = DecodingKey::from_secret(jwt_key.as_bytes());
+
+    let mut validation = Validation::new(jsonwebtoken::Algorithm::HS256);
+    validation.set_issuer(&[ISSUER]);
+
+    let claims = jsonwebtoken::decode::<AccessTokenClaimsDto>(token, &key, &validation)?.claims;
+
+    Ok(claims.user)
 }
 
 fn get_anonymous_claims(token: &str, jwt_key: &str) -> Result<UserClaims, AuthError> {
@@ -176,27 +273,26 @@ fn get_anonymous_claims(token: &str, jwt_key: &str) -> Result<UserClaims, AuthEr
     Ok(UserClaims::Anonymous(claims))
 }
 
-async fn get_google_claims(token: &str) -> Result<UserClaims, AuthError> {
+async fn get_google_claims(token: &str, google_client_id: &str) -> Result<UserClaims, AuthError> {
     let header = jsonwebtoken::decode_header(token)?;
     let kid = header.kid.ok_or(AuthError::InvalidKid)?;
     let jwks = get_google_jwks().await?;
     let jwk = jwks.find(&kid).ok_or(AuthError::InvalidKid)?;
-    let token_data = decode_google_claims(token, jwk)?;
+    let token_data = decode_google_claims(token, jwk, google_client_id)?;
     let claims = UserClaims::Google(token_data.claims);
 
     Ok(claims)
 }
 
-fn decode_google_claims(token: &str, jwk: &Jwk) -> Result<TokenData<GoogleUserClaims>, Error> {
+fn decode_google_claims(
+    token: &str,
+    jwk: &Jwk,
+    google_client_id: &str,
+) -> Result<TokenData<GoogleUserClaims>, Error> {
     let mut validation = jsonwebtoken::Validation::new(jsonwebtoken::Algorithm::RS256);
 
     validation.set_issuer(&["https://accounts.google.com"]);
-
-    // TODO set google audience
-    // TODO set /.well-known
-    validation.set_audience(&[
-        "824653628296-ahr9jr3aqgr367mul4p359dj4plsl67a.apps.googleusercontent.com",
-    ]);
+    validation.set_audience(&[google_client_id]);
 
     jsonwebtoken::decode::<GoogleUserClaims>(token, &DecodingKey::from_jwk(jwk)?, &validation)
 }

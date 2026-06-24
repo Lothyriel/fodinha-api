@@ -26,7 +26,8 @@ impl UsersRepository {
     }
 
     pub async fn upsert_user(&self, user: &UserClaims) -> mongodb::error::Result<()> {
-        let dto = UserDto::new(user.clone());
+        let existing = self.users.find_one(doc! { "player_id": user.id().as_str() }).await?;
+        let dto = UserDto::new(user.clone(), existing);
 
         self.users
             .replace_one(doc! { "player_id": &dto.player_id }, &dto)
@@ -62,19 +63,68 @@ impl UsersRepository {
             .map(|user| (user.player_id, user.user))
             .collect())
     }
+
+    pub async fn store_refresh_token(
+        &self,
+        player_id: &str,
+        token: &str,
+        expires_at: i64,
+    ) -> mongodb::error::Result<()> {
+        let Some(mut user) = self.users.find_one(doc! { "player_id": player_id }).await? else {
+            return Ok(());
+        };
+
+        user.refresh_token = Some(token.to_string());
+        user.refresh_token_expires_at = Some(expires_at);
+
+        self.users
+            .replace_one(doc! { "player_id": player_id }, &user)
+            .await?;
+
+        Ok(())
+    }
+
+    pub async fn refresh_session(
+        &self,
+        token: &str,
+    ) -> mongodb::error::Result<Option<RefreshSession>> {
+        let user = self.users.find_one(doc! { "refresh_token": token }).await?;
+
+        Ok(user.and_then(|user| {
+            Some(RefreshSession {
+                player_id: user.player_id,
+                expires_at: user.refresh_token_expires_at?,
+            })
+        }))
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct RefreshSession {
+    pub player_id: String,
+    pub expires_at: i64,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct UserDto {
     player_id: String,
     user: UserClaims,
+    #[serde(default)]
+    refresh_token: Option<String>,
+    #[serde(default)]
+    refresh_token_expires_at: Option<i64>,
 }
 
 impl UserDto {
-    fn new(user: UserClaims) -> Self {
+    fn new(user: UserClaims, existing: Option<UserDto>) -> Self {
+        let refresh_token = existing.as_ref().and_then(|user| user.refresh_token.clone());
+        let refresh_token_expires_at = existing.and_then(|user| user.refresh_token_expires_at);
+
         Self {
             player_id: user.id().as_str().to_string(),
             user,
+            refresh_token,
+            refresh_token_expires_at,
         }
     }
 }

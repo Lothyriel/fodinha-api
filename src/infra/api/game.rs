@@ -26,7 +26,13 @@ pub async fn handler(
     State(state): State<ApiState>,
     Query(query): Query<Auth>,
 ) -> impl IntoResponse {
-    let claims = match get_claims_from_token(&query.token, &state.jwt_key).await {
+    let claims = match get_claims_from_token(
+        &query.token,
+        &state.jwt_key,
+        &state.google_client_id,
+    )
+    .await
+    {
         Ok(c) => c,
         Err(e) => return e.into_response(),
     };

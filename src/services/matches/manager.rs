@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
+use chrono::Utc;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::{
@@ -191,6 +192,35 @@ impl ManagerHandle {
         self.users_repo.upsert_user(user).await?;
 
         Ok(())
+    }
+
+    pub async fn user(&self, player_id: &PlayerId) -> Result<Option<UserClaims>, ManagerError> {
+        Ok(self.users_repo.user(player_id.as_str()).await?)
+    }
+
+    pub async fn store_refresh_token(
+        &self,
+        player_id: &PlayerId,
+        token: &str,
+        expires_at: i64,
+    ) -> Result<(), ManagerError> {
+        self.users_repo
+            .store_refresh_token(player_id.as_str(), token, expires_at)
+            .await?;
+
+        Ok(())
+    }
+
+    pub async fn refresh_player_id(&self, token: &str) -> Result<Option<PlayerId>, ManagerError> {
+        let Some(session) = self.users_repo.refresh_session(token).await? else {
+            return Ok(None);
+        };
+
+        if session.expires_at <= Utc::now().timestamp() {
+            return Ok(None);
+        }
+
+        Ok(Some(PlayerId(session.player_id.into())))
     }
 
     pub async fn play_turn(&self, card: Card, player_id: PlayerId) -> Result<(), ManagerError> {

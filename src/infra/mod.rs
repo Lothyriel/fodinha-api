@@ -35,6 +35,8 @@ pub struct GoogleUserClaims {
 pub enum AuthError {
     #[error("Auth token not found on the request headers")]
     TokenNotPresent,
+    #[error("Invalid refresh token")]
+    InvalidRefreshToken,
     #[error("Invalid KeyId ('kid') on token")]
     InvalidKid,
     #[error("Invalid token: ({0})")]
