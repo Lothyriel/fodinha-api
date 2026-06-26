@@ -85,6 +85,7 @@ async fn handle_connection(
         outbound_tx: context.outbound_tx,
         outbound_rx: context.outbound_rx,
         shutdown_rx,
+        shutting_down: false,
     };
 
     connection.run().await
@@ -98,6 +99,7 @@ struct PlayerConnection {
     outbound_tx: PlayerSender,
     outbound_rx: PlayerReceiver,
     shutdown_rx: watch::Receiver<bool>,
+    shutting_down: bool,
 }
 
 impl PlayerConnection {
@@ -115,6 +117,7 @@ impl PlayerConnection {
                 &self.match_id,
                 self.player_id.clone(),
                 self.outbound_tx.clone(),
+                self.shutting_down,
             )
             .await;
 
@@ -150,6 +153,8 @@ impl PlayerConnection {
                 }
                 _ = self.shutdown_rx.changed() => {
                     if *self.shutdown_rx.borrow() {
+                        self.shutting_down = true;
+
                         tracing::info!(
                             "Shutdown signal received, closing websocket for {:?}",
                             self.player_id

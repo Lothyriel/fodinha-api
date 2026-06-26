@@ -125,7 +125,11 @@ impl MatchActor {
             MatchActorMessage::DisconnectPlayer {
                 player_id,
                 outbound_tx,
-            } => match self.handle_disconnect_player(player_id, outbound_tx).await {
+                shutting_down,
+            } => match self
+                .handle_disconnect_player(player_id, outbound_tx, shutting_down)
+                .await
+            {
                 Ok(should_continue) => return should_continue,
                 Err(e) => tracing::error!("Error handling player disconnect: {e}"),
             },
@@ -262,6 +266,7 @@ impl MatchActor {
         &mut self,
         player_id: PlayerId,
         outbound_tx: PlayerSender,
+        shutting_down: bool,
     ) -> Result<bool, ManagerError> {
         let is_current_connection = self
             .connections
@@ -284,6 +289,14 @@ impl MatchActor {
         }
 
         if !self.lobby()?.players.contains_key(&player_id) {
+            return Ok(true);
+        }
+
+        if shutting_down {
+            if self.connections.is_empty() {
+                self.stop_match();
+                return Ok(false);
+            }
             return Ok(true);
         }
 

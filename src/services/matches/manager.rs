@@ -338,6 +338,7 @@ impl ManagerHandle {
         match_id: &MatchId,
         player_id: PlayerId,
         outbound_tx: PlayerSender,
+        shutting_down: bool,
     ) {
         let Ok(sender) = self.sender_for_match(match_id).await else {
             return;
@@ -346,6 +347,7 @@ impl ManagerHandle {
         let message = MatchActorMessage::DisconnectPlayer {
             player_id,
             outbound_tx,
+            shutting_down,
         };
         let kind = message.kind();
         let started = Instant::now();

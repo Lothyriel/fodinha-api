@@ -67,6 +67,7 @@ pub enum MatchActorMessage {
     DisconnectPlayer {
         player_id: PlayerId,
         outbound_tx: PlayerSender,
+        shutting_down: bool,
     },
     CreateMatch {
         creator_id: PlayerId,

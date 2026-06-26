@@ -621,6 +621,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_waiting_lobby_survives_restart() {
+        let server = TestServer::start().await;
+
+        let client = http_client();
+        let tokens = get_players(&client, &server, 2).await;
+        let lobby_id = create_lobby(&client, &server, &tokens[0]).await;
+
+        for token in &tokens {
+            join_lobby_http(&client, &server, token, &lobby_id).await;
+        }
+
+        let mongo_database = server.stop_without_dropping_database().await;
+
+        let server = TestServer::start_with_database(mongo_database).await;
+
+        assert!(server.manager.registry.matches.is_empty());
+        assert_eq!(server.manager.active_player_route_count(), 0);
+
+        let lobbies = server.manager.get_lobbies().await;
+        assert!(
+            lobbies.iter().any(|l| l.id == lobby_id && l.player_count == 2),
+            "Waiting lobby should survive restart and be listed"
+        );
+
+        let lobby = join_lobby_http(&client, &server, &tokens[0], &lobby_id).await;
+        assert!(
+            matches!(lobby, LobbyInfo::NotStarted(players) if players.len() == 2),
+            "Rejoined lobby should still have 2 players"
+        );
+
+        server.shutdown().await;
+    }
+
+    #[tokio::test]
     async fn test_signup_rejects_long_nickname() {
         let server = TestServer::start().await;
         let client = http_client();
