@@ -352,6 +352,9 @@ impl ManagerHandle {
         let kind = message.kind();
         let started = Instant::now();
         let result = sender.send_async(message).await;
+        if result.is_ok() {
+            telemetry::inc_actor_queue_depth();
+        }
         telemetry::record_actor_message(kind, started.elapsed());
 
         if let Err(e) = result {
@@ -437,6 +440,8 @@ impl ManagerHandle {
             .send_async(message)
             .await
             .map_err(|_| ManagerError::ReceiverDisposed)?;
+
+        telemetry::inc_actor_queue_depth();
 
         let result = rx.await.map_err(|_| ManagerError::ReceiverDisposed)?;
         telemetry::record_actor_message(kind, started.elapsed());

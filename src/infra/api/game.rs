@@ -51,10 +51,12 @@ pub async fn handler(
 
     let response = ws
         .on_upgrade(|socket| async move {
+            telemetry::inc_active_ws_connections();
             match handle_connection(socket, manager, claims, shutdown_rx).await {
                 Ok(_) => tracing::warn!(">>>> {who:?} closed normally"),
                 Err(e) => tracing::error!(">>>> {who:?} closed from error: {e}"),
             }
+            telemetry::dec_active_ws_connections();
         })
         .into_response();
 

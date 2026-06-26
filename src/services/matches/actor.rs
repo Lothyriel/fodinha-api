@@ -6,6 +6,7 @@ use std::{
 use indexmap::IndexMap;
 
 use crate::{
+    infra::telemetry,
     models::{
         Card, Game, GameError, GameOutcome, LobbyState, Turn,
         commands::GetLobbyDto,
@@ -75,11 +76,16 @@ impl MatchActor {
     }
 
     pub(crate) async fn run(mut self, rx: MatchReceiver) {
+        telemetry::inc_active_actors();
+
         loop {
             let command = if self.is_waiting_lobby() {
                 match tokio::time::timeout(self.time_until_waiting_timeout(), rx.recv_async()).await
                 {
-                    Ok(Ok(command)) => command,
+                    Ok(Ok(command)) => {
+                        telemetry::dec_actor_queue_depth();
+                        command
+                    }
                     Ok(Err(_)) => break,
                     Err(_) => {
                         if let Err(e) = self.handle_waiting_timeout().await {
@@ -91,7 +97,10 @@ impl MatchActor {
                 }
             } else {
                 match rx.recv_async().await {
-                    Ok(command) => command,
+                    Ok(command) => {
+                        telemetry::dec_actor_queue_depth();
+                        command
+                    }
                     Err(_) => break,
                 }
             };
@@ -108,6 +117,8 @@ impl MatchActor {
                 break;
             }
         }
+
+        telemetry::dec_active_actors();
     }
 
     async fn handle(&mut self, command: MatchActorMessage) -> bool {

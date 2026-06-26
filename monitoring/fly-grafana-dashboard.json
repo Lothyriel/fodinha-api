@@ -310,7 +310,7 @@
     {
       "id": 9,
       "type": "timeseries",
-      "title": "Actor Starts / s",
+      "title": "Active Actors",
       "datasource": {
         "type": "prometheus",
         "uid": "$datasource"
@@ -319,8 +319,50 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (actor_startup_kind, success) (rate(actor_startup_count_total{app=~\"$app\",region=~\"$region\"}[5m]))",
-          "legendFormat": "{{actor_startup_kind}} success={{success}}"
+          "expr": "actor_active_count{app=~\"$app\",region=~\"$region\"}",
+          "legendFormat": "Active Actors"
+        }
+      ],
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      }
+    },
+    {
+      "id": 13,
+      "type": "timeseries",
+      "title": "Active WS Connections",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$datasource"
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 36 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "ws_active_connections{app=~\"$app\",region=~\"$region\"}",
+          "legendFormat": "WS Connections"
+        }
+      ],
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      }
+    },
+    {
+      "id": 14,
+      "type": "timeseries",
+      "title": "Actor Queue Depth",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$datasource"
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 36 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "actor_queue_depth{app=~\"$app\",region=~\"$region\"}",
+          "legendFormat": "Queue Depth"
         }
       ],
       "options": {

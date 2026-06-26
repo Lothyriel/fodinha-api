@@ -13,7 +13,7 @@ use axum::{
 };
 use opentelemetry::{
     KeyValue, global,
-    metrics::{Counter, Histogram},
+    metrics::{Counter, Histogram, UpDownCounter},
     trace::TracerProvider as _,
 };
 use opentelemetry_otlp::{Protocol, WithExportConfig};
@@ -42,10 +42,12 @@ struct Instruments {
     http_request_duration: Histogram<f64>,
     db_queries: Counter<u64>,
     db_query_duration: Histogram<f64>,
-    actor_starts: Counter<u64>,
+    actor_active_count: UpDownCounter<i64>,
     actor_start_duration: Histogram<f64>,
     actor_messages: Counter<u64>,
     actor_message_duration: Histogram<f64>,
+    ws_active_connections: UpDownCounter<i64>,
+    actor_queue_depth: UpDownCounter<i64>,
 }
 
 impl Instruments {
@@ -71,9 +73,9 @@ impl Instruments {
                 .with_unit("s")
                 .with_description("MongoDB client operation duration.")
                 .build(),
-            actor_starts: meter
-                .u64_counter("actor.startup.count")
-                .with_description("Actor startups.")
+            actor_active_count: meter
+                .i64_up_down_counter("actor.active.count")
+                .with_description("Number of active match actors.")
                 .build(),
             actor_start_duration: meter
                 .f64_histogram("actor.startup.duration")
@@ -88,6 +90,14 @@ impl Instruments {
                 .f64_histogram("actor.message.duration")
                 .with_unit("s")
                 .with_description("Actor message processing duration.")
+                .build(),
+            ws_active_connections: meter
+                .i64_up_down_counter("ws.active.connections")
+                .with_description("Number of active WebSocket connections.")
+                .build(),
+            actor_queue_depth: meter
+                .i64_up_down_counter("actor.queue.depth")
+                .with_description("Approximate number of messages waiting in actor queues.")
                 .build(),
         }
     }
@@ -377,7 +387,6 @@ pub(crate) fn record_actor_start(startup_kind: &'static str, duration: Duration,
         KeyValue::new("success", success),
     ];
 
-    INSTRUMENTS.actor_starts.add(1, &attrs);
     INSTRUMENTS
         .actor_start_duration
         .record(duration.as_secs_f64(), &attrs);
@@ -393,4 +402,28 @@ pub(crate) fn record_actor_message(message_kind: &'static str, duration: Duratio
     INSTRUMENTS
         .actor_message_duration
         .record(duration.as_secs_f64(), &attrs);
+}
+
+pub(crate) fn inc_active_actors() {
+    INSTRUMENTS.actor_active_count.add(1, &[]);
+}
+
+pub(crate) fn dec_active_actors() {
+    INSTRUMENTS.actor_active_count.add(-1, &[]);
+}
+
+pub(crate) fn inc_active_ws_connections() {
+    INSTRUMENTS.ws_active_connections.add(1, &[]);
+}
+
+pub(crate) fn dec_active_ws_connections() {
+    INSTRUMENTS.ws_active_connections.add(-1, &[]);
+}
+
+pub(crate) fn inc_actor_queue_depth() {
+    INSTRUMENTS.actor_queue_depth.add(1, &[]);
+}
+
+pub(crate) fn dec_actor_queue_depth() {
+    INSTRUMENTS.actor_queue_depth.add(-1, &[]);
 }
