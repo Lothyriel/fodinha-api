@@ -1104,6 +1104,14 @@ mod tests {
                 assert_game_msg(&mut p.connection, validate_player_status_change).await;
             }
         }
+
+        for p in players.values_mut() {
+            let snapshot = get_snapshot(&mut p.connection).await;
+            assert!(
+                matches!(snapshot, MatchSnapshot::Playing(_)),
+                "Expected playing snapshot after game start"
+            );
+        }
     }
 
     fn validate_round_ended(m: &ServerMessage) -> bool {
