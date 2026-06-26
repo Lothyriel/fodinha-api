@@ -3,7 +3,7 @@
 ## Fast Start
 
 - This is a single-crate Rust backend for the Fodinha card game. The process starts in `src/main.rs`: init telemetry, load `AppSettings`, start `GameManager`, then serve Axum.
-- Run Mongo first: `docker compose up -d mongodb`
+- Run Mongo first: `podman compose up -d mongodb`
 - Run the API: `cargo run`
 - `JWT_KEY` has no default and is required for the repo's auth flows. `MONGO_CONN_STRING`, `MONGO_DATABASE`, and `GOOGLE_CLIENT_ID` are loaded from env with defaults in `src/lib.rs`.
 - There is no CI test/lint workflow in this repo right now; `.github/workflows/fly-deploy.yml` only deploys to Fly on push to `main`.

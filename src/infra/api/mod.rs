@@ -4,11 +4,11 @@ mod lobby;
 mod models;
 mod stats;
 
-use std::net::Ipv6Addr;
+use std::{net::Ipv6Addr, time::Duration};
 
 use axum::{Json, Router, response::IntoResponse, routing};
 use reqwest::StatusCode;
-use tokio::net::TcpListener;
+use tokio::{net::TcpListener, sync::watch};
 use tower_http::cors::{Any, CorsLayer};
 
 use crate::{
@@ -23,36 +23,70 @@ pub struct ApiState {
     manager: ManagerHandle,
     jwt_key: String,
     google_client_id: String,
+    shutdown_rx: watch::Receiver<bool>,
 }
 
-pub async fn start(manager: ManagerHandle, settings: &AppSettings) {
+pub async fn start(
+    manager: ManagerHandle,
+    settings: &AppSettings,
+    shutdown_rx: watch::Receiver<bool>,
+) {
     let address = (Ipv6Addr::UNSPECIFIED, 3000);
 
     let listener = TcpListener::bind(address)
         .await
         .expect("Expected to bind to network address");
 
-    serve_listener(listener, manager, settings).await;
+    serve_listener(listener, manager, settings, shutdown_rx).await;
 }
 
-pub async fn serve_listener(listener: TcpListener, manager: ManagerHandle, settings: &AppSettings) {
+pub async fn serve_listener(
+    listener: TcpListener,
+    manager: ManagerHandle,
+    settings: &AppSettings,
+    shutdown_rx: watch::Receiver<bool>,
+) {
     let address = listener
         .local_addr()
         .expect("Expected listener to expose local address");
-    let app = build_app(manager, settings);
+    let app = build_app(manager, settings, shutdown_rx.clone());
 
     tracing::info!("Listening on {:?}", address);
 
-    axum::serve(listener, app)
-        .await
-        .expect("Expected to start axum");
+    let drain_timeout = Duration::from_secs(10);
+
+    let serve = axum::serve(listener, app).with_graceful_shutdown(async move {
+        let mut rx = shutdown_rx;
+        if *rx.borrow() {
+            return;
+        }
+        let _ = rx.changed().await;
+    });
+
+    match tokio::time::timeout(drain_timeout, serve).await {
+        Ok(result) => {
+            if let Err(e) = result {
+                tracing::error!("Error serving API: {e}");
+            }
+        }
+        Err(_) => {
+            tracing::warn!("Graceful shutdown timed out after {drain_timeout:?}, forcing exit");
+        }
+    }
+
+    tracing::info!("Server shutdown complete");
 }
 
-fn build_app(manager: ManagerHandle, settings: &AppSettings) -> Router {
+fn build_app(
+    manager: ManagerHandle,
+    settings: &AppSettings,
+    shutdown_rx: watch::Receiver<bool>,
+) -> Router {
     let state = ApiState {
         manager,
         jwt_key: settings.jwt_key.clone(),
         google_client_id: settings.google_client_id.clone(),
+        shutdown_rx,
     };
     let auth = axum::middleware::from_fn_with_state(state.clone(), auth::middleware);
 
@@ -233,7 +267,8 @@ mod tests {
             let base_url = format!("http://{address}");
             let ws_url = format!("ws://{address}");
             let handle = tokio::spawn(async move {
-                serve_listener(listener, manager, &settings).await;
+                let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+                serve_listener(listener, manager, &settings, shutdown_rx).await;
             });
 
             let server = Self {
@@ -402,6 +437,101 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_restart_restores_active_game_after_bid() {
+        let server = TestServer::start().await;
+
+        let client = http_client();
+        let tokens = get_players(&client, &server, 2).await;
+        let first_claims = get_claims_from_token(&tokens[0], TEST_JWT_KEY, TEST_GOOGLE_CLIENT_ID)
+            .await
+            .unwrap();
+        let second_claims = get_claims_from_token(&tokens[1], TEST_JWT_KEY, TEST_GOOGLE_CLIENT_ID)
+            .await
+            .unwrap();
+        let lobby_id = create_lobby(&client, &server, &tokens[0]).await;
+
+        for token in &tokens {
+            join_lobby_http(&client, &server, token, &lobby_id).await;
+        }
+
+        server
+            .manager
+            .player_status_change(first_claims.id(), true)
+            .await
+            .unwrap();
+        server
+            .manager
+            .player_status_change(second_claims.id(), true)
+            .await
+            .unwrap();
+
+        let (mut first_connection, mut second_connection) = tokio::join!(
+            connect_ws(&server, &tokens[0]),
+            connect_ws(&server, &tokens[1])
+        );
+        let (first_snapshot, second_snapshot) = tokio::join!(
+            get_snapshot(&mut first_connection),
+            get_snapshot(&mut second_connection)
+        );
+
+        let (bidding_player, chosen_bid) = match &first_snapshot {
+            MatchSnapshot::Playing(data) => match &data.game.stage {
+                crate::services::GameStageDto::Bidding { possible_bids } => (
+                    PlayerId(data.game.current_player.clone().into()),
+                    *possible_bids.first().expect("expected possible bids"),
+                ),
+                stage => panic!("Expected bidding stage, got {stage:?}"),
+            },
+            snapshot => panic!("Expected playing snapshot, got {snapshot:?}"),
+        };
+
+        assert!(matches!(second_snapshot, MatchSnapshot::Playing(_)));
+
+        server
+            .manager
+            .bid(chosen_bid, bidding_player.clone())
+            .await
+            .unwrap();
+
+        drop(first_connection);
+        drop(second_connection);
+
+        let mongo_database = server.stop_without_dropping_database().await;
+        let server = TestServer::start_with_database(mongo_database).await;
+
+        assert!(server.manager.registry.matches.is_empty());
+        assert_eq!(server.manager.active_player_route_count(), 0);
+
+        let (mut first_connection, mut second_connection) = tokio::join!(
+            connect_ws(&server, &tokens[0]),
+            connect_ws(&server, &tokens[1])
+        );
+        let (first_snapshot, second_snapshot) = tokio::join!(
+            get_snapshot(&mut first_connection),
+            get_snapshot(&mut second_connection)
+        );
+
+        for snapshot in [first_snapshot, second_snapshot] {
+            match snapshot {
+                MatchSnapshot::Playing(data) => {
+                    assert_eq!(data.players.len(), 2);
+                    assert!(data.game.info.iter().any(
+                        |player| player.id == bidding_player && player.bid == Some(chosen_bid)
+                    ));
+                }
+                snapshot => panic!("Expected playing snapshot after restart, got {snapshot:?}"),
+            }
+        }
+
+        assert_eq!(server.manager.registry.matches.len(), 1);
+        assert_eq!(server.manager.active_player_route_count(), 2);
+
+        drop(first_connection);
+        drop(second_connection);
+        server.shutdown().await;
+    }
+
+    #[tokio::test]
     async fn test_concurrent_lazy_loads_match_actor_from_events() {
         let server = TestServer::start().await;
 
@@ -435,6 +565,58 @@ mod tests {
 
         drop(first_connection);
         drop(second_connection);
+        server.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn test_unique_index_prevents_duplicate_event_sequence() {
+        let server = TestServer::start().await;
+
+        let client = http_client();
+        let tokens = get_players(&client, &server, 2).await;
+        let lobby_id = create_lobby(&client, &server, &tokens[0]).await;
+
+        for token in &tokens {
+            join_lobby_http(&client, &server, token, &lobby_id).await;
+        }
+
+        let first_claims = get_claims_from_token(&tokens[0], TEST_JWT_KEY, TEST_GOOGLE_CLIENT_ID)
+            .await
+            .unwrap();
+        let second_claims = get_claims_from_token(&tokens[1], TEST_JWT_KEY, TEST_GOOGLE_CLIENT_ID)
+            .await
+            .unwrap();
+
+        server
+            .manager
+            .player_status_change(first_claims.id(), true)
+            .await
+            .unwrap();
+        server
+            .manager
+            .player_status_change(second_claims.id(), true)
+            .await
+            .unwrap();
+
+        let repo = crate::services::repositories::matches::MatchesRepository::new(
+            server.database.as_ref().unwrap(),
+        );
+
+        let duplicate = repo
+            .append_event(
+                &lobby_id,
+                0,
+                crate::models::game::MatchEvent::MatchCreated {
+                    settings: crate::models::game::GameSettings::default(),
+                },
+            )
+            .await;
+
+        assert!(
+            duplicate.is_err(),
+            "Duplicate (match_id, sequence) must be rejected by unique index"
+        );
+
         server.shutdown().await;
     }
 

@@ -3,11 +3,12 @@ use std::time::Instant;
 use axum::{
     extract::{
         Query, State, WebSocketUpgrade,
-        ws::{Message, WebSocket},
+        ws::{CloseFrame, Message, WebSocket},
     },
     response::IntoResponse,
 };
 use futures::StreamExt;
+use tokio::sync::watch;
 
 use crate::{
     infra::{UserClaims, telemetry},
@@ -42,6 +43,7 @@ pub async fn handler(
     };
 
     let manager = state.manager.clone();
+    let shutdown_rx = state.shutdown_rx.clone();
 
     let who = claims.id();
 
@@ -49,7 +51,7 @@ pub async fn handler(
 
     let response = ws
         .on_upgrade(|socket| async move {
-            match handle_connection(socket, manager, claims).await {
+            match handle_connection(socket, manager, claims, shutdown_rx).await {
                 Ok(_) => tracing::warn!(">>>> {who:?} closed normally"),
                 Err(e) => tracing::error!(">>>> {who:?} closed from error: {e}"),
             }
@@ -67,6 +69,7 @@ async fn handle_connection(
     ws: WebSocket,
     manager: ManagerHandle,
     auth: UserClaims,
+    shutdown_rx: watch::Receiver<bool>,
 ) -> Result<(), ManagerError> {
     let player_id = auth.id();
 
@@ -81,6 +84,7 @@ async fn handle_connection(
         manager,
         outbound_tx: context.outbound_tx,
         outbound_rx: context.outbound_rx,
+        shutdown_rx,
     };
 
     connection.run().await
@@ -93,6 +97,7 @@ struct PlayerConnection {
     manager: ManagerHandle,
     outbound_tx: PlayerSender,
     outbound_rx: PlayerReceiver,
+    shutdown_rx: watch::Receiver<bool>,
 }
 
 impl PlayerConnection {
@@ -117,6 +122,10 @@ impl PlayerConnection {
     }
 
     async fn run_loop(&mut self) -> Result<(), ManagerError> {
+        if *self.shutdown_rx.borrow() {
+            return Ok(());
+        }
+
         loop {
             tokio::select! {
                 outbound = self.outbound_rx.recv() => {
@@ -137,6 +146,19 @@ impl PlayerConnection {
                         }
                         Some(Err(error)) => return Err(ManagerError::PlayerDisconnected(error.to_string())),
                         None => return Ok(()),
+                    }
+                }
+                _ = self.shutdown_rx.changed() => {
+                    if *self.shutdown_rx.borrow() {
+                        tracing::info!(
+                            "Shutdown signal received, closing websocket for {:?}",
+                            self.player_id
+                        );
+                        let _ = self.socket.send(Message::Close(Some(CloseFrame {
+                            code: 1001,
+                            reason: "server shutting down".into(),
+                        }))).await;
+                        return Ok(());
                     }
                 }
             }

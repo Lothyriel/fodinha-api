@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use futures::TryStreamExt;
-use mongodb::{Collection, Database, bson::doc};
+use mongodb::{Collection, Database, IndexModel, bson::doc, options::IndexOptions};
 
 use crate::{
     infra::telemetry,
@@ -24,6 +24,38 @@ impl MatchesRepository {
             events: database.collection("MatchEvents"),
             metadata: database.collection("MatchMetadata"),
         }
+    }
+
+    pub async fn ensure_indexes(&self) -> mongodb::error::Result<()> {
+        telemetry::db_query(
+            "MatchEvents",
+            "create_index.unique_match_id_sequence",
+            async {
+                self.events
+                    .create_index(
+                        IndexModel::builder()
+                            .keys(doc! { "match_id": 1, "sequence": 1 })
+                            .options(IndexOptions::builder().unique(true).build())
+                            .build(),
+                    )
+                    .await
+            },
+        )
+        .await?;
+
+        telemetry::db_query("MatchMetadata", "create_index.unique_match_id", async {
+            self.metadata
+                .create_index(
+                    IndexModel::builder()
+                        .keys(doc! { "match_id": 1 })
+                        .options(IndexOptions::builder().unique(true).build())
+                        .build(),
+                )
+                .await
+        })
+        .await?;
+
+        Ok(())
     }
 
     pub async fn append_event(

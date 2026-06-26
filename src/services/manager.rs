@@ -38,6 +38,10 @@ impl GameManager {
         let stats_repo = StatsRepository::new(&db);
         let users_repo = UsersRepository::new(&db);
 
+        if let Err(e) = matches_repo.ensure_indexes().await {
+            tracing::error!("Error creating match indexes: {e}");
+        }
+
         if let Err(e) = stats_repo.ensure_indexes().await {
             tracing::error!("Error creating stats indexes: {e}");
         }

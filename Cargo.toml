@@ -9,7 +9,7 @@ edition = "2024"
 axum = { version = "0.8.9", features = ["ws"] }
 tower-http = { version = "0.7.0", features = ["trace", "cors"] }
 
-tokio = { version = "1.52.3", features = ["rt-multi-thread"] }
+tokio = { version = "1.52.3", features = ["rt-multi-thread", "signal"] }
 futures = "0.3.32"
 
 tracing = "0.1.44"

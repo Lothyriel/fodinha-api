@@ -147,7 +147,13 @@ impl MatchActor {
                 ready,
                 respond,
             } => {
-                respond_once(respond, self.handle_status_change(player_id, ready).await);
+                let result = self.handle_status_change(player_id, ready).await;
+                let should_continue = match &result {
+                    Err(ManagerError::Database(_)) => false,
+                    _ => true,
+                };
+                respond_once(respond, result);
+                return should_continue;
             }
             MatchActorMessage::GameCommand {
                 player_id,
@@ -155,7 +161,12 @@ impl MatchActor {
                 respond,
             } => {
                 let result = self.handle_game_command(player_id, command).await;
-                let should_continue = !matches!(&result, Ok(ActorResult::Stop));
+                let should_continue = match &result {
+                    Ok(ActorResult::Continue) => true,
+                    Ok(ActorResult::Stop) => false,
+                    Err(ManagerError::Database(_)) => false,
+                    Err(_) => true,
+                };
                 respond_once(respond, result.map(|_| ()));
                 return should_continue;
             }
@@ -330,7 +341,19 @@ impl MatchActor {
         if let Some((players, settings)) = self.start_game_data()? {
             let event = Game::start_match_event(&players, settings)
                 .map_err(|e| ManagerError::Lobby(LobbyError::GameError(e)))?;
-            let applied = self.persist_apply(event).await?;
+            let applied = match self.persist_apply(event).await {
+                Ok(applied) => applied,
+                Err(e) => {
+                    if matches!(e, ManagerError::Database(_)) {
+                        tracing::error!(
+                            "Database error persisting event for match {:?}, stopping actor: {e}",
+                            self.match_id
+                        );
+                        self.stop_match();
+                    }
+                    return Err(e);
+                }
+            };
 
             if let AppliedEvent::GameStarted {
                 set,
