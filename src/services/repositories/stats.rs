@@ -136,13 +136,14 @@ impl StatsRepository {
     }
 
     pub async fn apply_match_stats(&self, stats: &MatchPlayerStats) -> mongodb::error::Result<()> {
-        let mut aggregate = telemetry::db_query("PlayerStats", "find_one.apply_match_stats", async {
-            self.player_stats
-                .find_one(doc! { "player_id": &stats.player_id })
-                .await
-        })
-        .await?
-        .unwrap_or_else(|| PlayerStats::new(stats.player_id.clone()));
+        let mut aggregate =
+            telemetry::db_query("PlayerStats", "find_one.apply_match_stats", async {
+                self.player_stats
+                    .find_one(doc! { "player_id": &stats.player_id })
+                    .await
+            })
+            .await?
+            .unwrap_or_else(|| PlayerStats::new(stats.player_id.clone()));
 
         aggregate.apply_match(stats);
 

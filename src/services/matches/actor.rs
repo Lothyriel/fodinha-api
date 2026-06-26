@@ -1,4 +1,7 @@
-use std::collections::HashMap;
+use std::{
+    collections::HashMap,
+    time::{Duration, Instant},
+};
 
 use indexmap::IndexMap;
 
@@ -24,12 +27,15 @@ use crate::{
 pub(crate) struct MatchActor {
     match_id: MatchId,
     lobby: Option<Lobby>,
+    creator_id: Option<PlayerId>,
     connections: HashMap<PlayerId, PlayerSender>,
     pub(crate) version: usize,
     repo: MatchesRepository,
     stats_projector: StatsProjectorHandle,
     match_entries: MatchEntries,
     player_routes: PlayerRoutes,
+    last_activity: Instant,
+    waiting_lobby_timeout: Duration,
 }
 
 enum AppliedEvent {
@@ -51,21 +57,45 @@ impl MatchActor {
         stats_projector: StatsProjectorHandle,
         match_entries: MatchEntries,
         player_routes: PlayerRoutes,
+        waiting_lobby_timeout: Duration,
     ) -> Self {
         Self {
             match_id,
             lobby: None,
+            creator_id: None,
             connections: HashMap::new(),
             version: 0,
             repo,
             stats_projector,
             match_entries,
             player_routes,
+            last_activity: Instant::now(),
+            waiting_lobby_timeout,
         }
     }
 
     pub(crate) async fn run(mut self, rx: MatchReceiver) {
-        while let Ok(command) = rx.recv_async().await {
+        loop {
+            let command = if self.is_waiting_lobby() {
+                match tokio::time::timeout(self.time_until_waiting_timeout(), rx.recv_async()).await
+                {
+                    Ok(Ok(command)) => command,
+                    Ok(Err(_)) => break,
+                    Err(_) => {
+                        if let Err(e) = self.handle_waiting_timeout().await {
+                            tracing::error!("Error handling waiting lobby timeout: {e}");
+                        }
+
+                        break;
+                    }
+                }
+            } else {
+                match rx.recv_async().await {
+                    Ok(command) => command,
+                    Err(_) => break,
+                }
+            };
+
             let should_continue = self.handle(command).await;
 
             if self.is_finished() {
@@ -99,8 +129,15 @@ impl MatchActor {
                 Ok(should_continue) => return should_continue,
                 Err(e) => tracing::error!("Error handling player disconnect: {e}"),
             },
-            MatchActorMessage::CreateMatch { settings, respond } => {
-                respond_once(respond, self.handle_create_match(settings).await);
+            MatchActorMessage::CreateMatch {
+                creator_id,
+                settings,
+                respond,
+            } => {
+                respond_once(
+                    respond,
+                    self.handle_create_match(creator_id, settings).await,
+                );
             }
             MatchActorMessage::JoinLobby { player_id, respond } => {
                 respond_once(respond, self.handle_join_lobby(player_id).await);
@@ -130,15 +167,21 @@ impl MatchActor {
         true
     }
 
-    async fn handle_create_match(&mut self, settings: GameSettings) -> Result<(), ManagerError> {
+    async fn handle_create_match(
+        &mut self,
+        creator_id: PlayerId,
+        settings: GameSettings,
+    ) -> Result<(), ManagerError> {
         if self.lobby.is_some() {
             return Ok(());
         }
 
         self.repo
-            .create_metadata(&self.match_id, settings.clone())
+            .create_metadata(&self.match_id, settings.clone(), Some(&creator_id))
             .await?;
         self.lobby = Some(Lobby::new(settings));
+        self.creator_id = Some(creator_id);
+        self.refresh_waiting_activity();
 
         Ok(())
     }
@@ -159,6 +202,9 @@ impl MatchActor {
         };
 
         self.connections.insert(player_id.clone(), outbound_tx);
+
+        self.touch_waiting_lobby().await?;
+
         self.send_to_player(&player_id, OutboundMessage::Snapshot(snapshot))
             .await;
 
@@ -171,9 +217,11 @@ impl MatchActor {
     ) -> Result<LobbyInfoInternal, ManagerError> {
         if let Some(lobby) = self.lobby.as_ref() {
             if lobby.players.contains_key(&player_id) {
+                let info = lobby.get_info(&player_id);
                 self.player_routes
                     .insert(player_id.clone(), self.match_id.clone());
-                return Ok(lobby.get_info(&player_id));
+                self.touch_waiting_lobby().await?;
+                return Ok(info);
             }
 
             match &lobby.state {
@@ -192,6 +240,7 @@ impl MatchActor {
             .add_metadata_player(&self.match_id, &player_id)
             .await?;
         self.apply_player_joined(player_id.clone())?;
+        self.refresh_waiting_activity();
         self.broadcast(OutboundMessage::PlayerJoined(player_id.clone()))
             .await;
 
@@ -214,15 +263,21 @@ impl MatchActor {
 
         self.connections.remove(&player_id);
 
-        let Some(lobby) = self.lobby.as_ref() else {
-            return Ok(true);
-        };
+        let should_handle_waiting_disconnect = matches!(
+            self.lobby.as_ref().map(|lobby| &lobby.state),
+            Some(LobbyState::NotStarted(_))
+        );
 
-        if matches!(lobby.state, LobbyState::Playing(_)) {
+        if !should_handle_waiting_disconnect {
             return Ok(true);
         }
 
-        if !lobby.players.contains_key(&player_id) {
+        if !self.lobby()?.players.contains_key(&player_id) {
+            return Ok(true);
+        }
+
+        if self.connections.is_empty() && !self.is_creator(&player_id) {
+            self.touch_waiting_lobby().await?;
             return Ok(true);
         }
 
@@ -241,6 +296,8 @@ impl MatchActor {
 
             return Ok(false);
         }
+
+        self.refresh_waiting_activity();
 
         Ok(true)
     }
@@ -266,6 +323,7 @@ impl MatchActor {
             .set_metadata_player_ready(&self.match_id, &player_id, ready)
             .await?;
         self.apply_player_status_changed(&player_id, ready)?;
+        self.refresh_waiting_activity();
         let msg = OutboundMessage::PlayerStatusChange { player_id, ready };
         self.broadcast(msg).await;
 
@@ -363,6 +421,9 @@ impl MatchActor {
     }
 
     pub(crate) fn restore_from_metadata(&mut self, metadata: MatchMetadataDto) {
+        self.creator_id = metadata.creator_id();
+        let updated_at = metadata.updated_at;
+
         let ready_players: std::collections::HashSet<_> =
             metadata.ready_players.into_iter().collect();
         let mut lobby = Lobby::new(metadata.settings.unwrap_or_default());
@@ -380,6 +441,7 @@ impl MatchActor {
         }
 
         self.lobby = Some(lobby);
+        self.restore_waiting_activity(updated_at);
     }
 
     fn apply_event(&mut self, event: MatchEvent) -> Result<AppliedEvent, ManagerError> {
@@ -584,6 +646,63 @@ impl MatchActor {
         }
 
         self.connections.clear();
+    }
+
+    async fn handle_waiting_timeout(&mut self) -> Result<(), ManagerError> {
+        if !self.is_waiting_lobby() {
+            return Ok(());
+        }
+
+        self.repo.delete_metadata(&self.match_id).await?;
+        self.stop_match();
+
+        Ok(())
+    }
+
+    fn is_waiting_lobby(&self) -> bool {
+        matches!(
+            self.lobby.as_ref().map(|lobby| &lobby.state),
+            Some(LobbyState::NotStarted(_))
+        )
+    }
+
+    fn time_until_waiting_timeout(&self) -> Duration {
+        self.waiting_lobby_timeout
+            .saturating_sub(self.last_activity.elapsed())
+    }
+
+    fn refresh_waiting_activity(&mut self) {
+        if self.is_waiting_lobby() {
+            self.last_activity = Instant::now();
+        }
+    }
+
+    async fn touch_waiting_lobby(&mut self) -> Result<(), ManagerError> {
+        if !self.is_waiting_lobby() {
+            return Ok(());
+        }
+
+        self.repo.touch_metadata(&self.match_id).await?;
+        self.refresh_waiting_activity();
+
+        Ok(())
+    }
+
+    fn restore_waiting_activity(&mut self, updated_at: i64) {
+        if !self.is_waiting_lobby() {
+            return;
+        }
+
+        let idle_seconds = (chrono::Utc::now().timestamp() - updated_at).max(0) as u64;
+        let idle = Duration::from_secs(idle_seconds).min(self.waiting_lobby_timeout);
+
+        self.last_activity = Instant::now() - idle;
+    }
+
+    fn is_creator(&self, player_id: &PlayerId) -> bool {
+        self.creator_id
+            .as_ref()
+            .is_some_and(|creator| creator == player_id)
     }
 
     fn start_game_data(&self) -> Result<Option<(Vec<PlayerId>, GameSettings)>, ManagerError> {

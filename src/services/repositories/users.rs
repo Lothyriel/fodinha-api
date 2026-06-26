@@ -29,7 +29,10 @@ impl UsersRepository {
     }
 
     pub async fn upsert_user(&self, user: &UserClaims) -> mongodb::error::Result<()> {
-        let existing = self.users.find_one(doc! { "player_id": user.id().as_str() }).await?;
+        let existing = self
+            .users
+            .find_one(doc! { "player_id": user.id().as_str() })
+            .await?;
         let dto = UserDto::new(user.clone(), existing);
 
         telemetry::db_query("Users", "replace_one.upsert", async {
@@ -128,7 +131,9 @@ struct UserDto {
 
 impl UserDto {
     fn new(user: UserClaims, existing: Option<UserDto>) -> Self {
-        let refresh_token = existing.as_ref().and_then(|user| user.refresh_token.clone());
+        let refresh_token = existing
+            .as_ref()
+            .and_then(|user| user.refresh_token.clone());
         let refresh_token_expires_at = existing.and_then(|user| user.refresh_token_expires_at);
 
         Self {

@@ -1,7 +1,7 @@
 use axum::{
-    Extension, Json, Router, middleware,
+    Extension, Json, Router,
     extract::{Path, State},
-    routing,
+    middleware, routing,
 };
 
 use crate::{
@@ -21,7 +21,9 @@ pub fn router() -> Router<ApiState> {
         .route("/", routing::get(get_lobbies))
         .route("/", routing::post(create_lobby))
         .route("/{id}", routing::put(join_lobby))
-        .layer(middleware::from_fn(crate::infra::telemetry::http_middleware))
+        .layer(middleware::from_fn(
+            crate::infra::telemetry::http_middleware,
+        ))
 }
 
 async fn get_lobbies(State(state): State<ApiState>) -> Json<Vec<GetLobbyDto>> {

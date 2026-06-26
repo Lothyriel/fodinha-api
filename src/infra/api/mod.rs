@@ -191,12 +191,23 @@ mod tests {
 
     impl TestServer {
         async fn start() -> Self {
+            Self::start_with_waiting_lobby_timeout(Duration::from_secs(5 * 60)).await
+        }
+
+        async fn start_with_waiting_lobby_timeout(waiting_lobby_timeout: Duration) -> Self {
             let mongo_database = format!("oh_hell_test_{}", nanoid::nanoid!(10));
 
-            Self::start_with_database(mongo_database).await
+            Self::start_with_database_and_timeout(mongo_database, waiting_lobby_timeout).await
         }
 
         async fn start_with_database(mongo_database: String) -> Self {
+            Self::start_with_database_and_timeout(mongo_database, Duration::from_secs(5 * 60)).await
+        }
+
+        async fn start_with_database_and_timeout(
+            mongo_database: String,
+            waiting_lobby_timeout: Duration,
+        ) -> Self {
             let mongo_conn_string = MONGO_CONN_STRING.to_string();
             let settings = AppSettings {
                 jwt_key: TEST_JWT_KEY.to_string(),
@@ -209,7 +220,9 @@ mod tests {
                 .await
                 .expect("Expected to create mongo client");
             let database = client.database(&mongo_database);
-            let manager = GameManager::start(&settings).await;
+            let manager =
+                GameManager::start_with_waiting_lobby_timeout(&settings, waiting_lobby_timeout)
+                    .await;
             let server_manager = manager.clone();
             let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
                 .await
@@ -451,24 +464,18 @@ mod tests {
         let client = http_client();
         let auth = login_auth(&client, &server, 1).await;
         let refresh_token = auth.refresh_token.clone().expect("refresh token missing");
-        let original_player_id = get_claims_from_token(
-            &auth.token,
-            TEST_JWT_KEY,
-            TEST_GOOGLE_CLIENT_ID,
-        )
-        .await
-        .unwrap()
-        .id();
+        let original_player_id =
+            get_claims_from_token(&auth.token, TEST_JWT_KEY, TEST_GOOGLE_CLIENT_ID)
+                .await
+                .unwrap()
+                .id();
 
         let refreshed = refresh_auth(&client, &server, &refresh_token).await;
-        let refreshed_player_id = get_claims_from_token(
-            &refreshed.token,
-            TEST_JWT_KEY,
-            TEST_GOOGLE_CLIENT_ID,
-        )
-        .await
-        .unwrap()
-        .id();
+        let refreshed_player_id =
+            get_claims_from_token(&refreshed.token, TEST_JWT_KEY, TEST_GOOGLE_CLIENT_ID)
+                .await
+                .unwrap()
+                .id();
 
         assert_eq!(refreshed_player_id, original_player_id);
         assert!(refreshed.refresh_token.is_some());
@@ -540,10 +547,11 @@ mod tests {
             join_lobby_http(&client, &server, token, &lobby_id).await;
         }
 
-        let second_player_id = get_claims_from_token(&tokens[1], TEST_JWT_KEY, TEST_GOOGLE_CLIENT_ID)
-            .await
-            .unwrap()
-            .id();
+        let second_player_id =
+            get_claims_from_token(&tokens[1], TEST_JWT_KEY, TEST_GOOGLE_CLIENT_ID)
+                .await
+                .unwrap()
+                .id();
         let mut first_connection = connect_ws(&server, &tokens[0]).await;
         let mut second_connection = connect_ws(&server, &tokens[1]).await;
 
@@ -566,6 +574,96 @@ mod tests {
         assert_eq!(lobbies[0].player_count, 1);
 
         first_connection.close(None).await.unwrap();
+        server.wait_until_match_actor_stopped().await;
+        assert!(server.manager.get_lobbies().await.is_empty());
+
+        server.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn test_last_non_creator_disconnect_keeps_waiting_lobby_open() {
+        let server = TestServer::start().await;
+        let client = http_client();
+        let tokens = get_players(&client, &server, 2).await;
+        let lobby_id = create_lobby(&client, &server, &tokens[0]).await;
+
+        for token in &tokens {
+            join_lobby_http(&client, &server, token, &lobby_id).await;
+        }
+
+        let creator_player_id =
+            get_claims_from_token(&tokens[0], TEST_JWT_KEY, TEST_GOOGLE_CLIENT_ID)
+                .await
+                .unwrap()
+                .id();
+        let second_player_id =
+            get_claims_from_token(&tokens[1], TEST_JWT_KEY, TEST_GOOGLE_CLIENT_ID)
+                .await
+                .unwrap()
+                .id();
+        let mut creator_connection = connect_ws(&server, &tokens[0]).await;
+        let mut second_connection = connect_ws(&server, &tokens[1]).await;
+
+        assert!(
+            matches!(get_snapshot(&mut creator_connection).await, MatchSnapshot::Waiting(players) if players.len() == 2)
+        );
+        assert!(
+            matches!(get_snapshot(&mut second_connection).await, MatchSnapshot::Waiting(players) if players.len() == 2)
+        );
+
+        creator_connection.close(None).await.unwrap();
+
+        assert!(matches!(
+            recv_msg(&mut second_connection).await,
+            ServerMessage::PlayerLeft { player_id } if player_id == creator_player_id
+        ));
+
+        second_connection.close(None).await.unwrap();
+
+        timeout(WS_TIMEOUT, async {
+            loop {
+                let lobbies = server.manager.get_lobbies().await;
+
+                if matches!(lobbies.as_slice(), [lobby] if lobby.player_count == 1) {
+                    return;
+                }
+
+                sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .expect("Timed out waiting for waiting lobby to remain open");
+
+        let mut reconnected = connect_ws(&server, &tokens[1]).await;
+        let snapshot = get_snapshot(&mut reconnected).await;
+
+        assert!(
+            matches!(snapshot, MatchSnapshot::Waiting(players) if players.len() == 1 && players.contains_key(&second_player_id))
+        );
+
+        drop(reconnected);
+        server.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn test_waiting_lobby_timeout_resets_on_activity() {
+        let server = TestServer::start_with_waiting_lobby_timeout(Duration::from_millis(200)).await;
+        let client = http_client();
+        let tokens = get_players(&client, &server, 2).await;
+        let lobby_id = create_lobby(&client, &server, &tokens[0]).await;
+
+        join_lobby_http(&client, &server, &tokens[0], &lobby_id).await;
+
+        sleep(Duration::from_millis(125)).await;
+
+        join_lobby_http(&client, &server, &tokens[1], &lobby_id).await;
+
+        sleep(Duration::from_millis(125)).await;
+
+        assert!(
+            matches!(server.manager.get_lobbies().await.as_slice(), [lobby] if lobby.id == lobby_id)
+        );
+
         server.wait_until_match_actor_stopped().await;
         assert!(server.manager.get_lobbies().await.is_empty());
 

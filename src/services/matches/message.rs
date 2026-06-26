@@ -69,6 +69,7 @@ pub enum MatchActorMessage {
         outbound_tx: PlayerSender,
     },
     CreateMatch {
+        creator_id: PlayerId,
         settings: GameSettings,
         respond: oneshot::Sender<Result<(), ManagerError>>,
     },

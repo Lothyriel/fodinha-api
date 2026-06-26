@@ -1,5 +1,6 @@
 use std::{
     collections::{HashMap, HashSet},
+    time::Duration,
     time::Instant,
 };
 
@@ -41,6 +42,7 @@ pub struct ManagerHandle {
     stats_repo: StatsRepository,
     users_repo: UsersRepository,
     stats_projector: StatsProjectorHandle,
+    waiting_lobby_timeout: Duration,
 }
 
 fn fallback_user_claims(player_id: &PlayerId) -> UserClaims {
@@ -62,6 +64,7 @@ impl ManagerHandle {
         stats_repo: StatsRepository,
         users_repo: UsersRepository,
         stats_projector: StatsProjectorHandle,
+        waiting_lobby_timeout: Duration,
     ) -> Self {
         Self {
             registry: MatchRegistry::new(),
@@ -69,6 +72,7 @@ impl ManagerHandle {
             stats_repo,
             users_repo,
             stats_projector,
+            waiting_lobby_timeout,
         }
     }
 
@@ -79,7 +83,7 @@ impl ManagerHandle {
 
     pub async fn create_lobby(
         &self,
-        _player_id: PlayerId,
+        player_id: PlayerId,
         settings: GameSettings,
     ) -> Result<CreateLobbyResponse, ManagerError> {
         let started = Instant::now();
@@ -92,6 +96,7 @@ impl ManagerHandle {
         tokio::spawn(actor.run(rx));
 
         let result = Self::request(&tx, |respond| MatchActorMessage::CreateMatch {
+            creator_id: player_id,
             settings,
             respond,
         })
@@ -473,6 +478,16 @@ impl ManagerHandle {
             .active_metadata(match_id)
             .await?
             .ok_or(LobbyError::InvalidLobby)?;
+
+        if metadata.is_waiting_stale(self.waiting_lobby_timeout) {
+            if let Err(e) = self.repo.delete_metadata(match_id).await {
+                tracing::error!("Error deleting stale waiting match metadata: {e}");
+            }
+
+            telemetry::record_actor_start("load", started.elapsed(), false);
+            return Err(LobbyError::InvalidLobby.into());
+        }
+
         let metadata_status = metadata.status;
         let events = self.repo.load_events(match_id).await?;
 
@@ -525,6 +540,7 @@ impl ManagerHandle {
             self.stats_projector.clone(),
             self.registry.matches.clone(),
             self.registry.player_routes.clone(),
+            self.waiting_lobby_timeout,
         )
     }
 }

@@ -62,10 +62,11 @@ impl MatchesRepository {
         &self,
         match_id: &MatchId,
         settings: GameSettings,
+        creator_id: Option<&PlayerId>,
     ) -> mongodb::error::Result<()> {
         telemetry::db_query("MatchMetadata", "insert_one", async {
             self.metadata
-                .insert_one(MatchMetadataDto::new(match_id, settings))
+                .insert_one(MatchMetadataDto::new(match_id, settings, creator_id))
                 .await
         })
         .await?;
@@ -78,11 +79,16 @@ impl MatchesRepository {
         match_id: &MatchId,
         player_id: &PlayerId,
     ) -> mongodb::error::Result<()> {
+        let updated_at = current_timestamp();
+
         telemetry::db_query("MatchMetadata", "update_one.add_player", async {
             self.metadata
                 .update_one(
                     doc! { "match_id": match_id.as_str() },
-                    doc! { "$addToSet": { "players": player_id.as_str() } },
+                    doc! {
+                        "$addToSet": { "players": player_id.as_str() },
+                        "$set": { "updated_at": updated_at },
+                    },
                 )
                 .await
         })
@@ -96,6 +102,8 @@ impl MatchesRepository {
         match_id: &MatchId,
         player_id: &PlayerId,
     ) -> mongodb::error::Result<()> {
+        let updated_at = current_timestamp();
+
         telemetry::db_query("MatchMetadata", "update_one.remove_player", async {
             self.metadata
                 .update_one(
@@ -104,7 +112,8 @@ impl MatchesRepository {
                         "$pull": {
                             "players": player_id.as_str(),
                             "ready_players": player_id.as_str(),
-                        }
+                        },
+                        "$set": { "updated_at": updated_at },
                     },
                 )
                 .await
@@ -131,14 +140,37 @@ impl MatchesRepository {
         player_id: &PlayerId,
         ready: bool,
     ) -> mongodb::error::Result<()> {
+        let updated_at = current_timestamp();
         let update = match ready {
-            true => doc! { "$addToSet": { "ready_players": player_id.as_str() } },
-            false => doc! { "$pull": { "ready_players": player_id.as_str() } },
+            true => doc! {
+                "$addToSet": { "ready_players": player_id.as_str() },
+                "$set": { "updated_at": updated_at },
+            },
+            false => doc! {
+                "$pull": { "ready_players": player_id.as_str() },
+                "$set": { "updated_at": updated_at },
+            },
         };
 
         telemetry::db_query("MatchMetadata", "update_one.set_ready", async {
             self.metadata
                 .update_one(doc! { "match_id": match_id.as_str() }, update)
+                .await
+        })
+        .await?;
+
+        Ok(())
+    }
+
+    pub async fn touch_metadata(&self, match_id: &MatchId) -> mongodb::error::Result<()> {
+        let updated_at = current_timestamp();
+
+        telemetry::db_query("MatchMetadata", "update_one.touch", async {
+            self.metadata
+                .update_one(
+                    doc! { "match_id": match_id.as_str() },
+                    doc! { "$set": { "updated_at": updated_at } },
+                )
                 .await
         })
         .await?;
@@ -187,29 +219,31 @@ impl MatchesRepository {
     }
 
     pub async fn waiting_match_ids(&self) -> mongodb::error::Result<Vec<MatchId>> {
-        let metadata: Vec<MatchMetadataDto> = telemetry::db_query("MatchMetadata", "find.waiting", async {
-            let cursor = self
-                .metadata
-                .find(doc! { "status": MatchMetadataStatus::Waiting.as_str() })
-                .await?;
+        let metadata: Vec<MatchMetadataDto> =
+            telemetry::db_query("MatchMetadata", "find.waiting", async {
+                let cursor = self
+                    .metadata
+                    .find(doc! { "status": MatchMetadataStatus::Waiting.as_str() })
+                    .await?;
 
-            cursor.try_collect().await
-        })
-        .await?;
+                cursor.try_collect().await
+            })
+            .await?;
 
         Ok(metadata.into_iter().map(|m| m.match_id()).collect())
     }
 
     pub async fn finished_match_ids(&self) -> mongodb::error::Result<Vec<MatchId>> {
-        let metadata: Vec<MatchMetadataDto> = telemetry::db_query("MatchMetadata", "find.finished", async {
-            let cursor = self
-                .metadata
-                .find(doc! { "status": MatchMetadataStatus::Finished.as_str() })
-                .await?;
+        let metadata: Vec<MatchMetadataDto> =
+            telemetry::db_query("MatchMetadata", "find.finished", async {
+                let cursor = self
+                    .metadata
+                    .find(doc! { "status": MatchMetadataStatus::Finished.as_str() })
+                    .await?;
 
-            cursor.try_collect().await
-        })
-        .await?;
+                cursor.try_collect().await
+            })
+            .await?;
 
         Ok(metadata.into_iter().map(|m| m.match_id()).collect())
     }
@@ -219,11 +253,13 @@ impl MatchesRepository {
         match_id: &MatchId,
         status: MatchMetadataStatus,
     ) -> mongodb::error::Result<()> {
+        let updated_at = current_timestamp();
+
         telemetry::db_query("MatchMetadata", "update_one.set_status", async {
             self.metadata
                 .update_one(
                     doc! { "match_id": match_id.as_str() },
-                    doc! { "$set": { "status": status.as_str() } },
+                    doc! { "$set": { "status": status.as_str(), "updated_at": updated_at } },
                 )
                 .await
         })
@@ -239,24 +275,41 @@ pub struct MatchMetadataDto {
     pub status: MatchMetadataStatus,
     pub settings: Option<GameSettings>,
     #[serde(default)]
+    pub creator_id: Option<String>,
+    #[serde(default)]
     pub players: Vec<String>,
     #[serde(default)]
     pub ready_players: Vec<String>,
+    #[serde(default)]
+    pub updated_at: i64,
 }
 
 impl MatchMetadataDto {
-    fn new(match_id: &MatchId, settings: GameSettings) -> Self {
+    fn new(match_id: &MatchId, settings: GameSettings, creator_id: Option<&PlayerId>) -> Self {
         Self {
             match_id: match_id.as_str().to_string(),
             status: MatchMetadataStatus::Waiting,
             settings: Some(settings),
+            creator_id: creator_id.map(|id| id.as_str().to_string()),
             players: Vec::new(),
             ready_players: Vec::new(),
+            updated_at: current_timestamp(),
         }
     }
 
     pub fn match_id(&self) -> MatchId {
         LobbyId(Arc::from(self.match_id.as_str()))
+    }
+
+    pub fn creator_id(&self) -> Option<PlayerId> {
+        self.creator_id
+            .as_deref()
+            .map(|player_id| PlayerId(Arc::from(player_id)))
+    }
+
+    pub fn is_waiting_stale(&self, timeout: std::time::Duration) -> bool {
+        self.status == MatchMetadataStatus::Waiting
+            && current_timestamp().saturating_sub(self.updated_at) >= timeout.as_secs() as i64
     }
 }
 
@@ -276,6 +329,10 @@ impl MatchMetadataStatus {
             Self::Finished => "finished",
         }
     }
+}
+
+fn current_timestamp() -> i64 {
+    Utc::now().timestamp()
 }
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]

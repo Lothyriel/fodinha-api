@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use crate::{
     AppSettings,
     services::{
@@ -12,8 +14,17 @@ use crate::{
 
 pub struct GameManager;
 
+const WAITING_LOBBY_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+
 impl GameManager {
     pub async fn start(settings: &AppSettings) -> ManagerHandle {
+        Self::start_with_waiting_lobby_timeout(settings, WAITING_LOBBY_TIMEOUT).await
+    }
+
+    pub(crate) async fn start_with_waiting_lobby_timeout(
+        settings: &AppSettings,
+        waiting_lobby_timeout: Duration,
+    ) -> ManagerHandle {
         let database = match settings.mongo_database.is_empty() {
             true => "oh_hell",
             false => settings.mongo_database.as_str(),
@@ -37,6 +48,12 @@ impl GameManager {
 
         let stats_projector = StatsProjector::start(matches_repo.clone(), stats_repo.clone());
 
-        ManagerHandle::new(matches_repo, stats_repo, users_repo, stats_projector)
+        ManagerHandle::new(
+            matches_repo,
+            stats_repo,
+            users_repo,
+            stats_projector,
+            waiting_lobby_timeout,
+        )
     }
 }
