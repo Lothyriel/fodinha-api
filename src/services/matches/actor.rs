@@ -163,10 +163,7 @@ impl MatchActor {
                 respond,
             } => {
                 let result = self.handle_status_change(player_id, ready).await;
-                let should_continue = match &result {
-                    Err(ManagerError::Database(_)) => false,
-                    _ => true,
-                };
+                let should_continue = !matches!(&result, Err(ManagerError::Database(_)));
                 respond_once(respond, result);
                 return should_continue;
             }

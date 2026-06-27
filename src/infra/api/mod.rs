@@ -1,7 +1,7 @@
 mod auth;
 mod game;
 mod lobby;
-mod models;
+pub mod models;
 mod stats;
 
 use std::{net::Ipv6Addr, time::Duration};

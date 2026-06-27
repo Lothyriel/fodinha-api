@@ -1,3 +1,5 @@
+#[cfg(any(test, feature = "cli"))]
+pub mod client;
 pub mod infra;
 pub mod models;
 pub mod services;

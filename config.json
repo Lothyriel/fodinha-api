@@ -1,0 +1,10 @@
+{
+  "host": "http://localhost:3000",
+  "min_players": 4,
+  "max_players": 10,
+  "min_turn_delay_ms": 5000,
+  "max_turn_delay_ms": 20000,
+  "min_bid_delay_ms": 5000,
+  "max_bid_delay_ms": 20000,
+  "initial_games": 1
+}
