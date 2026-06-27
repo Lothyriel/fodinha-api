@@ -546,11 +546,17 @@ impl MatchActor {
 
         let applied = self.apply_event(event.clone())?;
 
-        if let Err(e) =
-            project_match_metadata(&self.repo, &self.match_id, &event, self.is_finished()).await
-        {
-            tracing::error!("Error projecting match metadata: {e}");
-        }
+        let repo = self.repo.clone();
+        let match_id = self.match_id.clone();
+        let finished = self.is_finished();
+
+        tokio::spawn(async move {
+            if let Err(e) =
+                project_match_metadata(&repo, &match_id, &event, finished).await
+            {
+                tracing::error!("Error projecting match metadata: {e}");
+            }
+        });
 
         Ok(applied)
     }
