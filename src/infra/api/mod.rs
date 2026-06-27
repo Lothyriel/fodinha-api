@@ -4,7 +4,7 @@ mod lobby;
 pub mod models;
 mod stats;
 
-use std::{net::Ipv6Addr, time::Duration};
+use std::net::Ipv6Addr;
 
 use axum::{Json, Router, response::IntoResponse, routing};
 use reqwest::StatusCode;
@@ -53,8 +53,6 @@ pub async fn serve_listener(
 
     tracing::info!("Listening on {:?}", address);
 
-    let drain_timeout = Duration::from_secs(10);
-
     let serve = axum::serve(listener, app).with_graceful_shutdown(async move {
         let mut rx = shutdown_rx;
         if *rx.borrow() {
@@ -63,15 +61,8 @@ pub async fn serve_listener(
         let _ = rx.changed().await;
     });
 
-    match tokio::time::timeout(drain_timeout, serve).await {
-        Ok(result) => {
-            if let Err(e) = result {
-                tracing::error!("Error serving API: {e}");
-            }
-        }
-        Err(_) => {
-            tracing::warn!("Graceful shutdown timed out after {drain_timeout:?}, forcing exit");
-        }
+    if let Err(e) = serve.await {
+        tracing::error!("Error serving API: {e}");
     }
 
     tracing::info!("Server shutdown complete");
