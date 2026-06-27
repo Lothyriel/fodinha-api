@@ -5,17 +5,20 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crossterm::{
-    event::{
-        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
-    },
+    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind,
+             KeyModifiers},
     execute,
-    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
+    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen,
+               LeaveAlternateScreen},
 };
-use rand::{RngExt, rng};
-use ratatui::{prelude::*, widgets::*};
+use rand::RngExt;
+use ratatui::{
+    prelude::*,
+    widgets::*,
+};
 use tokio::sync::mpsc;
 
-use oh_hell::client::{GameOutcome, GameSession, HttpClient, TurnDelay, WsClient};
+use oh_hell::client::{ClientError, GameOutcome, GameSession, HttpClient, TurnDelay, WsClient};
 
 #[derive(serde::Deserialize, Clone)]
 struct Config {
@@ -88,10 +91,7 @@ impl SharedState {
 async fn main() -> io::Result<()> {
     let config = load_config();
 
-    let ws_url = config
-        .host
-        .replace("http://", "ws://")
-        .replace("https://", "wss://");
+    let ws_url = config.host.replace("http://", "ws://").replace("https://", "wss://");
 
     let state = Arc::new(SharedState::new(config.initial_games));
 
@@ -111,8 +111,7 @@ async fn main() -> io::Result<()> {
             runner_ws,
             runner_tx,
             &mut cmd_rx,
-        )
-        .await;
+        ).await;
     });
 
     run_tui(state, config, cmd_tx).await
@@ -156,11 +155,11 @@ async fn run_game_manager(
 
                 tokio::spawn(async move {
                     let player_count = {
-                        let mut rng = rng();
+                        let mut rng = rand::rng();
                         rng.random_range(c.min_players..=c.max_players)
                     };
 
-                    match run_single_game(player_count, h, w, &c).await {
+                    match run_single_game(player_count, &h, &w, &c).await {
                         Ok(result) => {
                             let _ = tx.send(RunnerCmd::GameFinished(result));
                         }
@@ -169,7 +168,7 @@ async fn run_game_manager(
                             let _ = tx.send(RunnerCmd::GameFinished(GameResult {
                                 player_count,
                                 outcome: "ERROR".into(),
-                                info: e,
+                                info: e.to_string(),
                             }));
                         }
                     }
@@ -196,10 +195,10 @@ async fn run_game_manager(
 
 async fn run_single_game(
     player_count: usize,
-    http: HttpClient,
-    ws: WsClient,
+    http: &HttpClient,
+    ws: &WsClient,
     config: &Config,
-) -> Result<GameResult, String> {
+) -> Result<GameResult, ClientError> {
     let mut tokens: Vec<String> = Vec::with_capacity(player_count);
 
     for i in 0..player_count {
@@ -218,16 +217,16 @@ async fn run_single_game(
 
     for token in &tokens {
         let player_id = HttpClient::player_id_from_token(token);
-        let socket = ws.connect(token).await;
+        let socket = ws.connect(token).await?;
         player_map.insert(player_id, socket);
     }
 
     if player_map.len() != player_count {
-        return Err(format!(
+        return Err(ClientError(format!(
             "Expected {} players in websocket map, got {}",
             player_count,
             player_map.len()
-        ));
+        )));
     }
 
     let turn_delay = TurnDelay {
@@ -240,8 +239,8 @@ async fn run_single_game(
         max_ms: config.max_bid_delay_ms,
     };
 
-    let session = GameSession::new(player_map, http, ws, turn_delay, bid_delay);
-    let outcome = session.run_until_end().await;
+    let session = GameSession::new(player_map, turn_delay, bid_delay);
+    let outcome = session.run_until_end().await?;
 
     match outcome {
         GameOutcome::GameEnded { lifes } => {
@@ -260,12 +259,6 @@ async fn run_single_game(
                 info,
             })
         }
-        GameOutcome::SetEnded { lifes: _ } => Ok(GameResult {
-            player_count,
-            outcome: "SET_ENDED".into(),
-            info: "Unexpected set end".into(),
-        }),
-        GameOutcome::Error(e) => Err(e),
     }
 }
 
@@ -301,46 +294,45 @@ async fn run_app(
 ) -> io::Result<()> {
     loop {
         terminal.draw(|f| {
-            render(f, &state, &_config);
+            render(f, &state);
         })?;
 
-        if !event::poll(Duration::from_millis(100))? {
-            continue;
-        }
-        if let Event::Key(key) = event::read()? {
-            if key.kind == KeyEventKind::Release {
-                continue;
-            }
-
-            let shift = key.modifiers.contains(KeyModifiers::SHIFT);
-            let multiplier: usize = if shift { 10 } else { 1 };
-
-            match key.code {
-                KeyCode::Char('q') | KeyCode::Char('Q') => {
-                    state.shutdown.store(true, Ordering::Relaxed);
-                    let _ = cmd_tx.send(RunnerCmd::Shutdown);
-
-                    return Ok(());
+        if event::poll(Duration::from_millis(100))? {
+            if let Event::Key(key) = event::read()? {
+                if key.kind == KeyEventKind::Release {
+                    continue;
                 }
-                KeyCode::Up => {
-                    let current = state.desired_games.load(Ordering::Relaxed);
-                    let new = current.saturating_add(multiplier);
-                    state.desired_games.store(new, Ordering::Relaxed);
-                    let _ = cmd_tx.send(RunnerCmd::SetDesired);
+
+                let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+                let multiplier: usize = if shift { 10 } else { 1 };
+
+                match key.code {
+                    KeyCode::Char('q') | KeyCode::Char('Q') => {
+                        state.shutdown.store(true, Ordering::Relaxed);
+                        let _ = cmd_tx.send(RunnerCmd::Shutdown);
+
+                        return Ok(());
+                    }
+                    KeyCode::Up => {
+                        let current = state.desired_games.load(Ordering::Relaxed);
+                        let new = current.saturating_add(multiplier);
+                        state.desired_games.store(new, Ordering::Relaxed);
+                        let _ = cmd_tx.send(RunnerCmd::SetDesired);
+                    }
+                    KeyCode::Down => {
+                        let current = state.desired_games.load(Ordering::Relaxed);
+                        let new = current.saturating_sub(multiplier);
+                        state.desired_games.store(new, Ordering::Relaxed);
+                        let _ = cmd_tx.send(RunnerCmd::SetDesired);
+                    }
+                    _ => {}
                 }
-                KeyCode::Down => {
-                    let current = state.desired_games.load(Ordering::Relaxed);
-                    let new = current.saturating_sub(multiplier);
-                    state.desired_games.store(new, Ordering::Relaxed);
-                    let _ = cmd_tx.send(RunnerCmd::SetDesired);
-                }
-                _ => {}
             }
         }
     }
 }
 
-fn render(frame: &mut Frame, state: &SharedState, _config: &Config) {
+fn render(frame: &mut Frame, state: &SharedState) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -364,9 +356,11 @@ fn render(frame: &mut Frame, state: &SharedState, _config: &Config) {
     .block(Block::default().borders(Borders::ALL).title("Status"));
     frame.render_widget(status, chunks[0]);
 
-    let controls = Paragraph::new("Up/Down: +/-1 game | Shift+Up/Down: +/-10 games | Q: Quit")
-        .style(Style::default().fg(Color::Yellow))
-        .block(Block::default().borders(Borders::ALL).title("Controls"));
+    let controls = Paragraph::new(
+        "Up/Down: +/-1 game | Shift+Up/Down: +/-10 games | Q: Quit",
+    )
+    .style(Style::default().fg(Color::Yellow))
+    .block(Block::default().borders(Borders::ALL).title("Controls"));
     frame.render_widget(controls, chunks[1]);
 
     let results = state.results.lock().unwrap();
@@ -374,11 +368,20 @@ fn render(frame: &mut Frame, state: &SharedState, _config: &Config) {
         .iter()
         .rev()
         .take(30)
-        .map(|r| Line::from(format!("[{}P] {} | {}", r.player_count, r.outcome, r.info)))
+        .map(|r| {
+            Line::from(format!(
+                "[{}P] {} | {}",
+                r.player_count, r.outcome, r.info
+            ))
+        })
         .collect();
 
     let history = Paragraph::new(Text::from(result_lines))
-        .block(Block::default().borders(Borders::ALL).title("Recent Games"))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Recent Games"),
+        )
         .scroll((0, 0));
     frame.render_widget(history, chunks[2]);
 

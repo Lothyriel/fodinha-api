@@ -4,4 +4,4 @@ pub mod ws;
 
 pub use game::{GameOutcome, GameSession, TurnDelay};
 pub use http::HttpClient;
-pub use ws::WsClient;
+pub use ws::{ClientError, WsClient};

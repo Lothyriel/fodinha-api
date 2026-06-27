@@ -9,12 +9,10 @@ use crate::models::{
     id::PlayerId,
 };
 
-use super::{
-    http::HttpClient,
-    ws::{
-        WebSocket, WsClient, validate_player_bidded, validate_player_status_change,
-        validate_round_ended, validate_set_start, validate_turn_played,
-    },
+use super::ws::{
+    ClientError, WebSocket, WsClient, err, validate_player_bidded,
+    validate_player_status_change, validate_round_ended, validate_set_start,
+    validate_turn_played,
 };
 
 pub struct TurnDelay {
@@ -39,16 +37,12 @@ impl Default for TurnDelay {
 }
 
 pub enum GameOutcome {
-    SetEnded { lifes: HashMap<PlayerId, usize> },
     GameEnded { lifes: HashMap<PlayerId, usize> },
-    Error(String),
 }
 
 pub struct GameSession {
     pub players: HashMap<PlayerId, WebSocket>,
     pub decks: HashMap<PlayerId, Vec<Card>>,
-    pub http: HttpClient,
-    pub ws: WsClient,
     pub turn_delay: TurnDelay,
     pub bid_delay: TurnDelay,
 }
@@ -56,173 +50,218 @@ pub struct GameSession {
 impl GameSession {
     pub fn new(
         players: HashMap<PlayerId, WebSocket>,
-        http: HttpClient,
-        ws: WsClient,
         turn_delay: TurnDelay,
         bid_delay: TurnDelay,
     ) -> Self {
         Self {
             players,
             decks: HashMap::new(),
-            http,
-            ws,
             turn_delay,
             bid_delay,
         }
     }
 
-    pub async fn init(&mut self) {
+    pub async fn init(&mut self) -> Result<(), ClientError> {
         for stream in self.players.values_mut() {
-            let snapshot = WsClient::get_snapshot(stream).await;
-            assert!(
-                matches!(snapshot, MatchSnapshot::Waiting(_)),
-                "Expected Waiting snapshot on init"
-            );
+            let snapshot = WsClient::get_snapshot(stream).await?;
+
+            if !matches!(snapshot, MatchSnapshot::Waiting(_)) {
+                return Err(err!("Expected Waiting snapshot on init, got {snapshot:?}"));
+            }
         }
+
+        Ok(())
     }
 
-    pub async fn ready(&mut self) {
+    pub async fn ready(&mut self) -> Result<(), ClientError> {
         let msg = ClientCommand::PlayerStatusChange { ready: true };
 
         for stream in self.players.values_mut() {
-            WsClient::send_msg(stream, msg).await;
+            WsClient::send_msg(stream, msg).await?;
         }
 
         for _ in 0..self.players.len() {
             for stream in self.players.values_mut() {
-                WsClient::assert_msg(stream, validate_player_status_change).await;
+                WsClient::assert_msg(stream, validate_player_status_change).await?;
             }
         }
 
         for stream in self.players.values_mut() {
-            let snapshot = WsClient::get_snapshot(stream).await;
-            assert!(
-                matches!(snapshot, MatchSnapshot::Playing(_)),
-                "Expected playing snapshot after game start"
-            );
+            let snapshot = WsClient::get_snapshot(stream).await?;
+
+            if !matches!(snapshot, MatchSnapshot::Playing(_)) {
+                return Err(err!(
+                    "Expected playing snapshot after game start, got {snapshot:?}"
+                ));
+            }
         }
+
+        Ok(())
     }
 
-    pub async fn get_decks(&mut self) {
+    pub async fn get_decks(&mut self) -> Result<(), ClientError> {
         for stream in self.players.values_mut() {
-            WsClient::assert_msg(stream, validate_set_start).await;
+            WsClient::assert_msg(stream, validate_set_start).await?;
         }
 
         for (player_id, stream) in self.players.iter_mut() {
-            let deck = WsClient::get_deck(stream).await;
+            let deck = WsClient::get_deck(stream).await?;
             self.decks.insert(player_id.clone(), deck);
         }
+
+        Ok(())
     }
 
-    pub async fn play_set(&mut self) {
-        let rounds_count = self.decks.values().next().unwrap().len();
-        self.bidding(rounds_count).await;
+    pub async fn play_set(&mut self) -> Result<(), ClientError> {
+        let rounds_count = self
+            .decks
+            .values()
+            .next()
+            .ok_or_else(|| err!("No deck data"))?
+            .len();
+
+        self.bidding(rounds_count).await?;
 
         if self.bid_delay.random_ms() > 0 {
             tokio::time::sleep(Duration::from_millis(self.bid_delay.random_ms())).await;
         }
 
         for i in 0..rounds_count {
-            self.play_round(i == rounds_count - 1).await;
+            self.play_round(i == rounds_count - 1).await?;
         }
 
         self.decks.clear();
+        Ok(())
     }
 
-    async fn bidding(&mut self, bid_amount: usize) {
+    async fn bidding(&mut self, bid_amount: usize) -> Result<(), ClientError> {
         for _ in 0..self.players.len() {
-            self.bid_turn(bid_amount).await;
+            self.bid_turn(bid_amount).await?;
         }
+
+        Ok(())
     }
 
-    async fn bid_turn(&mut self, bid: usize) {
+    async fn bid_turn(&mut self, bid: usize) -> Result<(), ClientError> {
         let next = {
-            let stream = self.players.values_mut().next().unwrap();
-            WsClient::get_next_bidding_player(stream).await
+            let stream = self
+                .players
+                .values_mut()
+                .next()
+                .ok_or_else(|| err!("No players"))?;
+            WsClient::get_next_bidding_player(stream).await?
         };
 
         for stream in self.players.values_mut().skip(1) {
-            WsClient::get_next_bidding_player(stream).await;
+            WsClient::get_next_bidding_player(stream).await?;
         }
 
         tokio::time::sleep(Duration::from_millis(self.bid_delay.random_ms())).await;
 
-        let stream = self.players.get_mut(&next).unwrap();
-        WsClient::send_msg(stream, ClientCommand::PutBid { bid }).await;
+        let stream = self
+            .players
+            .get_mut(&next)
+            .ok_or_else(|| err!("Player {next:?} not found"))?;
+        WsClient::send_msg(stream, ClientCommand::PutBid { bid }).await?;
 
         for stream in self.players.values_mut() {
-            WsClient::assert_msg(stream, validate_player_bidded).await;
+            WsClient::assert_msg(stream, validate_player_bidded).await?;
         }
+
+        Ok(())
     }
 
-    async fn play_round(&mut self, is_last_round: bool) {
+    async fn play_round(&mut self, is_last_round: bool) -> Result<(), ClientError> {
         for _ in 0..self.players.len() {
-            self.play_turn().await;
+            self.play_turn().await?;
         }
 
         if !is_last_round {
             for stream in self.players.values_mut() {
-                WsClient::assert_msg(stream, validate_round_ended).await;
+                WsClient::assert_msg(stream, validate_round_ended).await?;
             }
         }
+
+        Ok(())
     }
 
-    async fn play_turn(&mut self) {
+    async fn play_turn(&mut self) -> Result<(), ClientError> {
         let next = {
-            let stream = self.players.values_mut().next().unwrap();
-            WsClient::get_next_turn_player(stream).await
+            let stream = self
+                .players
+                .values_mut()
+                .next()
+                .ok_or_else(|| err!("No players"))?;
+            WsClient::get_next_turn_player(stream).await?
         };
 
         for stream in self.players.values_mut().skip(1) {
-            WsClient::get_next_turn_player(stream).await;
+            WsClient::get_next_turn_player(stream).await?;
         }
 
         tokio::time::sleep(Duration::from_millis(self.turn_delay.random_ms())).await;
 
-        let card = self.decks.get_mut(&next).unwrap().pop().unwrap();
+        let card = self
+            .decks
+            .get_mut(&next)
+            .ok_or_else(|| err!("No deck for player {next:?}"))?
+            .pop()
+            .ok_or_else(|| err!("Deck empty for player {next:?}"))?;
 
-        let stream = self.players.get_mut(&next).unwrap();
-        WsClient::send_msg(stream, ClientCommand::PlayTurn { card }).await;
+        let stream = self
+            .players
+            .get_mut(&next)
+            .ok_or_else(|| err!("Player {next:?} not found"))?;
+        WsClient::send_msg(stream, ClientCommand::PlayTurn { card }).await?;
 
         for stream in self.players.values_mut() {
-            WsClient::assert_msg(stream, validate_turn_played).await;
+            WsClient::assert_msg(stream, validate_turn_played).await?;
+        }
+
+        Ok(())
+    }
+
+    pub async fn recv_set_or_game_ended(
+        stream: &mut WebSocket,
+    ) -> Result<GameOutcome, ClientError> {
+        let msg = WsClient::recv_msg(stream).await?;
+
+        match msg {
+            ServerMessage::SetEnded { lifes: _ } => {
+                Err(err!("Unexpected SetEnded during outcome detection"))
+            }
+            ServerMessage::GameEnded { lifes } => Ok(GameOutcome::GameEnded { lifes }),
+            other => Err(err!("Expected GameEnded, got {other:?}")),
         }
     }
 
-    pub async fn recv_set_or_game_ended(stream: &mut WebSocket) -> GameOutcome {
-        match WsClient::recv_msg(stream).await {
-            ServerMessage::SetEnded { lifes } => GameOutcome::SetEnded { lifes },
-            ServerMessage::GameEnded { lifes } => GameOutcome::GameEnded { lifes },
-            msg => GameOutcome::Error(format!("Expected Set or Game end | {msg:?}")),
-        }
-    }
-
-    pub async fn run_until_end(mut self) -> GameOutcome {
-        self.init().await;
-        self.ready().await;
-        self.get_decks().await;
-        self.play_set().await;
+    pub async fn run_until_end(mut self) -> Result<GameOutcome, ClientError> {
+        self.init().await?;
+        self.ready().await?;
+        self.get_decks().await?;
+        self.play_set().await?;
 
         loop {
-            let mut set_outcome = None;
+            let mut set_lifes: Option<HashMap<PlayerId, usize>> = None;
 
             for stream in self.players.values_mut() {
-                let result = Self::recv_set_or_game_ended(stream).await;
-
-                match result {
-                    GameOutcome::SetEnded { lifes } => {
-                        set_outcome = Some(lifes);
+                match WsClient::recv_msg(stream).await {
+                    Ok(ServerMessage::SetEnded { lifes }) => {
+                        set_lifes = Some(lifes);
                     }
-                    GameOutcome::GameEnded { lifes } => {
-                        return GameOutcome::GameEnded { lifes };
+                    Ok(ServerMessage::GameEnded { lifes }) => {
+                        return Ok(GameOutcome::GameEnded { lifes });
                     }
-                    GameOutcome::Error(e) => {
-                        return GameOutcome::Error(e);
+                    Ok(other) => {
+                        return Err(err!("Expected Set or Game end, got {other:?}"));
+                    }
+                    Err(e) => {
+                        return Err(e);
                     }
                 }
             }
 
-            if let Some(lifes) = set_outcome {
+            if let Some(lifes) = set_lifes {
                 self.decks.clear();
 
                 self.players
@@ -232,13 +271,11 @@ impl GameSession {
                     continue;
                 }
 
-                self.get_decks().await;
-                self.play_set().await;
+                self.get_decks().await?;
+                self.play_set().await?;
             } else {
-                break;
+                return Err(err!("No SetEnded outcome found"));
             }
         }
-
-        GameOutcome::Error("Game ended without GameEnded message".into())
     }
 }

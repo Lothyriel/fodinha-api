@@ -11,9 +11,41 @@ use crate::models::{
     id::PlayerId,
 };
 
-pub const WS_TIMEOUT: Duration = Duration::from_secs(5);
+pub const WS_TIMEOUT: Duration = Duration::from_secs(30);
+pub const WS_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub type WebSocket = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
+
+#[derive(Debug, Clone)]
+pub struct ClientError(pub String);
+
+impl std::fmt::Display for ClientError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl std::error::Error for ClientError {}
+
+impl From<String> for ClientError {
+    fn from(s: String) -> Self {
+        ClientError(s)
+    }
+}
+
+impl From<&str> for ClientError {
+    fn from(s: &str) -> Self {
+        ClientError(s.to_string())
+    }
+}
+
+macro_rules! err {
+    ($($arg:tt)*) => {
+        ClientError(format!($($arg)*))
+    };
+}
+
+pub(crate) use err;
 
 #[derive(Clone)]
 pub struct WsClient {
@@ -29,105 +61,104 @@ impl WsClient {
         format!("{}{}", self.ws_url, path)
     }
 
-    pub async fn connect(&self, token: &str) -> WebSocket {
+    pub async fn connect(&self, token: &str) -> Result<WebSocket, ClientError> {
         let req = self
             .ws_url_path(&format!("/game?token={token}"))
             .into_client_request()
-            .unwrap();
+            .map_err(|e| err!("Invalid WS request: {e}"))?;
 
-        let (stream, _) = tokio::time::timeout(WS_TIMEOUT, tokio_tungstenite::connect_async(req))
+        match tokio::time::timeout(WS_CONNECT_TIMEOUT, tokio_tungstenite::connect_async(req))
             .await
-            .expect("Timed out connecting websocket")
-            .expect("Failed to connect WebSocket");
+        {
+            Ok(Ok((stream, _))) => Ok(stream),
+            Ok(Err(e)) => Err(err!("Failed to connect WebSocket: {e}")),
+            Err(_) => Err(err!("Timed out connecting WebSocket")),
+        }
+    }
 
+    pub async fn send_msg<T: serde::Serialize>(
+        stream: &mut WebSocket,
+        msg: T,
+    ) -> Result<(), ClientError> {
+        let msg = serde_json::to_string(&msg).map_err(|e| err!("JSON serialization: {e}"))?;
         stream
+            .send(Message::Text(msg.into()))
+            .await
+            .map_err(|e| err!("WS send failed: {e}"))
     }
 
-    pub async fn send_msg<T: serde::Serialize>(stream: &mut WebSocket, msg: T) {
-        let msg = serde_json::to_string(&msg).unwrap();
-        stream.send(Message::Text(msg.into())).await.unwrap();
-    }
-
-    pub async fn recv_msg(stream: &mut WebSocket) -> ServerMessage {
+    pub async fn recv_msg(stream: &mut WebSocket) -> Result<ServerMessage, ClientError> {
         let msg = tokio::time::timeout(WS_TIMEOUT, stream.next())
             .await
-            .expect("Timed out waiting for websocket message")
-            .expect("Expected websocket message")
-            .expect("Expected valid websocket message");
+            .map_err(|_| err!("Timed out waiting for WS message"))?
+            .ok_or_else(|| err!("WebSocket closed"))
+            .and_then(|r| r.map_err(|e| err!("WebSocket error: {e}")))?;
 
         match msg {
-            Message::Text(t) => serde_json::from_str(&t).unwrap(),
-            m => panic!("Unexpected message: {m}"),
+            Message::Text(t) => {
+                let parsed: ServerMessage =
+                    serde_json::from_str(&t).map_err(|e| err!("JSON deserialization: {e}"))?;
+
+                if let ServerMessage::Error { msg } = &parsed {
+                    return Err(err!("Server error: {msg}"));
+                }
+
+                Ok(parsed)
+            }
+            Message::Close(_) => Err(err!("WebSocket closed by server")),
+            m => Err(err!("Unexpected WS message type: {m}")),
         }
     }
 
-    pub async fn get_snapshot(stream: &mut WebSocket) -> MatchSnapshot {
-        match Self::assert_msg(stream, |m| matches!(m, ServerMessage::Snapshot(_))).await {
-            ServerMessage::Snapshot(info) => info,
-            _ => panic!("Should be a Snapshot message"),
+    pub async fn get_snapshot(stream: &mut WebSocket) -> Result<MatchSnapshot, ClientError> {
+        match Self::assert_msg(stream, |m| matches!(m, ServerMessage::Snapshot(_))).await? {
+            ServerMessage::Snapshot(info) => Ok(info),
+            _ => Err(err!("Should be a Snapshot message")),
         }
     }
 
-    pub async fn assert_msg<F>(stream: &mut WebSocket, predicate: F) -> ServerMessage
+    pub async fn assert_msg<F>(stream: &mut WebSocket, predicate: F) -> Result<ServerMessage, ClientError>
     where
         F: FnOnce(&ServerMessage) -> bool,
     {
-        let msg = Self::recv_msg(stream).await;
+        let msg = Self::recv_msg(stream).await?;
 
-        match predicate(&msg) {
-            true => msg,
-            false => panic!("Message not expected {msg:?}"),
+        if predicate(&msg) {
+            Ok(msg)
+        } else {
+            Err(err!("Unexpected message: {msg:?}"))
         }
     }
 
-    pub async fn get_next_turn_player(stream: &mut WebSocket) -> PlayerId {
-        match Self::assert_msg(stream, validate_player_turn).await {
-            ServerMessage::PlayerTurn { player_id } => player_id,
-            _ => panic!("Should be a PlayerTurn message"),
+    pub async fn get_next_turn_player(stream: &mut WebSocket) -> Result<PlayerId, ClientError> {
+        match Self::assert_msg(stream, validate_player_turn).await? {
+            ServerMessage::PlayerTurn { player_id } => Ok(player_id),
+            _ => Err(err!("Should be a PlayerTurn message")),
         }
     }
 
-    pub async fn get_next_bidding_player(stream: &mut WebSocket) -> PlayerId {
-        match Self::assert_msg(stream, validate_bidding_turn).await {
+    pub async fn get_next_bidding_player(stream: &mut WebSocket) -> Result<PlayerId, ClientError> {
+        match Self::assert_msg(stream, validate_bidding_turn).await? {
             ServerMessage::PlayerBiddingTurn {
                 player_id,
                 possible_bids: _,
-            } => player_id,
-            _ => panic!("Should be a PlayerBiddingTurn message"),
+            } => Ok(player_id),
+            _ => Err(err!("Should be a PlayerBiddingTurn message")),
         }
     }
 
-    pub async fn get_deck(stream: &mut WebSocket) -> Vec<crate::models::Card> {
-        match Self::assert_msg(stream, |m| matches!(m, ServerMessage::PlayerDeck(_))).await {
-            ServerMessage::PlayerDeck(c) => c,
-            _ => panic!("Should be a PlayerDeck message"),
+    pub async fn get_deck(stream: &mut WebSocket) -> Result<Vec<crate::models::Card>, ClientError> {
+        match Self::assert_msg(stream, |m| matches!(m, ServerMessage::PlayerDeck(_))).await? {
+            ServerMessage::PlayerDeck(c) => Ok(c),
+            _ => Err(err!("Should be a PlayerDeck message")),
         }
     }
 
-    pub async fn assert_ws_closes_without_snapshot(&self, token: &str) {
-        let req = self
-            .ws_url_path(&format!("/game?token={token}"))
-            .into_client_request()
-            .unwrap();
-
-        let result =
-            tokio::time::timeout(WS_TIMEOUT, tokio_tungstenite::connect_async(req)).await;
-
-        let Ok(Ok((mut stream, _))) = result else {
-            return;
-        };
-
-        match tokio::time::timeout(WS_TIMEOUT, stream.next()).await {
-            Ok(None | Some(Err(_)) | Some(Ok(Message::Close(_)))) => {}
-            Ok(Some(Ok(msg))) => {
-                panic!("Expected websocket to close without snapshot, got {msg:?}")
-            }
-            Err(_) => {}
-        }
-    }
-
-    pub async fn close(stream: &mut WebSocket) {
-        stream.close(None).await.unwrap();
+    pub async fn close(stream: &mut WebSocket) -> Result<(), ClientError> {
+        stream
+            .close(None)
+            .await
+            .map_err(|e| err!("WS close failed: {e}"))
     }
 }
 
