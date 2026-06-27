@@ -30,7 +30,12 @@ impl GameManager {
             false => settings.mongo_database.as_str(),
         };
 
-        let db = get_mongo_client(&settings.mongo_conn_string)
+        let max_pool_size: u32 = settings
+            .mongo_max_pool_size
+            .parse()
+            .unwrap_or(10);
+
+        let db = get_mongo_client(&settings.mongo_conn_string, max_pool_size)
             .await
             .expect("Expected to create mongo client")
             .database(database);

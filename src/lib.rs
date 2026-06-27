@@ -12,6 +12,8 @@ pub struct AppSettings {
     pub google_client_id: String,
     pub mongo_conn_string: String,
     pub mongo_database: String,
+    #[serde(default)]
+    pub mongo_max_pool_size: String,
 }
 
 impl AppSettings {
@@ -22,6 +24,7 @@ impl AppSettings {
             .set_default("google_client_id", "")?
             .set_default("mongo_conn_string", "mongodb://localhost/?retryWrites=true")?
             .set_default("mongo_database", "oh_hell")?
+            .set_default("mongo_max_pool_size", "100")?
             .add_source(Environment::default())
             .build()?;
 

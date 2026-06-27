@@ -239,9 +239,12 @@ mod tests {
                 google_client_id: TEST_GOOGLE_CLIENT_ID.to_string(),
                 mongo_conn_string: mongo_conn_string.clone(),
                 mongo_database: mongo_database.clone(),
+                mongo_max_pool_size: String::new(),
             };
 
-            let client = get_mongo_client(&mongo_conn_string)
+            let max_pool_size: u32 = settings.mongo_max_pool_size.parse().unwrap_or(10);
+
+            let client = get_mongo_client(&mongo_conn_string, max_pool_size)
                 .await
                 .expect("Expected to create mongo client");
             let database = client.database(&mongo_database);

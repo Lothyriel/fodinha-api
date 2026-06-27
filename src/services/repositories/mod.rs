@@ -4,8 +4,12 @@ pub mod matches;
 pub mod stats;
 pub mod users;
 
-pub async fn get_mongo_client(conn_string: &str) -> Result<Client> {
-    let options = ClientOptions::parse(conn_string).await?;
+pub async fn get_mongo_client(conn_string: &str, max_pool_size: u32) -> Result<Client> {
+    let mut options = ClientOptions::parse(conn_string).await?;
+
+    options.max_pool_size = Some(max_pool_size);
+    options.min_pool_size = Some(10);
+    options.retry_writes = Some(false);
 
     Client::with_options(options)
 }
