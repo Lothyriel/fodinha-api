@@ -48,4 +48,6 @@ pub enum AuthError {
     JwtValidation(#[from] jsonwebtoken::errors::Error),
     #[error("Error during certificate retrieval: ({0})")]
     IO(#[from] reqwest::Error),
+    #[error("Google audience is not configured in this api")]
+    MissingGoogleClientId,
 }

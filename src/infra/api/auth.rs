@@ -50,7 +50,8 @@ pub async fn middleware(
         .await
         .ok_or(AuthError::TokenNotPresent)?;
 
-    let claims = get_claims_from_token(token, &state.jwt_key, &state.google_client_id).await?;
+    let claims =
+        get_claims_from_token(token, &state.jwt_key, state.google_client_id.as_deref()).await?;
 
     if let Err(e) = state.manager.upsert_user(&claims).await {
         tracing::error!("Error upserting authenticated user: {e}");
@@ -160,7 +161,9 @@ async fn exchange_google_token(
     headers: HeaderMap,
     Json(params): Json<GoogleExchangeRequest>,
 ) -> impl IntoResponse {
-    let mut claims = match get_google_claims(&params.credential, &state.google_client_id).await {
+    let claims = get_google_claims(&params.credential, state.google_client_id.as_deref()).await;
+
+    let mut claims = match claims {
         Ok(claims) => claims,
         Err(error) => return error.into_response(),
     };
@@ -280,7 +283,7 @@ fn merge_guest_profile(mut google: UserClaims, guest: &AnonymousUserClaims) -> U
 pub async fn get_claims_from_token(
     token: &str,
     jwt_key: &str,
-    google_client_id: &str,
+    google_client_id: Option<&str>,
 ) -> Result<UserClaims, AuthError> {
     match get_access_token_claims(token, jwt_key) {
         Ok(c) => Ok(c),
@@ -299,7 +302,14 @@ fn get_access_token_claims(token: &str, jwt_key: &str) -> Result<UserClaims, Aut
     Ok(claims.user)
 }
 
-async fn get_google_claims(token: &str, google_client_id: &str) -> Result<UserClaims, AuthError> {
+async fn get_google_claims(
+    token: &str,
+    google_client_id: Option<&str>,
+) -> Result<UserClaims, AuthError> {
+    let Some(google_client_id) = google_client_id else {
+        return Err(AuthError::MissingGoogleClientId);
+    };
+
     let header = jsonwebtoken::decode_header(token)?;
     let kid = header.kid.ok_or(AuthError::InvalidKid)?;
     let jwks = get_google_jwks().await?;
@@ -401,7 +411,7 @@ mod tests {
         .unwrap();
 
         assert!(
-            get_claims_from_token(&token, jwt_key, "google-client-id")
+            get_claims_from_token(&token, jwt_key, Some("google-client-id"))
                 .await
                 .is_err()
         );

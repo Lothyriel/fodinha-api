@@ -8,8 +8,7 @@ pub async fn get_mongo_client(conn_string: &str, max_pool_size: u32) -> Result<C
     let mut options = ClientOptions::parse(conn_string).await?;
 
     options.max_pool_size = Some(max_pool_size);
-    options.min_pool_size = Some(10);
-    options.retry_writes = Some(false);
+    options.min_pool_size = Some(max_pool_size);
 
     Client::with_options(options)
 }

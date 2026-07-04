@@ -1,4 +1,3 @@
-#[cfg(any(test, feature = "cli"))]
 pub mod client;
 pub mod infra;
 pub mod models;
@@ -9,11 +8,11 @@ use config::{Config, ConfigError, Environment};
 #[derive(Debug, serde::Deserialize, Default)]
 pub struct AppSettings {
     pub jwt_key: String,
-    pub google_client_id: String,
+    pub google_client_id: Option<String>,
     pub mongo_conn_string: String,
     pub mongo_database: String,
     #[serde(default)]
-    pub mongo_max_pool_size: String,
+    pub mongo_max_pool_size: u32,
 }
 
 impl AppSettings {
@@ -21,10 +20,9 @@ impl AppSettings {
         dotenv::dotenv().ok();
 
         let cfg = Config::builder()
-            .set_default("google_client_id", "")?
             .set_default("mongo_conn_string", "mongodb://localhost/?retryWrites=true")?
             .set_default("mongo_database", "oh_hell")?
-            .set_default("mongo_max_pool_size", "100")?
+            .set_default("mongo_max_pool_size", 100)?
             .add_source(Environment::default())
             .build()?;
 

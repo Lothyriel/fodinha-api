@@ -22,7 +22,7 @@ use crate::{
 pub struct ApiState {
     manager: ManagerHandle,
     jwt_key: String,
-    google_client_id: String,
+    google_client_id: Option<String>,
     shutdown_rx: watch::Receiver<bool>,
 }
 
@@ -186,8 +186,8 @@ mod tests {
     const MONGO_CONN_STRING: &str = "mongodb://localhost/?retryWrites=true";
     const SERVER_START_TIMEOUT: Duration = Duration::from_millis(200);
     const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
-    const TEST_GOOGLE_CLIENT_ID: &str =
-        "824653628296-ahr9jr3aqgr367mul4p359dj4plsl67a.apps.googleusercontent.com";
+    const TEST_GOOGLE_CLIENT_ID: Option<&str> =
+        Some("824653628296-ahr9jr3aqgr367mul4p359dj4plsl67a.apps.googleusercontent.com");
     const TEST_JWT_KEY: &str = "very-random-secret-key";
     const WS_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -236,17 +236,16 @@ mod tests {
             let mongo_conn_string = MONGO_CONN_STRING.to_string();
             let settings = AppSettings {
                 jwt_key: TEST_JWT_KEY.to_string(),
-                google_client_id: TEST_GOOGLE_CLIENT_ID.to_string(),
+                google_client_id: TEST_GOOGLE_CLIENT_ID.map(String::from),
                 mongo_conn_string: mongo_conn_string.clone(),
                 mongo_database: mongo_database.clone(),
-                mongo_max_pool_size: String::new(),
+                mongo_max_pool_size: 10,
             };
 
-            let max_pool_size: u32 = settings.mongo_max_pool_size.parse().unwrap_or(10);
-
-            let client = get_mongo_client(&mongo_conn_string, max_pool_size)
+            let client = get_mongo_client(&mongo_conn_string, settings.mongo_max_pool_size)
                 .await
                 .expect("Expected to create mongo client");
+
             let database = client.database(&mongo_database);
             let manager =
                 GameManager::start_with_waiting_lobby_timeout(&settings, waiting_lobby_timeout)
@@ -635,7 +634,9 @@ mod tests {
 
         let lobbies = server.manager.get_lobbies().await;
         assert!(
-            lobbies.iter().any(|l| l.id == lobby_id && l.player_count == 2),
+            lobbies
+                .iter()
+                .any(|l| l.id == lobby_id && l.player_count == 2),
             "Waiting lobby should survive restart and be listed"
         );
 

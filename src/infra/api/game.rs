@@ -31,7 +31,12 @@ pub async fn handler(
 ) -> axum::response::Response {
     let started = Instant::now();
 
-    let claims = get_claims_from_token(&query.token, &state.jwt_key, &state.google_client_id).await;
+    let claims = get_claims_from_token(
+        &query.token,
+        &state.jwt_key,
+        state.google_client_id.as_deref(),
+    )
+    .await;
 
     let claims = match claims {
         Ok(c) => c,
