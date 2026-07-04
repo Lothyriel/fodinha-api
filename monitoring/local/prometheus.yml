@@ -1,9 +1,11 @@
 global:
-  scrape_interval: 15s
-  evaluation_interval: 15s
+  scrape_interval: 5s
+  evaluation_interval: 5s
 
 scrape_configs:
   - job_name: "oh-hell-api"
+    scrape_interval: 1s
+    scrape_timeout: 800ms
     metrics_path: "/metrics"
     static_configs:
       - targets: ["host.containers.internal:3000"]
