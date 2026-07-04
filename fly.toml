@@ -9,7 +9,7 @@ primary_region = 'gru'
 [build]
 
 [env]
-  google_client_id = 112306439846-2ivn23do1uh156v0lpjtu22gu8f98sd4.apps.googleusercontent.com
+  google_client_id = "112306439846-2ivn23do1uh156v0lpjtu22gu8f98sd4.apps.googleusercontent.com"
 
 [http_service]
   internal_port = 3000
