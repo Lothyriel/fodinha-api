@@ -7,6 +7,8 @@ services:
     environment:
       MONGO_INITDB_ROOT_USERNAME: ""
       MONGO_INITDB_ROOT_PASSWORD: ""
+    volumes:
+      - mongo_data:/data/db
 
   prometheus:
     image: prom/prometheus
@@ -33,3 +35,6 @@ services:
       - ./monitoring/local/grafana-datasource.yml:/etc/grafana/provisioning/datasources/local.yml:ro,Z
       - ./monitoring/local/grafana-dashboards.yml:/etc/grafana/provisioning/dashboards/local.yml:ro,Z
       - ./monitoring/fly-grafana-dashboard.json:/etc/grafana/provisioning/dashboards/fly-grafana-dashboard.json:ro,Z
+
+volumes:
+  mongo_data:
