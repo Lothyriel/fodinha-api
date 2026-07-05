@@ -6,7 +6,7 @@ mod stats;
 
 use std::net::Ipv6Addr;
 
-use axum::{Json, Router, response::IntoResponse, routing};
+use axum::{Json, Router, extract::State, response::IntoResponse, routing};
 use reqwest::StatusCode;
 use tokio::{net::TcpListener, sync::watch};
 use tower_http::cors::{Any, CorsLayer};
@@ -87,6 +87,8 @@ fn build_app(
         .allow_headers(Any);
 
     Router::new()
+        .route("/readyz", routing::get(readiness_handler))
+        .route("/healthz", routing::get(readiness_handler))
         .route("/metrics", routing::get(telemetry::metrics_handler))
         .route("/game", routing::get(game::handler))
         .nest("/lobby", lobby::router().layer(auth))
@@ -100,6 +102,14 @@ fn build_app(
 
 async fn fallback_handler() -> (StatusCode, &'static str) {
     (StatusCode::NOT_FOUND, "this resource doesn't exist")
+}
+
+async fn readiness_handler(State(state): State<ApiState>) -> StatusCode {
+    if *state.shutdown_rx.borrow() {
+        StatusCode::SERVICE_UNAVAILABLE
+    } else {
+        StatusCode::OK
+    }
 }
 
 impl IntoResponse for LobbyError {
