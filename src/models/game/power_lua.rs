@@ -108,12 +108,9 @@ pub fn run_power_card_script(
     globals.set("game", game.clone())?;
     globals.set("card", card.clone())?;
 
-    match lua.load(script).set_name("power_card").eval()? {
-        Value::Table(table) => {
-            let effect: mlua::Function = table.get("effect")?;
-            effect.call::<()>((game, card))?;
-        }
-        _ => {}
+    if let Value::Table(table) = lua.load(script).set_name("power_card").eval()? {
+        let effect: mlua::Function = table.get("effect")?;
+        effect.call::<()>((game, card))?;
     }
 
     let players = players.borrow();

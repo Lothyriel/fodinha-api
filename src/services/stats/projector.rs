@@ -61,14 +61,13 @@ impl StatsProjectorHandle {
             .expect("stats projector lock poisoned")
             .take();
 
-        if let Some(mut handle) = handle {
-            if tokio::time::timeout(task_timeout, &mut handle)
+        if let Some(mut handle) = handle
+            && tokio::time::timeout(task_timeout, &mut handle)
                 .await
                 .is_err()
-            {
-                handle.abort();
-                let _ = handle.await;
-            }
+        {
+            handle.abort();
+            let _ = handle.await;
         }
     }
 

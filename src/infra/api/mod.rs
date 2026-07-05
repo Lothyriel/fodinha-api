@@ -402,12 +402,12 @@ mod tests {
         async fn stop_server(&mut self) {
             let _ = self.shutdown_tx.send(true);
 
-            if let Some(mut handle) = self.handle.take() {
-                if timeout(SHUTDOWN_TIMEOUT, &mut handle).await.is_err() {
-                    handle.abort();
-                    let _ = handle.await;
-                    self.manager.abort_background_tasks();
-                }
+            if let Some(mut handle) = self.handle.take()
+                && timeout(SHUTDOWN_TIMEOUT, &mut handle).await.is_err()
+            {
+                handle.abort();
+                let _ = handle.await;
+                self.manager.abort_background_tasks();
             }
 
             self.manager.shutdown().await;
