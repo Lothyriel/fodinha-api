@@ -26,6 +26,7 @@ use crate::{
         },
         repositories::matches::{MatchMetadataDto, MatchesRepository},
         stats::StatsProjectorHandle,
+        tasks::TaskTracker,
     },
 };
 
@@ -37,6 +38,7 @@ pub(crate) struct MatchActor {
     pub(crate) version: usize,
     repo: MatchesRepository,
     stats_projector: StatsProjectorHandle,
+    deferred_tasks: TaskTracker,
     match_entries: MatchEntries,
     player_routes: PlayerRoutes,
     last_activity: Instant,
@@ -63,6 +65,7 @@ impl MatchActor {
         match_id: MatchId,
         repo: MatchesRepository,
         stats_projector: StatsProjectorHandle,
+        deferred_tasks: TaskTracker,
         match_entries: MatchEntries,
         player_routes: PlayerRoutes,
         waiting_lobby_timeout: Duration,
@@ -76,6 +79,7 @@ impl MatchActor {
             version: 0,
             repo,
             stats_projector,
+            deferred_tasks,
             match_entries,
             player_routes,
             last_activity: Instant::now(),
@@ -648,7 +652,7 @@ impl MatchActor {
         let finished = self.is_finished();
 
         if should_project_match_metadata(&event, finished) {
-            tokio::spawn(async move {
+            self.deferred_tasks.spawn(async move {
                 if let Err(e) = project_match_metadata(&repo, &match_id, &event, finished).await {
                     tracing::error!("Error projecting match metadata: {e}");
                 }

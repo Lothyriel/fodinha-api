@@ -1,4 +1,15 @@
-use tokio::sync::mpsc;
+use std::{
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
+};
+
+use tokio::{
+    sync::{mpsc, oneshot},
+    task::JoinHandle,
+};
 
 use crate::{
     models::{game::MatchEvent, id::MatchId},
@@ -10,15 +21,74 @@ use crate::{
 
 #[derive(Clone)]
 pub struct StatsProjectorHandle {
-    tx: mpsc::UnboundedSender<MatchId>,
+    tx: mpsc::UnboundedSender<StatsProjectorMessage>,
+    task: Arc<Mutex<Option<JoinHandle<()>>>>,
+    closed: Arc<AtomicBool>,
 }
 
 impl StatsProjectorHandle {
     pub(crate) fn notify_match_finished(&self, match_id: &MatchId) {
-        if let Err(e) = self.tx.send(match_id.clone()) {
+        if self.closed.load(Ordering::SeqCst) {
+            return;
+        }
+
+        if let Err(e) = self
+            .tx
+            .send(StatsProjectorMessage::Project(match_id.clone()))
+        {
             tracing::error!("Error enqueueing stats projection for {match_id:?}: {e}");
         }
     }
+
+    pub(crate) async fn shutdown(&self, task_timeout: Duration) {
+        let should_send_shutdown = !self.closed.swap(true, Ordering::SeqCst);
+
+        if should_send_shutdown {
+            let (respond, wait) = oneshot::channel();
+
+            if self
+                .tx
+                .send(StatsProjectorMessage::Shutdown { respond })
+                .is_ok()
+            {
+                let _ = tokio::time::timeout(task_timeout, wait).await;
+            }
+        }
+
+        let handle = self
+            .task
+            .lock()
+            .expect("stats projector lock poisoned")
+            .take();
+
+        if let Some(mut handle) = handle {
+            if tokio::time::timeout(task_timeout, &mut handle)
+                .await
+                .is_err()
+            {
+                handle.abort();
+                let _ = handle.await;
+            }
+        }
+    }
+
+    pub(crate) fn abort(&self) {
+        self.closed.store(true, Ordering::SeqCst);
+
+        if let Some(handle) = self
+            .task
+            .lock()
+            .expect("stats projector lock poisoned")
+            .take()
+        {
+            handle.abort();
+        }
+    }
+}
+
+enum StatsProjectorMessage {
+    Project(MatchId),
+    Shutdown { respond: oneshot::Sender<()> },
 }
 
 pub struct StatsProjector;
@@ -35,24 +105,34 @@ impl StatsProjector {
             rx,
         };
 
-        tokio::spawn(async move { task.run().await });
+        let task = tokio::spawn(async move { task.run().await });
 
-        StatsProjectorHandle { tx }
+        StatsProjectorHandle {
+            tx,
+            task: Arc::new(Mutex::new(Some(task))),
+            closed: Arc::new(AtomicBool::new(false)),
+        }
     }
 }
 
 struct StatsProjectorTask {
     matches_repo: MatchesRepository,
     stats_repo: StatsRepository,
-    rx: mpsc::UnboundedReceiver<MatchId>,
+    rx: mpsc::UnboundedReceiver<StatsProjectorMessage>,
 }
 
 impl StatsProjectorTask {
     async fn run(mut self) {
         self.project_finished_matches().await;
 
-        while let Some(match_id) = self.rx.recv().await {
-            self.project_match(match_id).await;
+        while let Some(message) = self.rx.recv().await {
+            match message {
+                StatsProjectorMessage::Project(match_id) => self.project_match(match_id).await,
+                StatsProjectorMessage::Shutdown { respond } => {
+                    let _ = respond.send(());
+                    break;
+                }
+            }
         }
     }
 

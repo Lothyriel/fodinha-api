@@ -49,6 +49,7 @@ pub async fn serve_listener(
     let address = listener
         .local_addr()
         .expect("Expected listener to expose local address");
+    let shutdown_manager = manager.clone();
     let app = build_app(manager, settings, shutdown_rx.clone());
 
     tracing::info!("Listening on {:?}", address);
@@ -66,6 +67,7 @@ pub async fn serve_listener(
     }
 
     tracing::info!("Server shutdown complete");
+    shutdown_manager.shutdown().await;
 }
 
 fn build_app(
@@ -165,6 +167,7 @@ mod tests {
     use reqwest::{Client, StatusCode};
     use tokio::{
         net::{TcpListener, TcpStream},
+        sync::watch,
         task::JoinHandle,
         time::{Duration, sleep, timeout},
     };
@@ -228,6 +231,7 @@ mod tests {
         mongo_database: String,
         manager: ManagerHandle,
         database: Option<Database>,
+        shutdown_tx: watch::Sender<bool>,
         handle: Option<JoinHandle<()>>,
     }
 
@@ -312,8 +316,8 @@ mod tests {
                 .expect("Expected test listener address");
             let base_url = format!("http://{address}");
             let ws_url = format!("ws://{address}");
+            let (shutdown_tx, shutdown_rx) = watch::channel(false);
             let handle = tokio::spawn(async move {
-                let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
                 serve_listener(listener, manager, &settings, shutdown_rx).await;
             });
 
@@ -323,6 +327,7 @@ mod tests {
                 mongo_database,
                 manager: server_manager,
                 database: Some(database),
+                shutdown_tx,
                 handle: Some(handle),
             };
 
@@ -394,18 +399,24 @@ mod tests {
         }
 
         async fn stop_server(&mut self) {
-            self.manager.registry.matches.clear();
+            let _ = self.shutdown_tx.send(true);
 
-            if let Some(handle) = self.handle.take() {
-                handle.abort();
-                let _ = timeout(SHUTDOWN_TIMEOUT, handle).await;
+            if let Some(mut handle) = self.handle.take() {
+                if timeout(SHUTDOWN_TIMEOUT, &mut handle).await.is_err() {
+                    handle.abort();
+                    let _ = handle.await;
+                    self.manager.abort_background_tasks();
+                }
             }
+
+            self.manager.shutdown().await;
         }
     }
 
     impl Drop for TestServer {
         fn drop(&mut self) {
-            self.manager.registry.matches.clear();
+            let _ = self.shutdown_tx.send(true);
+            self.manager.abort_background_tasks();
 
             if let Some(handle) = self.handle.take() {
                 handle.abort();

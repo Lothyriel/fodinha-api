@@ -1,13 +1,16 @@
 use std::{
     collections::{HashMap, HashSet},
-    sync::Arc,
+    sync::{Arc, Mutex},
     time::Duration,
     time::Instant,
 };
 
 use chrono::Utc;
 use dashmap::DashMap;
-use tokio::sync::{mpsc, oneshot};
+use tokio::{
+    sync::{mpsc, oneshot},
+    task::JoinHandle,
+};
 
 use crate::{
     infra::{AnonymousUserClaims, UserClaims, telemetry},
@@ -34,8 +37,11 @@ use crate::{
         repositories::stats::StatsRepository,
         repositories::users::UsersRepository,
         stats::{PlayerStatsResponse, StatsProjectorHandle},
+        tasks::TaskTracker,
     },
 };
+
+const BACKGROUND_TASK_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Clone)]
 pub struct ManagerHandle {
@@ -45,8 +51,16 @@ pub struct ManagerHandle {
     users_repo: UsersRepository,
     user_cache: Arc<DashMap<PlayerId, UserClaims>>,
     stats_projector: StatsProjectorHandle,
+    background: ManagerBackground,
     waiting_lobby_timeout: Duration,
     empty_playing_timeout: Duration,
+}
+
+#[derive(Clone, Default)]
+struct ManagerBackground {
+    actor_tasks: TaskTracker,
+    deferred_tasks: TaskTracker,
+    janitor_task: Arc<Mutex<Option<JoinHandle<()>>>>,
 }
 
 fn fallback_user_claims(player_id: &PlayerId) -> UserClaims {
@@ -78,8 +92,48 @@ impl ManagerHandle {
             users_repo,
             user_cache: Arc::new(DashMap::new()),
             stats_projector,
+            background: ManagerBackground::default(),
             waiting_lobby_timeout,
             empty_playing_timeout,
+        }
+    }
+
+    pub async fn shutdown(&self) {
+        self.abort_janitor();
+        self.registry.matches.clear();
+        self.registry.player_routes.clear();
+
+        self.background
+            .actor_tasks
+            .shutdown(BACKGROUND_TASK_SHUTDOWN_TIMEOUT)
+            .await;
+        self.background
+            .deferred_tasks
+            .shutdown(BACKGROUND_TASK_SHUTDOWN_TIMEOUT)
+            .await;
+        self.stats_projector
+            .shutdown(BACKGROUND_TASK_SHUTDOWN_TIMEOUT)
+            .await;
+    }
+
+    pub fn abort_background_tasks(&self) {
+        self.abort_janitor();
+        self.registry.matches.clear();
+        self.registry.player_routes.clear();
+        self.background.actor_tasks.abort_all();
+        self.background.deferred_tasks.abort_all();
+        self.stats_projector.abort();
+    }
+
+    fn abort_janitor(&self) {
+        if let Some(handle) = self
+            .background
+            .janitor_task
+            .lock()
+            .expect("janitor task lock poisoned")
+            .take()
+        {
+            handle.abort();
         }
     }
 
@@ -88,50 +142,40 @@ impl ManagerHandle {
         empty_playing_timeout: Duration,
         scan_interval: Duration,
     ) {
-        let manager = self.clone();
+        let repo = self.repo.clone();
+        let registry = self.registry.clone();
 
-        tokio::spawn(async move {
+        let handle = tokio::spawn(async move {
             let mut interval = tokio::time::interval(scan_interval);
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
             loop {
                 interval.tick().await;
 
-                if let Err(e) = manager
-                    .abandon_stale_playing_matches(empty_playing_timeout)
-                    .await
+                if let Err(e) =
+                    abandon_stale_playing_matches(&repo, &registry, empty_playing_timeout).await
                 {
                     tracing::error!("Error abandoning stale playing matches: {e}");
                 }
             }
         });
+
+        if let Some(previous) = self
+            .background
+            .janitor_task
+            .lock()
+            .expect("janitor task lock poisoned")
+            .replace(handle)
+        {
+            previous.abort();
+        }
     }
 
     pub(crate) async fn abandon_stale_playing_matches(
         &self,
         empty_playing_timeout: Duration,
     ) -> Result<(), ManagerError> {
-        let match_ids = self
-            .repo
-            .stale_playing_match_ids(empty_playing_timeout)
-            .await?;
-
-        for match_id in match_ids {
-            if self.registry.matches.contains_key(&match_id) {
-                continue;
-            }
-
-            if self
-                .repo
-                .mark_metadata_abandoned_if_stale(&match_id, empty_playing_timeout)
-                .await?
-            {
-                tracing::info!("Abandoned stale playing match {match_id:?}");
-                self.registry.remove_match(&match_id);
-            }
-        }
-
-        Ok(())
+        abandon_stale_playing_matches(&self.repo, &self.registry, empty_playing_timeout).await
     }
 
     #[cfg(test)]
@@ -152,7 +196,7 @@ impl ManagerHandle {
         let actor = self.new_actor(match_id.clone());
 
         self.registry.mark_ready(match_id.clone(), tx.clone());
-        tokio::spawn(actor.run(rx));
+        self.background.actor_tasks.spawn(actor.run(rx));
 
         let result = Self::request(&tx, |respond| MatchActorMessage::CreateMatch {
             creator_id: player_id,
@@ -657,7 +701,7 @@ impl ManagerHandle {
         let (tx, rx): (MatchSender, MatchReceiver) = flume::unbounded();
 
         self.registry.mark_ready(match_id.clone(), tx.clone());
-        tokio::spawn(actor.run(rx));
+        self.background.actor_tasks.spawn(actor.run(rx));
         telemetry::record_actor_start("load", started.elapsed(), true);
 
         Ok(tx)
@@ -668,10 +712,35 @@ impl ManagerHandle {
             match_id,
             self.repo.clone(),
             self.stats_projector.clone(),
+            self.background.deferred_tasks.clone(),
             self.registry.matches.clone(),
             self.registry.player_routes.clone(),
             self.waiting_lobby_timeout,
             self.empty_playing_timeout,
         )
     }
+}
+
+async fn abandon_stale_playing_matches(
+    repo: &MatchesRepository,
+    registry: &MatchRegistry,
+    empty_playing_timeout: Duration,
+) -> Result<(), ManagerError> {
+    let match_ids = repo.stale_playing_match_ids(empty_playing_timeout).await?;
+
+    for match_id in match_ids {
+        if registry.matches.contains_key(&match_id) {
+            continue;
+        }
+
+        if repo
+            .mark_metadata_abandoned_if_stale(&match_id, empty_playing_timeout)
+            .await?
+        {
+            tracing::info!("Abandoned stale playing match {match_id:?}");
+            registry.remove_match(&match_id);
+        }
+    }
+
+    Ok(())
 }
