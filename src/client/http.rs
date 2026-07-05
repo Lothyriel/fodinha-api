@@ -62,19 +62,19 @@ impl HttpClient {
         .await
     }
 
-    pub async fn create_lobby(&self, token: &str) -> LobbyId {
-        self.create_lobby_with_settings(token, None).await
+    pub async fn create_lobby(&self, token: &str, settings: GameSettings) -> LobbyId {
+        self.create_lobby_with_settings(token, settings).await
     }
 
-    pub async fn try_create_lobby(&self, token: &str) -> Result<LobbyId, ClientError> {
-        self.try_create_lobby_with_settings(token, None).await
-    }
-
-    pub async fn create_lobby_with_settings(
+    pub async fn try_create_lobby(
         &self,
         token: &str,
-        settings: Option<GameSettings>,
-    ) -> LobbyId {
+        settings: GameSettings,
+    ) -> Result<LobbyId, ClientError> {
+        self.try_create_lobby_with_settings(token, settings).await
+    }
+
+    pub async fn create_lobby_with_settings(&self, token: &str, settings: GameSettings) -> LobbyId {
         self.try_create_lobby_with_settings(token, settings)
             .await
             .unwrap()
@@ -83,24 +83,22 @@ impl HttpClient {
     pub async fn try_create_lobby_with_settings(
         &self,
         token: &str,
-        settings: Option<GameSettings>,
+        settings: GameSettings,
     ) -> Result<LobbyId, ClientError> {
         let mut request = self.client.post(self.url("/lobby")).bearer_auth(token);
 
-        if let Some(settings) = settings {
-            match settings {
-                GameSettings::FodinhaClassic(settings) => {
-                    request = request.json(&serde_json::json!({
-                        "game_type": "fodinha_classic",
-                        "lifes": settings.lifes,
-                    }));
-                }
-                GameSettings::FodinhaPower(settings) => {
-                    request = request.json(&serde_json::json!({
-                        "game_type": "fodinha_power",
-                        "lifes": settings.lifes,
-                    }));
-                }
+        match settings {
+            GameSettings::FodinhaClassic(settings) => {
+                request = request.json(&serde_json::json!({
+                    "game_type": "fodinha_classic",
+                    "lifes": settings.lifes,
+                }));
+            }
+            GameSettings::FodinhaPower(settings) => {
+                request = request.json(&serde_json::json!({
+                    "game_type": "fodinha_power",
+                    "lifes": settings.lifes,
+                }));
             }
         }
 

@@ -7,7 +7,10 @@ use std::time::{Duration, Instant};
 use rand::RngExt;
 use tokio::{sync::mpsc, time::MissedTickBehavior};
 
-use oh_hell::client::{ClientError, GameOutcome, GameSession, HttpClient, TurnDelay, WsClient};
+use oh_hell::{
+    client::{ClientError, GameOutcome, GameSession, HttpClient, TurnDelay, WsClient},
+    models::game::{GameSettings, fodinha_classic},
+};
 
 #[derive(serde::Deserialize, Clone)]
 struct Config {
@@ -414,7 +417,12 @@ async fn run_single_game(
     config: &Config,
 ) -> Result<GameResult, ClientError> {
     let player_count = tokens.len();
-    let lobby_id = http.try_create_lobby(&tokens[0]).await?;
+    let lobby_id = http
+        .try_create_lobby(
+            &tokens[0],
+            GameSettings::FodinhaClassic(fodinha_classic::GameSettings::default()),
+        )
+        .await?;
 
     for token in tokens {
         http.try_join_lobby(token, &lobby_id).await?;

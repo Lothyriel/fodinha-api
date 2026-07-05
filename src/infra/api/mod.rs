@@ -184,7 +184,7 @@ mod tests {
             commands::{
                 ClientCommand, CreateLobbyResponse, LobbyInfo, MatchSnapshot, ServerMessage,
             },
-            game::{GameCommand, fodinha_classic},
+            game::{GameCommand, GameType, fodinha_classic, fodinha_power},
             id::{LobbyId, PlayerId},
         },
         services::{
@@ -1655,13 +1655,19 @@ mod tests {
         token: &str,
         lifes: Option<usize>,
     ) -> LobbyId {
-        let mut request = client.post(server.url("/lobby")).bearer_auth(token);
+        let mut params = serde_json::json!({ "game_type": "fodinha_classic" });
 
         if let Some(lifes) = lifes {
-            request = request.json(&serde_json::json!({ "lifes": lifes }));
+            params["lifes"] = serde_json::json!(lifes);
         }
 
-        let res = request.send().await.unwrap();
+        let res = client
+            .post(server.url("/lobby"))
+            .bearer_auth(token)
+            .json(&params)
+            .send()
+            .await
+            .unwrap();
         let status = res.status();
         let body = res.text().await.unwrap();
 

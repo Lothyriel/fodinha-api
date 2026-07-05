@@ -43,11 +43,9 @@ async fn join_lobby(
 async fn create_lobby(
     State(state): State<ApiState>,
     Extension(user_claims): Extension<UserClaims>,
-    body: Option<Json<CreateLobbyRequest>>,
+    Json(body): Json<CreateLobbyRequest>,
 ) -> Result<Json<CreateLobbyResponse>, ManagerError> {
-    let settings = body
-        .map(|Json(body)| body.into_settings())
-        .unwrap_or_default();
+    let settings = body.into_settings();
     let response = state
         .manager
         .create_lobby(user_claims.id(), settings)
