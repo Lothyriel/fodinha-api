@@ -54,8 +54,8 @@ pub fn run_power_card_script(
         StdLib::TABLE | StdLib::STRING | StdLib::MATH,
         LuaOptions::new(),
     )?;
-    lua.set_memory_limit(LUA_MEMORY_LIMIT_BYTES)?;
-    install_instruction_limit(&lua);
+
+    set_limits(&lua)?;
 
     let globals = lua.globals();
 
@@ -78,7 +78,9 @@ pub fn run_power_card_script(
     Ok(PowerScriptOutput { lifes })
 }
 
-fn install_instruction_limit(lua: &Lua) {
+fn set_limits(lua: &Lua) -> Result<(), mlua::Error> {
+    lua.set_memory_limit(LUA_MEMORY_LIMIT_BYTES)?;
+
     let ticks = Rc::new(Cell::new(0_u32));
 
     lua.set_hook(
@@ -95,7 +97,9 @@ fn install_instruction_limit(lua: &Lua) {
 
             Ok(VmState::Continue)
         },
-    );
+    )?;
+
+    Ok(())
 }
 
 fn build_game_api(
