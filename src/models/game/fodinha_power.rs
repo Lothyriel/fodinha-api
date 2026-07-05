@@ -615,4 +615,131 @@ mod tests {
         assert_eq!(outcome.lifes.get(&player2), Some(&40));
         assert!(game.power_decks[&player1].is_empty());
     }
+
+    #[test]
+    fn validates_power_card_errors() {
+        let player1 = PlayerId(Arc::from("P1"));
+        let player2 = PlayerId(Arc::from("P2"));
+        let players = [player1.clone(), player2.clone()];
+        let mut game = Game::new_with_seed(&players, GameSettings::default(), 42).unwrap();
+
+        game.power_decks.insert(
+            player1.clone(),
+            vec![power_card_definition("strike_10").unwrap().to_card()],
+        );
+
+        assert!(matches!(
+            game.validate_power_card(&player1, "strike_10", None),
+            Err(PowerCardError::TargetRequired)
+        ));
+
+        assert!(matches!(
+            game.validate_power_card(&player1, "missing", Some(player2.clone())),
+            Err(PowerCardError::InvalidPowerCard)
+        ));
+
+        assert!(matches!(
+            game.validate_power_card(&player2, "strike_10", Some(player1.clone())),
+            Err(PowerCardError::NotYourTurn)
+        ));
+
+        game.apply_match_event(game.validate_bid(&player1, 1).unwrap());
+        game.apply_match_event(game.validate_bid(&player2, 1).unwrap());
+
+        assert!(matches!(
+            game.validate_power_card(&player1, "strike_10", Some(player2)),
+            Err(PowerCardError::BiddingStageRequired)
+        ));
+    }
+
+    #[test]
+    fn applying_persisted_power_card_event_removes_card_and_can_end_game() {
+        let player1 = PlayerId(Arc::from("P1"));
+        let player2 = PlayerId(Arc::from("P2"));
+        let players = [player1.clone(), player2.clone()];
+        let mut game = Game::new_with_seed(&players, GameSettings::default(), 42).unwrap();
+        let card = power_card_definition("strike_10").unwrap().to_card();
+
+        game.power_decks.insert(player1.clone(), vec![card.clone()]);
+
+        let AppliedGameChange::PowerCardPlayed(outcome) =
+            game.apply_match_event(MatchEvent::PowerCardPlayed {
+                player_id: player1.clone(),
+                card,
+                target_player_id: Some(player2.clone()),
+                effects: PowerCardEffects {
+                    lifes: HashMap::from([(player2.clone(), 0)]),
+                },
+            })
+        else {
+            panic!("expected power card outcome");
+        };
+
+        assert!(game.power_decks[&player1].is_empty());
+        assert_eq!(outcome.lifes.get(&player2), Some(&0));
+        assert!(outcome.ended);
+        assert!(game.is_finished());
+    }
+
+    #[test]
+    fn next_set_refreshes_power_cards() {
+        let player1 = PlayerId(Arc::from("P1"));
+        let player2 = PlayerId(Arc::from("P2"));
+        let players = [player1.clone(), player2.clone()];
+        let mut game = Game::new_with_seed(&players, GameSettings::default(), 42).unwrap();
+
+        game.apply_match_event(game.validate_bid(&player1, 1).unwrap());
+        game.apply_match_event(game.validate_bid(&player2, 1).unwrap());
+
+        let first_card = game.core.get_player_snapshots()[&player1].deck[0];
+        let second_card = game.core.get_player_snapshots()[&player2].deck[0];
+
+        game.apply_match_event(
+            game.validate_turn(Turn {
+                player_id: player1.clone(),
+                card: first_card,
+            })
+            .unwrap(),
+        );
+
+        let event = game
+            .validate_turn(Turn {
+                player_id: player2.clone(),
+                card: second_card,
+            })
+            .unwrap();
+        let MatchEvent::TurnPlayed {
+            next_power_set: Some(_),
+            ..
+        } = &event
+        else {
+            panic!("expected next power set at set end");
+        };
+
+        let AppliedGameChange::TurnPlayed {
+            power_decks: Some(power_decks),
+            ..
+        } = game.apply_match_event(event)
+        else {
+            panic!("expected refreshed power decks");
+        };
+
+        assert_eq!(power_decks.len(), 2);
+        assert_eq!(power_decks[&player1].len(), POWER_CARDS_PER_PLAYER);
+        assert_eq!(power_decks[&player2].len(), POWER_CARDS_PER_PLAYER);
+        assert_eq!(game.power_decks[&player1].len(), POWER_CARDS_PER_PLAYER);
+        assert_eq!(game.power_decks[&player2].len(), POWER_CARDS_PER_PLAYER);
+    }
+
+    #[test]
+    fn game_info_exposes_private_power_cards() {
+        let player1 = PlayerId(Arc::from("P1"));
+        let player2 = PlayerId(Arc::from("P2"));
+        let players = [player1.clone(), player2.clone()];
+        let game = Game::new_with_seed(&players, GameSettings::default(), 42).unwrap();
+
+        let info = game.get_game_info(&player1);
+
+        assert_eq!(info.power_cards.unwrap().len(), POWER_CARDS_PER_PLAYER);
+    }
 }

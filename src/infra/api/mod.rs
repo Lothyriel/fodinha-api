@@ -1198,6 +1198,161 @@ mod tests {
         server.shutdown().await;
     }
 
+    #[tokio::test]
+    async fn test_fodinha_power_starts_with_power_cards_and_50_lives() {
+        let server = TestServer::start().await;
+
+        let client = http_client();
+        let tokens = get_players(&client, &server, 2).await;
+        let lobby_id = create_power_lobby(&client, &server, &tokens[0]).await;
+
+        for (i, token) in tokens.iter().enumerate() {
+            let lobby = join_lobby_http(&client, &server, token, &lobby_id).await;
+            assert!(matches!(lobby, LobbyInfo::NotStarted(players) if players.len() == i + 1));
+        }
+
+        let mut player_data = connect_players(&server, tokens).await;
+        let snapshots = ready_with_snapshots(&mut player_data).await;
+
+        for snapshot in snapshots.values() {
+            match snapshot {
+                MatchSnapshot::Playing(data) => {
+                    assert_eq!(data.game.info.len(), 2);
+                    assert!(data.game.info.iter().all(|player| player.lifes == 50));
+                    assert_eq!(data.game.power_cards.as_ref().unwrap().len(), 1);
+                }
+                snapshot => panic!("Expected playing snapshot, got {snapshot:?}"),
+            }
+        }
+
+        for p in player_data.values_mut() {
+            assert_game_msg(&mut p.connection, validate_set_start).await;
+        }
+
+        for p in player_data.values_mut() {
+            p.deck = get_deck(&mut p.connection).await;
+            assert_eq!(p.deck.len(), 1);
+            assert_eq!(get_power_cards(&mut p.connection).await.len(), 1);
+        }
+
+        drop(player_data);
+        server.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn test_fodinha_power_uses_power_card_over_websocket() {
+        let server = TestServer::start().await;
+
+        let client = http_client();
+        let tokens = get_players(&client, &server, 2).await;
+        let lobby_id = create_power_lobby(&client, &server, &tokens[0]).await;
+
+        for token in &tokens {
+            join_lobby_http(&client, &server, token, &lobby_id).await;
+        }
+
+        let mut player_data = connect_players(&server, tokens).await;
+        ready(&mut player_data).await;
+
+        for p in player_data.values_mut() {
+            assert_game_msg(&mut p.connection, validate_set_start).await;
+        }
+
+        let mut power_cards_by_player = HashMap::new();
+        for (player_id, p) in player_data.iter_mut() {
+            p.deck = get_deck(&mut p.connection).await;
+            power_cards_by_player
+                .insert(player_id.clone(), get_power_cards(&mut p.connection).await);
+        }
+
+        let first_connection = player_data.values_mut().next().unwrap();
+        let bidding_player = get_next_bidding_player(&mut first_connection.connection).await;
+
+        for p in player_data.values_mut().skip(1) {
+            get_next_bidding_player(&mut p.connection).await;
+        }
+
+        let card = power_cards_by_player[&bidding_player][0].clone();
+        let target_player_id = card.requires_target.then(|| {
+            player_data
+                .keys()
+                .find(|player_id| **player_id != bidding_player)
+                .cloned()
+                .expect("expected target player")
+        });
+
+        send_msg(
+            &mut player_data.get_mut(&bidding_player).unwrap().connection,
+            ClientCommand::GameCommand(GameCommand::FodinhaPower(
+                fodinha_power::GameCommand::UsePowerCard {
+                    card_id: card.id.clone(),
+                    target_player_id: target_player_id.clone(),
+                },
+            )),
+        )
+        .await;
+
+        for p in player_data.values_mut() {
+            match assert_game_msg(&mut p.connection, validate_power_card_played).await {
+                ServerMessage::PowerCardPlayed {
+                    player_id,
+                    card: played_card,
+                    target_player_id: played_target,
+                    lifes,
+                } => {
+                    assert_eq!(player_id, bidding_player);
+                    assert_eq!(played_card.id, card.id);
+                    assert_eq!(played_target, target_player_id);
+
+                    if card.requires_target {
+                        assert_eq!(lifes.get(target_player_id.as_ref().unwrap()), Some(&40));
+                    } else {
+                        assert_eq!(lifes.get(&bidding_player), Some(&60));
+                    }
+                }
+                msg => panic!("Expected PowerCardPlayed, got {msg:?}"),
+            }
+        }
+
+        drop(player_data);
+        server.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn test_fodinha_power_full_set_loses_ten_lives() {
+        let server = TestServer::start().await;
+
+        let client = http_client();
+        let tokens = get_players(&client, &server, 2).await;
+        let lobby_id = create_power_lobby(&client, &server, &tokens[0]).await;
+
+        for token in &tokens {
+            join_lobby_http(&client, &server, token, &lobby_id).await;
+        }
+
+        let mut player_data = connect_players(&server, tokens).await;
+        ready(&mut player_data).await;
+        get_power_decks(&mut player_data).await;
+        play_power_set(&mut player_data).await;
+
+        let mut set_lifes = None;
+        for p in player_data.values_mut() {
+            match recv_game_or_set_ended(&mut p.connection).await {
+                EndMessage::Set(lifes) => set_lifes = Some(lifes),
+                EndMessage::Game => panic!("power game should not end after one default set"),
+            }
+        }
+
+        let lifes = set_lifes.expect("expected SetEnded lifes");
+        let life_values = lifes.values().copied().collect::<Vec<_>>();
+
+        assert!(life_values.contains(&50));
+        assert!(life_values.contains(&40));
+
+        drop(player_data);
+        server.shutdown().await;
+    }
+
     async fn get_players(client: &Client, server: &TestServer, count: usize) -> Vec<String> {
         let mut players = vec![];
 
@@ -1354,6 +1509,19 @@ mod tests {
     }
 
     async fn ready(players: &mut TestPlayersData) {
+        let snapshots = ready_with_snapshots(players).await;
+
+        for snapshot in snapshots.values() {
+            assert!(
+                matches!(snapshot, MatchSnapshot::Playing(_)),
+                "Expected playing snapshot after game start"
+            );
+        }
+    }
+
+    async fn ready_with_snapshots(
+        players: &mut TestPlayersData,
+    ) -> HashMap<PlayerId, MatchSnapshot> {
         let msg = ClientCommand::PlayerStatusChange { ready: true };
 
         for p in players.values_mut() {
@@ -1366,12 +1534,99 @@ mod tests {
             }
         }
 
+        let mut snapshots = HashMap::new();
+
+        for (player_id, p) in players.iter_mut() {
+            snapshots.insert(player_id.clone(), get_snapshot(&mut p.connection).await);
+        }
+
+        snapshots
+    }
+
+    async fn get_power_decks(players: &mut TestPlayersData) {
         for p in players.values_mut() {
-            let snapshot = get_snapshot(&mut p.connection).await;
-            assert!(
-                matches!(snapshot, MatchSnapshot::Playing(_)),
-                "Expected playing snapshot after game start"
-            );
+            assert_game_msg(&mut p.connection, validate_set_start).await;
+        }
+
+        for p in players.values_mut() {
+            p.deck = get_deck(&mut p.connection).await;
+            assert_eq!(get_power_cards(&mut p.connection).await.len(), 1);
+        }
+    }
+
+    async fn play_power_set(players: &mut TestPlayersData) {
+        let rounds_count = players.values().next().unwrap().deck.len();
+
+        power_bidding(players, rounds_count).await;
+
+        for i in 0..rounds_count {
+            play_power_round(players, i == rounds_count - 1).await;
+        }
+    }
+
+    async fn play_power_round(players: &mut TestPlayersData, last: bool) {
+        for _ in 0..players.len() {
+            play_power_turn(players).await;
+        }
+
+        if !last {
+            for p in players.values_mut() {
+                assert_game_msg(&mut p.connection, validate_round_ended).await;
+            }
+        }
+    }
+
+    async fn play_power_turn(players: &mut TestPlayersData) {
+        let first_connection = players.values_mut().next().unwrap();
+
+        let next = get_next_turn_player(&mut first_connection.connection).await;
+
+        for p in players.values_mut().skip(1) {
+            get_next_turn_player(&mut p.connection).await;
+        }
+
+        let next = players.get_mut(&next).unwrap();
+
+        let msg = ClientCommand::GameCommand(GameCommand::FodinhaPower(
+            fodinha_power::GameCommand::PlayTurn {
+                card: next.deck.pop().unwrap(),
+            },
+        ));
+
+        send_msg(&mut next.connection, msg).await;
+
+        for p in players.values_mut() {
+            assert_game_msg(&mut p.connection, validate_turn_played).await;
+        }
+    }
+
+    async fn power_bidding(players: &mut TestPlayersData, bid: usize) {
+        for _ in 0..players.len() {
+            power_bid_turn(players, bid).await;
+        }
+    }
+
+    async fn power_bid_turn(players: &mut TestPlayersData, bid: usize) {
+        let data = players.values_mut().next().unwrap();
+
+        let next = get_next_bidding_player(&mut data.connection).await;
+
+        for p in players.values_mut().skip(1) {
+            get_next_bidding_player(&mut p.connection).await;
+        }
+
+        let next = players.get_mut(&next).unwrap();
+
+        send_msg(
+            &mut next.connection,
+            ClientCommand::GameCommand(GameCommand::FodinhaPower(
+                fodinha_power::GameCommand::PutBid { bid },
+            )),
+        )
+        .await;
+
+        for p in players.values_mut() {
+            assert_game_msg(&mut p.connection, validate_player_bidded).await;
         }
     }
 
@@ -1421,6 +1676,10 @@ mod tests {
         matches!(m, ServerMessage::SetStart { upcard: _ })
     }
 
+    fn validate_power_card_played(m: &ServerMessage) -> bool {
+        matches!(m, ServerMessage::PowerCardPlayed { .. })
+    }
+
     async fn get_next_turn_player(stream: &mut WebSocket) -> PlayerId {
         match assert_game_msg(stream, validate_player_turn).await {
             ServerMessage::PlayerTurn { player_id } => player_id,
@@ -1442,6 +1701,13 @@ mod tests {
         match assert_game_msg(stream, |m| matches!(m, ServerMessage::PlayerDeck(_))).await {
             ServerMessage::PlayerDeck(c) => c,
             _ => panic!("Should be a PlayerDeck message"),
+        }
+    }
+
+    async fn get_power_cards(stream: &mut WebSocket) -> Vec<crate::services::PowerCardDto> {
+        match assert_game_msg(stream, |m| matches!(m, ServerMessage::PlayerPowerCards(_))).await {
+            ServerMessage::PlayerPowerCards(c) => c,
+            _ => panic!("Should be a PlayerPowerCards message"),
         }
     }
 
@@ -1638,6 +1904,29 @@ mod tests {
 
     async fn create_lobby(client: &Client, server: &TestServer, token: &str) -> LobbyId {
         create_lobby_with_optional_lifes(client, server, token, None).await
+    }
+
+    async fn create_power_lobby(client: &Client, server: &TestServer, token: &str) -> LobbyId {
+        let res = client
+            .post(server.url("/lobby"))
+            .bearer_auth(token)
+            .json(&serde_json::json!({ "game_type": "fodinha_power" }))
+            .send()
+            .await
+            .unwrap();
+        let status = res.status();
+        let body = res.text().await.unwrap();
+
+        assert!(
+            status.is_success(),
+            "Expected power lobby creation to succeed, got {status}: {body}"
+        );
+
+        let res: CreateLobbyResponse = serde_json::from_str(&body).unwrap();
+
+        assert_eq!(res.game_type, GameType::FodinhaPower);
+
+        res.lobby_id
     }
 
     async fn create_lobby_with_lifes(
