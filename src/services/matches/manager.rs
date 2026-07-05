@@ -1,10 +1,12 @@
 use std::{
     collections::{HashMap, HashSet},
+    sync::Arc,
     time::Duration,
     time::Instant,
 };
 
 use chrono::Utc;
+use dashmap::DashMap;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::{
@@ -41,6 +43,7 @@ pub struct ManagerHandle {
     repo: MatchesRepository,
     stats_repo: StatsRepository,
     users_repo: UsersRepository,
+    user_cache: Arc<DashMap<PlayerId, UserClaims>>,
     stats_projector: StatsProjectorHandle,
     waiting_lobby_timeout: Duration,
 }
@@ -71,6 +74,7 @@ impl ManagerHandle {
             repo,
             stats_repo,
             users_repo,
+            user_cache: Arc::new(DashMap::new()),
             stats_projector,
             waiting_lobby_timeout,
         }
@@ -115,10 +119,8 @@ impl ManagerHandle {
     pub async fn join_lobby(
         &self,
         match_id: MatchId,
-        user_claims: UserClaims,
+        player_id: PlayerId,
     ) -> Result<LobbyInfo, ManagerError> {
-        self.users_repo.upsert_user(&user_claims).await?;
-        let player_id = user_claims.id();
         let sender = self.sender_for_match(&match_id).await?;
 
         let info = Self::request(&sender, |respond| MatchActorMessage::JoinLobby {
@@ -200,6 +202,7 @@ impl ManagerHandle {
 
     pub async fn upsert_user(&self, user: &UserClaims) -> Result<(), ManagerError> {
         self.users_repo.upsert_user(user).await?;
+        self.cache_user(user.clone());
 
         Ok(())
     }
@@ -392,11 +395,25 @@ impl ManagerHandle {
         &self,
         players: HashMap<PlayerId, LobbyPlayerStatus>,
     ) -> Result<HashMap<PlayerId, PlayerStatus>, ManagerError> {
-        let player_ids = players
-            .keys()
-            .map(|player_id| player_id.as_str().to_string())
-            .collect::<Vec<_>>();
-        let users = self.users_repo.users_by_id(&player_ids).await?;
+        let mut users = HashMap::new();
+        let mut missing = Vec::new();
+
+        for player_id in players.keys() {
+            match self.user_cache.get(player_id) {
+                Some(user) => {
+                    users.insert(player_id.as_str().to_string(), user.clone());
+                }
+                None => missing.push(player_id.as_str().to_string()),
+            }
+        }
+
+        let loaded_users = self.users_repo.users_by_id(&missing).await?;
+
+        for user in loaded_users.values() {
+            self.cache_user(user.clone());
+        }
+
+        users.extend(loaded_users);
 
         let players = players
             .into_iter()
@@ -421,10 +438,27 @@ impl ManagerHandle {
 
     async fn user_or_fallback(&self, player_id: &PlayerId) -> Result<UserClaims, ManagerError> {
         Ok(self
-            .users_repo
-            .user(player_id.as_str())
+            .cached_user(player_id)
             .await?
             .unwrap_or_else(|| fallback_user_claims(player_id)))
+    }
+
+    async fn cached_user(&self, player_id: &PlayerId) -> Result<Option<UserClaims>, ManagerError> {
+        if let Some(user) = self.user_cache.get(player_id) {
+            return Ok(Some(user.clone()));
+        }
+
+        let user = self.users_repo.user(player_id.as_str()).await?;
+
+        if let Some(user) = &user {
+            self.cache_user(user.clone());
+        }
+
+        Ok(user)
+    }
+
+    fn cache_user(&self, user: UserClaims) {
+        self.user_cache.insert(user.id(), user);
     }
 
     async fn request<T>(

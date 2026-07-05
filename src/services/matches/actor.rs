@@ -550,13 +550,13 @@ impl MatchActor {
         let match_id = self.match_id.clone();
         let finished = self.is_finished();
 
-        tokio::spawn(async move {
-            if let Err(e) =
-                project_match_metadata(&repo, &match_id, &event, finished).await
-            {
-                tracing::error!("Error projecting match metadata: {e}");
-            }
-        });
+        if should_project_match_metadata(&event, finished) {
+            tokio::spawn(async move {
+                if let Err(e) = project_match_metadata(&repo, &match_id, &event, finished).await {
+                    tracing::error!("Error projecting match metadata: {e}");
+                }
+            });
+        }
 
         Ok(applied)
     }
@@ -829,6 +829,16 @@ impl MatchActor {
         self.player_routes.remove(player_id);
 
         Ok(())
+    }
+}
+
+fn should_project_match_metadata(event: &MatchEvent, match_finished: bool) -> bool {
+    match event {
+        MatchEvent::MatchCreated { .. }
+        | MatchEvent::PlayerJoined { .. }
+        | MatchEvent::GameStarted { .. } => true,
+        MatchEvent::TurnPlayed { .. } => match_finished,
+        MatchEvent::BidPlaced { .. } | MatchEvent::PlayerStatusChanged { .. } => false,
     }
 }
 

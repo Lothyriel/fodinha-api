@@ -53,10 +53,6 @@ pub async fn middleware(
     let claims =
         get_claims_from_token(token, &state.jwt_key, state.google_client_id.as_deref()).await?;
 
-    if let Err(e) = state.manager.upsert_user(&claims).await {
-        tracing::error!("Error upserting authenticated user: {e}");
-    }
-
     req.extensions_mut().insert(claims);
 
     Ok(next.run(req).await)

@@ -29,15 +29,15 @@ impl UsersRepository {
     }
 
     pub async fn upsert_user(&self, user: &UserClaims) -> mongodb::error::Result<()> {
-        let existing = self
-            .users
-            .find_one(doc! { "player_id": user.id().as_str() })
-            .await?;
-        let dto = UserDto::new(user.clone(), existing);
+        let player_id = user.id();
+        let user = mongodb::bson::to_bson(user)?;
 
-        telemetry::db_query("Users", "replace_one.upsert", async {
+        telemetry::db_query("Users", "update_one.upsert", async {
             self.users
-                .replace_one(doc! { "player_id": &dto.player_id }, &dto)
+                .update_one(
+                    doc! { "player_id": player_id.as_str() },
+                    doc! { "$set": { "player_id": player_id.as_str(), "user": user } },
+                )
                 .upsert(true)
                 .await
         })
@@ -84,16 +84,20 @@ impl UsersRepository {
         token: &str,
         expires_at: i64,
     ) -> mongodb::error::Result<()> {
-        let Some(mut user) = self.users.find_one(doc! { "player_id": player_id }).await? else {
-            return Ok(());
-        };
-
-        user.refresh_token = Some(token.to_string());
-        user.refresh_token_expires_at = Some(expires_at);
-
-        self.users
-            .replace_one(doc! { "player_id": player_id }, &user)
-            .await?;
+        telemetry::db_query("Users", "update_one.store_refresh_token", async {
+            self.users
+                .update_one(
+                    doc! { "player_id": player_id },
+                    doc! {
+                        "$set": {
+                            "refresh_token": token,
+                            "refresh_token_expires_at": expires_at,
+                        },
+                    },
+                )
+                .await
+        })
+        .await?;
 
         Ok(())
     }
@@ -102,7 +106,10 @@ impl UsersRepository {
         &self,
         token: &str,
     ) -> mongodb::error::Result<Option<RefreshSession>> {
-        let user = self.users.find_one(doc! { "refresh_token": token }).await?;
+        let user = telemetry::db_query("Users", "find_one.refresh_token", async {
+            self.users.find_one(doc! { "refresh_token": token }).await
+        })
+        .await?;
 
         Ok(user.and_then(|user| {
             Some(RefreshSession {
@@ -127,20 +134,4 @@ struct UserDto {
     refresh_token: Option<String>,
     #[serde(default)]
     refresh_token_expires_at: Option<i64>,
-}
-
-impl UserDto {
-    fn new(user: UserClaims, existing: Option<UserDto>) -> Self {
-        let refresh_token = existing
-            .as_ref()
-            .and_then(|user| user.refresh_token.clone());
-        let refresh_token_expires_at = existing.and_then(|user| user.refresh_token_expires_at);
-
-        Self {
-            player_id: user.id().as_str().to_string(),
-            user,
-            refresh_token,
-            refresh_token_expires_at,
-        }
-    }
 }
