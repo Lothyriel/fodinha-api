@@ -46,6 +46,7 @@ pub struct ManagerHandle {
     user_cache: Arc<DashMap<PlayerId, UserClaims>>,
     stats_projector: StatsProjectorHandle,
     waiting_lobby_timeout: Duration,
+    empty_playing_timeout: Duration,
 }
 
 fn fallback_user_claims(player_id: &PlayerId) -> UserClaims {
@@ -68,6 +69,7 @@ impl ManagerHandle {
         users_repo: UsersRepository,
         stats_projector: StatsProjectorHandle,
         waiting_lobby_timeout: Duration,
+        empty_playing_timeout: Duration,
     ) -> Self {
         Self {
             registry: MatchRegistry::new(),
@@ -77,7 +79,59 @@ impl ManagerHandle {
             user_cache: Arc::new(DashMap::new()),
             stats_projector,
             waiting_lobby_timeout,
+            empty_playing_timeout,
         }
+    }
+
+    pub(crate) fn start_abandoned_match_janitor(
+        &self,
+        empty_playing_timeout: Duration,
+        scan_interval: Duration,
+    ) {
+        let manager = self.clone();
+
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(scan_interval);
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+            loop {
+                interval.tick().await;
+
+                if let Err(e) = manager
+                    .abandon_stale_playing_matches(empty_playing_timeout)
+                    .await
+                {
+                    tracing::error!("Error abandoning stale playing matches: {e}");
+                }
+            }
+        });
+    }
+
+    pub(crate) async fn abandon_stale_playing_matches(
+        &self,
+        empty_playing_timeout: Duration,
+    ) -> Result<(), ManagerError> {
+        let match_ids = self
+            .repo
+            .stale_playing_match_ids(empty_playing_timeout)
+            .await?;
+
+        for match_id in match_ids {
+            if self.registry.matches.contains_key(&match_id) {
+                continue;
+            }
+
+            if self
+                .repo
+                .mark_metadata_abandoned_if_stale(&match_id, empty_playing_timeout)
+                .await?
+            {
+                tracing::info!("Abandoned stale playing match {match_id:?}");
+                self.registry.remove_match(&match_id);
+            }
+        }
+
+        Ok(())
     }
 
     #[cfg(test)]
@@ -529,6 +583,15 @@ impl ManagerHandle {
             return Err(LobbyError::InvalidLobby.into());
         }
 
+        if metadata.is_playing_stale(self.empty_playing_timeout) {
+            if let Err(e) = self.repo.mark_metadata_abandoned(match_id).await {
+                tracing::error!("Error abandoning stale playing match metadata: {e}");
+            }
+
+            telemetry::record_actor_start("load", started.elapsed(), false);
+            return Err(LobbyError::InvalidLobby.into());
+        }
+
         let metadata_status = metadata.status;
         let events = self.repo.load_events(match_id).await?;
 
@@ -582,6 +645,7 @@ impl ManagerHandle {
             self.registry.matches.clone(),
             self.registry.player_routes.clone(),
             self.waiting_lobby_timeout,
+            self.empty_playing_timeout,
         )
     }
 }

@@ -238,6 +238,41 @@ impl MatchesRepository {
             .await
     }
 
+    pub async fn mark_metadata_abandoned(&self, match_id: &MatchId) -> mongodb::error::Result<()> {
+        self.set_metadata_status(match_id, MatchMetadataStatus::Abandoned)
+            .await
+    }
+
+    pub async fn mark_metadata_abandoned_if_stale(
+        &self,
+        match_id: &MatchId,
+        timeout: std::time::Duration,
+    ) -> mongodb::error::Result<bool> {
+        let cutoff = current_timestamp().saturating_sub(timeout.as_secs() as i64);
+        let updated_at = current_timestamp();
+
+        let result = telemetry::db_query("MatchMetadata", "update_one.abandon_stale", async {
+            self.metadata
+                .update_one(
+                    doc! {
+                        "match_id": match_id.as_str(),
+                        "status": MatchMetadataStatus::Playing.as_str(),
+                        "updated_at": { "$lte": cutoff },
+                    },
+                    doc! {
+                        "$set": {
+                            "status": MatchMetadataStatus::Abandoned.as_str(),
+                            "updated_at": updated_at,
+                        },
+                    },
+                )
+                .await
+        })
+        .await?;
+
+        Ok(result.modified_count > 0)
+    }
+
     pub async fn active_metadata(
         &self,
         match_id: &MatchId,
@@ -274,6 +309,28 @@ impl MatchesRepository {
                 let cursor = self
                     .metadata
                     .find(doc! { "status": MatchMetadataStatus::Waiting.as_str() })
+                    .await?;
+
+                cursor.try_collect().await
+            })
+            .await?;
+
+        Ok(metadata.into_iter().map(|m| m.match_id()).collect())
+    }
+
+    pub async fn stale_playing_match_ids(
+        &self,
+        timeout: std::time::Duration,
+    ) -> mongodb::error::Result<Vec<MatchId>> {
+        let cutoff = current_timestamp().saturating_sub(timeout.as_secs() as i64);
+        let metadata: Vec<MatchMetadataDto> =
+            telemetry::db_query("MatchMetadata", "find.stale_playing", async {
+                let cursor = self
+                    .metadata
+                    .find(doc! {
+                        "status": MatchMetadataStatus::Playing.as_str(),
+                        "updated_at": { "$lte": cutoff },
+                    })
                     .await?;
 
                 cursor.try_collect().await
@@ -361,6 +418,11 @@ impl MatchMetadataDto {
         self.status == MatchMetadataStatus::Waiting
             && current_timestamp().saturating_sub(self.updated_at) >= timeout.as_secs() as i64
     }
+
+    pub fn is_playing_stale(&self, timeout: std::time::Duration) -> bool {
+        self.status == MatchMetadataStatus::Playing
+            && current_timestamp().saturating_sub(self.updated_at) >= timeout.as_secs() as i64
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
@@ -369,6 +431,7 @@ pub enum MatchMetadataStatus {
     Waiting,
     Playing,
     Finished,
+    Abandoned,
 }
 
 impl MatchMetadataStatus {
@@ -377,6 +440,7 @@ impl MatchMetadataStatus {
             Self::Waiting => "waiting",
             Self::Playing => "playing",
             Self::Finished => "finished",
+            Self::Abandoned => "abandoned",
         }
     }
 }

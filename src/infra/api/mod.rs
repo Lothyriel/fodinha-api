@@ -196,6 +196,8 @@ mod tests {
     const MONGO_CONN_STRING: &str = "mongodb://localhost/?retryWrites=true";
     const SERVER_START_TIMEOUT: Duration = Duration::from_millis(200);
     const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
+    const EMPTY_PLAYING_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+    const ABANDONED_MATCH_SCAN_INTERVAL: Duration = Duration::from_secs(60);
     const TEST_GOOGLE_CLIENT_ID: Option<&str> =
         Some("824653628296-ahr9jr3aqgr367mul4p359dj4plsl67a.apps.googleusercontent.com");
     const TEST_JWT_KEY: &str = "very-random-secret-key";
@@ -226,22 +228,54 @@ mod tests {
 
     impl TestServer {
         async fn start() -> Self {
-            Self::start_with_waiting_lobby_timeout(Duration::from_secs(5 * 60)).await
+            Self::start_with_timeouts(
+                Duration::from_secs(5 * 60),
+                EMPTY_PLAYING_TIMEOUT,
+                ABANDONED_MATCH_SCAN_INTERVAL,
+            )
+            .await
         }
 
         async fn start_with_waiting_lobby_timeout(waiting_lobby_timeout: Duration) -> Self {
+            Self::start_with_timeouts(
+                waiting_lobby_timeout,
+                EMPTY_PLAYING_TIMEOUT,
+                ABANDONED_MATCH_SCAN_INTERVAL,
+            )
+            .await
+        }
+
+        async fn start_with_timeouts(
+            waiting_lobby_timeout: Duration,
+            empty_playing_timeout: Duration,
+            abandoned_match_scan_interval: Duration,
+        ) -> Self {
             let mongo_database = format!("oh_hell_test_{}", nanoid::nanoid!(10));
 
-            Self::start_with_database_and_timeout(mongo_database, waiting_lobby_timeout).await
+            Self::start_with_database_and_timeouts(
+                mongo_database,
+                waiting_lobby_timeout,
+                empty_playing_timeout,
+                abandoned_match_scan_interval,
+            )
+            .await
         }
 
         async fn start_with_database(mongo_database: String) -> Self {
-            Self::start_with_database_and_timeout(mongo_database, Duration::from_secs(5 * 60)).await
+            Self::start_with_database_and_timeouts(
+                mongo_database,
+                Duration::from_secs(5 * 60),
+                EMPTY_PLAYING_TIMEOUT,
+                ABANDONED_MATCH_SCAN_INTERVAL,
+            )
+            .await
         }
 
-        async fn start_with_database_and_timeout(
+        async fn start_with_database_and_timeouts(
             mongo_database: String,
             waiting_lobby_timeout: Duration,
+            empty_playing_timeout: Duration,
+            abandoned_match_scan_interval: Duration,
         ) -> Self {
             let mongo_conn_string = MONGO_CONN_STRING.to_string();
             let settings = AppSettings {
@@ -257,9 +291,13 @@ mod tests {
                 .expect("Expected to create mongo client");
 
             let database = client.database(&mongo_database);
-            let manager =
-                GameManager::start_with_waiting_lobby_timeout(&settings, waiting_lobby_timeout)
-                    .await;
+            let manager = GameManager::start_with_timeouts(
+                &settings,
+                waiting_lobby_timeout,
+                empty_playing_timeout,
+                abandoned_match_scan_interval,
+            )
+            .await;
             let server_manager = manager.clone();
             let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
                 .await
@@ -436,6 +474,90 @@ mod tests {
 
         drop(reconnected);
         drop(player_data);
+        server.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn test_playing_match_abandoned_after_all_players_disconnect() {
+        let server = TestServer::start_with_timeouts(
+            Duration::from_secs(5 * 60),
+            Duration::from_millis(200),
+            ABANDONED_MATCH_SCAN_INTERVAL,
+        )
+        .await;
+
+        let client = http_client();
+        let tokens = get_players(&client, &server, 2).await;
+        let first_token = tokens[0].clone();
+        let lobby_id = create_lobby(&client, &server, &tokens[0]).await;
+
+        for token in &tokens {
+            join_lobby_http(&client, &server, token, &lobby_id).await;
+        }
+
+        let mut player_data = connect_players(&server, tokens).await;
+        ready(&mut player_data).await;
+
+        for player in player_data.values_mut() {
+            player.connection.close(None).await.unwrap();
+        }
+
+        server.wait_until_match_actor_stopped().await;
+
+        let metadata = server
+            .database
+            .as_ref()
+            .unwrap()
+            .collection::<Document>("MatchMetadata")
+            .find_one(doc! { "match_id": lobby_id.as_str() })
+            .await
+            .unwrap()
+            .expect("match metadata should remain for abandoned match");
+
+        assert_eq!(metadata.get_str("status").unwrap(), "abandoned");
+        assert_ws_closes_without_snapshot(&server, &first_token).await;
+
+        server.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn test_janitor_abandons_stale_playing_metadata_without_actor() {
+        let server = TestServer::start().await;
+        let match_id = LobbyId("stale-playing-match".into());
+
+        server
+            .database
+            .as_ref()
+            .unwrap()
+            .collection::<Document>("MatchMetadata")
+            .insert_one(doc! {
+                "match_id": match_id.as_str(),
+                "status": "playing",
+                "updated_at": 0_i64,
+                "players": [],
+                "ready_players": [],
+            })
+            .await
+            .unwrap();
+
+        server
+            .manager
+            .abandon_stale_playing_matches(Duration::from_secs(1))
+            .await
+            .unwrap();
+
+        let metadata = server
+            .database
+            .as_ref()
+            .unwrap()
+            .collection::<Document>("MatchMetadata")
+            .find_one(doc! { "match_id": match_id.as_str() })
+            .await
+            .unwrap()
+            .expect("stale playing metadata should remain");
+
+        assert_eq!(metadata.get_str("status").unwrap(), "abandoned");
+
         server.shutdown().await;
     }
 
