@@ -79,9 +79,6 @@ async fn handle_connection(
     shutdown_rx: watch::Receiver<bool>,
 ) -> Result<(), ManagerError> {
     let player_id = auth.id();
-
-    manager.upsert_user(&auth).await?;
-
     let context = manager.connect_player(player_id.clone()).await?;
 
     let connection = PlayerConnection {

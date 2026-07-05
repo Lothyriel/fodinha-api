@@ -55,6 +55,24 @@ impl MatchesRepository {
         })
         .await?;
 
+        telemetry::db_query("MatchMetadata", "create_index.players_status", async {
+            self.metadata
+                .create_index(
+                    IndexModel::builder()
+                        .keys(doc! { "players": 1, "status": 1 })
+                        .build(),
+                )
+                .await
+        })
+        .await?;
+
+        telemetry::db_query("MatchMetadata", "create_index.status", async {
+            self.metadata
+                .create_index(IndexModel::builder().keys(doc! { "status": 1 }).build())
+                .await
+        })
+        .await?;
+
         Ok(())
     }
 
@@ -228,7 +246,7 @@ impl MatchesRepository {
             self.metadata
                 .find_one(doc! {
                     "match_id": match_id.as_str(),
-                    "status": { "$ne": MatchMetadataStatus::Finished.as_str() },
+                    "status": { "$in": active_statuses() },
                 })
                 .await
         })
@@ -243,7 +261,7 @@ impl MatchesRepository {
             self.metadata
                 .find_one(doc! {
                     "players": player_id.as_str(),
-                    "status": { "$ne": MatchMetadataStatus::Finished.as_str() },
+                    "status": { "$in": active_statuses() },
                 })
                 .await
         })
@@ -373,6 +391,13 @@ pub struct MatchEventDto {
     pub match_id: Arc<str>,
     pub sequence: usize,
     pub event: MatchEvent,
+}
+
+fn active_statuses() -> Vec<&'static str> {
+    vec![
+        MatchMetadataStatus::Waiting.as_str(),
+        MatchMetadataStatus::Playing.as_str(),
+    ]
 }
 
 impl MatchEventDto {

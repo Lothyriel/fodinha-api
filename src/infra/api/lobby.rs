@@ -35,7 +35,7 @@ async fn join_lobby(
     Extension(user_claims): Extension<UserClaims>,
     Path(id): Path<LobbyId>,
 ) -> Result<Json<LobbyInfo>, ManagerError> {
-    let response = state.manager.join_lobby(id, user_claims).await?;
+    let response = state.manager.join_lobby(id, user_claims.id()).await?;
 
     Ok(Json(response))
 }
