@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use rand::RngExt;
-use tokio::sync::mpsc;
+use tokio::{sync::mpsc, time::MissedTickBehavior};
 
 use oh_hell::client::{ClientError, GameOutcome, GameSession, HttpClient, TurnDelay, WsClient};
 
@@ -246,107 +246,130 @@ async fn run_game_manager(
         Duration::from_secs_f64(1.0 / config.spawn_rate_per_sec as f64)
     };
 
+    if spawn_interval > Duration::ZERO {
+        let mut spawn_tick = tokio::time::interval(spawn_interval);
+        spawn_tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
+
+        loop {
+            if state.shutdown.load(Ordering::Relaxed) {
+                return;
+            }
+
+            tokio::select! {
+                _ = spawn_tick.tick() => {
+                    maybe_spawn_game(
+                        state.clone(),
+                        config.clone(),
+                        http.clone(),
+                        ws.clone(),
+                        cmd_tx.clone(),
+                        pool.clone(),
+                    );
+                }
+                msg = cmd_rx.recv() => {
+                    handle_runner_cmd(&state, msg);
+                }
+            }
+        }
+    }
+
     loop {
         if state.shutdown.load(Ordering::Relaxed) {
             return;
         }
 
-        let desired = state.desired_games.load(Ordering::Relaxed);
-        let running = state.running_games.load(Ordering::Relaxed);
-
-        if desired > running {
-            let s = state.clone();
-            let c = config.clone();
-            let h = http.clone();
-            let w = ws.clone();
-            let tx = cmd_tx.clone();
-            let p = pool.clone();
-
-            s.running_games.fetch_add(1, Ordering::Relaxed);
-
-            tokio::spawn(async move {
-                let player_count = {
-                    let mut rng = rand::rng();
-                    rng.random_range(c.min_players..=c.max_players)
-                };
-
-                let tokens = match acquire_tokens(&p, &h, player_count).await {
-                    Ok(tokens) => tokens,
-                    Err(e) => {
-                        let msg = e.to_string();
-                        log_error(&msg);
-
-                        s.error_count.fetch_add(1, Ordering::Relaxed);
-                        let _ = tx.send(RunnerCmd::GameFinished(GameResult {
-                            player_count,
-                            outcome: "ERROR".into(),
-                            info: String::new(),
-                        }));
-                        s.running_games.fetch_sub(1, Ordering::Relaxed);
-                        return;
-                    }
-                };
-
-                match run_single_game(&tokens, &h, &w, &c).await {
-                    Ok(result) => {
-                        let _ = tx.send(RunnerCmd::GameFinished(result));
-                    }
-                    Err(e) => {
-                        let msg = e.to_string();
-                        log_error(&msg);
-
-                        s.error_count.fetch_add(1, Ordering::Relaxed);
-                        let _ = tx.send(RunnerCmd::GameFinished(GameResult {
-                            player_count,
-                            outcome: "ERROR".into(),
-                            info: String::new(),
-                        }));
-                    }
-                }
-
-                let mut guard = lock(&*p);
-                guard.put_back(tokens);
-                s.running_games.fetch_sub(1, Ordering::Relaxed);
-            });
-        }
-
-        if spawn_interval > Duration::ZERO {
-            tokio::select! {
-                _ = tokio::time::sleep(spawn_interval) => {}
-                msg = cmd_rx.recv() => {
-                    match msg {
-                        Some(RunnerCmd::GameFinished(result)) => {
-                            state.finished_games.fetch_add(1, Ordering::Relaxed);
-
-                            if result.outcome == "OK" {
-                                println!(
-                                    "OK  {:>2}P | {}",
-                                    result.player_count, result.info,
-                                );
-                            }
-                        }
-                        Some(RunnerCmd::Shutdown) => {
-                            state.shutdown.store(true, Ordering::Relaxed);
-                        }
-                        Some(RunnerCmd::SetDesired) | None => {}
-                    }
-                }
-            }
+        if state.desired_games.load(Ordering::Relaxed) > state.running_games.load(Ordering::Relaxed)
+        {
+            maybe_spawn_game(
+                state.clone(),
+                config.clone(),
+                http.clone(),
+                ws.clone(),
+                cmd_tx.clone(),
+                pool.clone(),
+            );
         } else {
-            match cmd_rx.recv().await {
-                Some(RunnerCmd::GameFinished(result)) => {
-                    state.finished_games.fetch_add(1, Ordering::Relaxed);
+            handle_runner_cmd(&state, cmd_rx.recv().await);
+        }
+    }
+}
 
-                    if result.outcome == "OK" {
-                        println!("OK  {:>2}P | {}", result.player_count, result.info,);
-                    }
-                }
-                Some(RunnerCmd::Shutdown) => {
-                    state.shutdown.store(true, Ordering::Relaxed);
-                }
-                Some(RunnerCmd::SetDesired) | None => {}
+fn maybe_spawn_game(
+    state: Arc<SharedState>,
+    config: Config,
+    http: HttpClient,
+    ws: WsClient,
+    cmd_tx: mpsc::UnboundedSender<RunnerCmd>,
+    pool: Arc<Mutex<UserPool>>,
+) {
+    let desired = state.desired_games.load(Ordering::Relaxed);
+    let running = state.running_games.load(Ordering::Relaxed);
+
+    if desired <= running {
+        return;
+    }
+
+    state.running_games.fetch_add(1, Ordering::Relaxed);
+
+    tokio::spawn(async move {
+        let player_count = {
+            let mut rng = rand::rng();
+            rng.random_range(config.min_players..=config.max_players)
+        };
+
+        let tokens = match acquire_tokens(&pool, &http, player_count).await {
+            Ok(tokens) => tokens,
+            Err(e) => {
+                let msg = e.to_string();
+                log_error(&msg);
+
+                state.error_count.fetch_add(1, Ordering::Relaxed);
+                let _ = cmd_tx.send(RunnerCmd::GameFinished(GameResult {
+                    player_count,
+                    outcome: "ERROR".into(),
+                    info: String::new(),
+                }));
+                state.running_games.fetch_sub(1, Ordering::Relaxed);
+                return;
+            }
+        };
+
+        match run_single_game(&tokens, &http, &ws, &config).await {
+            Ok(result) => {
+                let _ = cmd_tx.send(RunnerCmd::GameFinished(result));
+            }
+            Err(e) => {
+                let msg = e.to_string();
+                log_error(&msg);
+
+                state.error_count.fetch_add(1, Ordering::Relaxed);
+                let _ = cmd_tx.send(RunnerCmd::GameFinished(GameResult {
+                    player_count,
+                    outcome: "ERROR".into(),
+                    info: String::new(),
+                }));
             }
         }
+
+        let mut guard = lock(&*pool);
+        guard.put_back(tokens);
+        state.running_games.fetch_sub(1, Ordering::Relaxed);
+    });
+}
+
+fn handle_runner_cmd(state: &SharedState, msg: Option<RunnerCmd>) {
+    match msg {
+        Some(RunnerCmd::GameFinished(result)) => {
+            state.finished_games.fetch_add(1, Ordering::Relaxed);
+
+            if result.outcome == "OK" {
+                println!("OK  {:>2}P | {}", result.player_count, result.info,);
+            }
+        }
+        Some(RunnerCmd::Shutdown) => {
+            state.shutdown.store(true, Ordering::Relaxed);
+        }
+        Some(RunnerCmd::SetDesired) | None => {}
     }
 }
 
@@ -355,11 +378,13 @@ async fn acquire_tokens(
     http: &HttpClient,
     player_count: usize,
 ) -> Result<Vec<String>, ClientError> {
-    let need = {
-        let guard = lock(&**pool);
-        player_count.saturating_sub(guard.available.len())
+    let mut tokens = {
+        let mut guard = lock(&**pool);
+        let available = player_count.min(guard.available.len());
+
+        guard.available.drain(..available).collect::<Vec<_>>()
     };
-    let mut new_tokens = Vec::new();
+    let need = player_count.saturating_sub(tokens.len());
 
     for _ in 0..need {
         let nickname = {
@@ -368,14 +393,18 @@ async fn acquire_tokens(
             guard.next_id += 1;
             name
         };
-        let token = http.try_signup(&nickname).await?;
-        new_tokens.push(token);
+
+        match http.try_signup(&nickname).await {
+            Ok(token) => tokens.push(token),
+            Err(e) => {
+                let mut guard = lock(&**pool);
+                guard.put_back(tokens);
+                return Err(e);
+            }
+        }
     }
 
-    let mut guard = lock(&**pool);
-    guard.available.extend(new_tokens);
-
-    Ok(guard.available.drain(..player_count).collect())
+    Ok(tokens)
 }
 
 async fn run_single_game(
