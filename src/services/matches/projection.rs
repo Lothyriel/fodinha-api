@@ -1,5 +1,8 @@
 use crate::{
-    models::{game::MatchEvent, id::MatchId},
+    models::{
+        game::{GameEvent, MatchEvent, fodinha_classic},
+        id::MatchId,
+    },
     services::repositories::matches::MatchesRepository,
 };
 
@@ -18,10 +21,12 @@ pub(crate) async fn project_match_metadata(
 
             repo.add_metadata_player(match_id, &player_id).await
         }
-        MatchEvent::GameStarted { .. } => repo.mark_metadata_playing(match_id).await,
-        MatchEvent::TurnPlayed { .. } if match_finished => {
-            repo.mark_metadata_finished(match_id).await
-        }
+        MatchEvent::Game(GameEvent::FodinhaClassic(fodinha_classic::MatchEvent::GameStarted {
+            ..
+        })) => repo.mark_metadata_playing(match_id).await,
+        MatchEvent::Game(GameEvent::FodinhaClassic(fodinha_classic::MatchEvent::TurnPlayed {
+            ..
+        })) if match_finished => repo.mark_metadata_finished(match_id).await,
         _ => Ok(()),
     }
 }

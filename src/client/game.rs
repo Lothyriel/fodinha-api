@@ -6,6 +6,7 @@ use rand::RngExt;
 use crate::models::{
     Card,
     commands::{ClientCommand, MatchSnapshot, ServerMessage},
+    game::{GameCommand, fodinha_classic},
     id::PlayerId,
 };
 
@@ -76,7 +77,7 @@ impl GameSession {
         let msg = ClientCommand::PlayerStatusChange { ready: true };
 
         for stream in self.players.values_mut() {
-            WsClient::send_msg(stream, msg).await?;
+            WsClient::send_msg(stream, msg.clone()).await?;
         }
 
         for _ in 0..self.players.len() {
@@ -161,7 +162,13 @@ impl GameSession {
             .players
             .get_mut(&next)
             .ok_or_else(|| err!("Player {next:?} not found"))?;
-        WsClient::send_msg(stream, ClientCommand::PutBid { bid }).await?;
+        WsClient::send_msg(
+            stream,
+            ClientCommand::GameCommand(GameCommand::FodinhaClassic(
+                fodinha_classic::GameCommand::PutBid { bid },
+            )),
+        )
+        .await?;
 
         for stream in self.players.values_mut() {
             WsClient::assert_msg(stream, validate_player_bidded).await?;
@@ -211,7 +218,13 @@ impl GameSession {
             .players
             .get_mut(&next)
             .ok_or_else(|| err!("Player {next:?} not found"))?;
-        WsClient::send_msg(stream, ClientCommand::PlayTurn { card }).await?;
+        WsClient::send_msg(
+            stream,
+            ClientCommand::GameCommand(GameCommand::FodinhaClassic(
+                fodinha_classic::GameCommand::PlayTurn { card },
+            )),
+        )
+        .await?;
 
         for stream in self.players.values_mut() {
             WsClient::assert_msg(stream, validate_turn_played).await?;

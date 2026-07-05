@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use indexmap::{IndexMap, map::Entry};
 
 use crate::{
-    models::{GameError, LobbyState, game::GameSettings, id::PlayerId},
+    models::{GameError, LobbyState, game::GameSettings, game::GameType, id::PlayerId},
     services::{GameInfoDto, LobbyError},
 };
 
@@ -49,6 +49,13 @@ impl Lobby {
         }
     }
 
+    pub fn game_type(&self) -> GameType {
+        match &self.state {
+            LobbyState::NotStarted(settings) => settings.game_type(),
+            LobbyState::Playing(game) => game.game_type(),
+        }
+    }
+
     pub fn get_players_id(&self) -> Vec<PlayerId> {
         self.players.keys().cloned().collect()
     }
@@ -59,7 +66,7 @@ impl Lobby {
 
     pub fn join(&mut self, player_id: PlayerId) -> Result<(), LobbyError> {
         let max_players = match &self.state {
-            LobbyState::NotStarted(s) => Ok(s.max_players),
+            LobbyState::NotStarted(s) => Ok(s.max_players()),
             LobbyState::Playing(_) => Err(LobbyError::GameAlreadyStarted),
         };
 

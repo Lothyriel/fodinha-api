@@ -8,9 +8,12 @@ use indexmap::IndexMap;
 use crate::{
     infra::telemetry,
     models::{
-        Card, Game, GameError, GameOutcome, LobbyState, Turn,
+        Card, Game, GameError, GameOutcome, LobbyState,
         commands::GetLobbyDto,
-        game::{AppliedGameChange, BiddingState, GameSettings, MatchEvent, NewSet},
+        game::{
+            AppliedGameChange, BiddingState, GameEvent, GameSettings, MatchEvent, NewSet,
+            fodinha_classic,
+        },
         id::{MatchId, PlayerId},
         lobby::{Lobby, LobbyInfoInternal, LobbyPlayerStatus},
     },
@@ -294,7 +297,7 @@ impl MatchActor {
 
             match &lobby.state {
                 LobbyState::NotStarted(settings) => {
-                    if lobby.players.len() == settings.max_players {
+                    if lobby.players.len() == settings.max_players() {
                         return Err(LobbyError::GameError(GameError::TooManyPlayers).into());
                     }
                 }
@@ -447,7 +450,7 @@ impl MatchActor {
     async fn handle_game_command(
         &mut self,
         player_id: PlayerId,
-        command: crate::models::commands::GameCommand,
+        command: crate::models::game::GameCommand,
     ) -> Result<ActorResult, ManagerError> {
         let event = {
             let lobby = self.lobby()?;
@@ -461,17 +464,7 @@ impl MatchActor {
                 LobbyState::Playing(game) => game,
             };
 
-            match command {
-                crate::models::commands::GameCommand::PlayTurn { card } => game
-                    .validate_turn(Turn {
-                        player_id: player_id.clone(),
-                        card,
-                    })
-                    .map_err(ManagerError::Deal)?,
-                crate::models::commands::GameCommand::PutBid { bid } => game
-                    .validate_bid(&player_id, bid)
-                    .map_err(ManagerError::Bid)?,
-            }
+            game.validate_command(&player_id, command)?
         };
 
         let applied = self.persist_apply(event).await?;
@@ -509,6 +502,7 @@ impl MatchActor {
 
         Ok(Some(GetLobbyDto {
             id: self.match_id.clone(),
+            game_type: lobby.game_type(),
             player_count: lobby.players.len(),
         }))
     }
@@ -560,11 +554,15 @@ impl MatchActor {
 
                 Ok(AppliedEvent::PlayerStatusChanged)
             }
-            MatchEvent::GameStarted { settings, set } => {
+            MatchEvent::Game(GameEvent::FodinhaClassic(
+                fodinha_classic::MatchEvent::GameStarted { settings, set },
+            )) => {
                 let lobby = self.lobby_mut()?;
                 let players = lobby.get_players_id();
-                let game = Game::from_started(&players, settings, set.clone())
-                    .map_err(|e| ManagerError::Lobby(LobbyError::GameError(e)))?;
+                let game = Game::FodinhaClassic(
+                    fodinha_classic::Game::from_started(&players, settings, set.clone())
+                        .map_err(|e| ManagerError::Lobby(LobbyError::GameError(e)))?,
+                );
 
                 lobby.state = LobbyState::Playing(game);
 
@@ -579,14 +577,16 @@ impl MatchActor {
                     possible_bids: game.get_possible_bids(),
                 })
             }
-            event @ (MatchEvent::BidPlaced { .. } | MatchEvent::TurnPlayed { .. }) => {
+            MatchEvent::Game(event) => {
                 let lobby = self.lobby_mut()?;
                 let game = match &mut lobby.state {
                     LobbyState::NotStarted(_) => return Err(LobbyError::GameNotStarted.into()),
                     LobbyState::Playing(game) => game,
                 };
 
-                Ok(AppliedEvent::Game(game.apply_match_event(event)))
+                Ok(AppliedEvent::Game(game.apply_match_event(event).map_err(
+                    |e| ManagerError::Lobby(LobbyError::GameError(e)),
+                )?))
             }
         }
     }
@@ -935,9 +935,16 @@ fn should_project_match_metadata(event: &MatchEvent, match_finished: bool) -> bo
     match event {
         MatchEvent::MatchCreated { .. }
         | MatchEvent::PlayerJoined { .. }
-        | MatchEvent::GameStarted { .. } => true,
-        MatchEvent::TurnPlayed { .. } => match_finished,
-        MatchEvent::BidPlaced { .. } | MatchEvent::PlayerStatusChanged { .. } => false,
+        | MatchEvent::Game(GameEvent::FodinhaClassic(fodinha_classic::MatchEvent::GameStarted {
+            ..
+        })) => true,
+        MatchEvent::Game(GameEvent::FodinhaClassic(fodinha_classic::MatchEvent::TurnPlayed {
+            ..
+        })) => match_finished,
+        MatchEvent::Game(GameEvent::FodinhaClassic(fodinha_classic::MatchEvent::BidPlaced {
+            ..
+        }))
+        | MatchEvent::PlayerStatusChanged { .. } => false,
     }
 }
 

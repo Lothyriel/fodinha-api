@@ -14,10 +14,10 @@ use crate::{
     models::{
         Card,
         commands::{
-            CreateLobbyResponse, GameCommand, GetLobbyDto, LobbyInfo, MatchSnapshot, PlayerStatus,
+            CreateLobbyResponse, GetLobbyDto, LobbyInfo, MatchSnapshot, PlayerStatus,
             PlayingMatchSnapshot, ServerMessage,
         },
-        game::GameSettings,
+        game::{GameCommand, GameSettings, fodinha_classic},
         id::{self, MatchId, PlayerId},
         lobby::{
             LobbyInfoInternal, LobbyPlayerStatus, MatchSnapshotInternal,
@@ -146,6 +146,7 @@ impl ManagerHandle {
     ) -> Result<CreateLobbyResponse, ManagerError> {
         let started = Instant::now();
         let match_id = id::gen_matchid();
+        let game_type = settings.game_type();
         let (tx, rx) = flume::unbounded();
 
         let actor = self.new_actor(match_id.clone());
@@ -167,7 +168,10 @@ impl ManagerHandle {
 
         result?;
 
-        Ok(CreateLobbyResponse { lobby_id: match_id })
+        Ok(CreateLobbyResponse {
+            lobby_id: match_id,
+            game_type,
+        })
     }
 
     pub async fn join_lobby(
@@ -291,22 +295,31 @@ impl ManagerHandle {
     }
 
     pub async fn play_turn(&self, card: Card, player_id: PlayerId) -> Result<(), ManagerError> {
-        let sender = self.sender_for_player(&player_id).await?;
-
-        Self::request(&sender, |respond| MatchActorMessage::GameCommand {
+        self.game_command(
+            GameCommand::FodinhaClassic(fodinha_classic::GameCommand::PlayTurn { card }),
             player_id,
-            command: GameCommand::PlayTurn { card },
-            respond,
-        })
+        )
         .await
     }
 
     pub async fn bid(&self, bid: usize, player_id: PlayerId) -> Result<(), ManagerError> {
+        self.game_command(
+            GameCommand::FodinhaClassic(fodinha_classic::GameCommand::PutBid { bid }),
+            player_id,
+        )
+        .await
+    }
+
+    pub async fn game_command(
+        &self,
+        command: GameCommand,
+        player_id: PlayerId,
+    ) -> Result<(), ManagerError> {
         let sender = self.sender_for_player(&player_id).await?;
 
         Self::request(&sender, |respond| MatchActorMessage::GameCommand {
             player_id,
-            command: GameCommand::PutBid { bid },
+            command,
             respond,
         })
         .await

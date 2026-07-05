@@ -1,6 +1,6 @@
 use crate::{
     infra::AuthError,
-    models::{BiddingError, Card, DealError, GameError, id::PlayerId},
+    models::{BiddingError, Card, DealError, GameError, game::GameCommandError, id::PlayerId},
 };
 
 pub mod manager;
@@ -42,6 +42,8 @@ pub enum ManagerError {
     Bid(#[from] BiddingError),
     #[error("Invalid websocket message type")]
     InvalidWebsocketMessageType,
+    #[error("Invalid game command | {0}")]
+    GameCommand(#[from] GameCommandError),
     #[error("Unexpected valid json message: {0}")]
     UnexpectedMessage(#[from] serde_json::error::Error),
     #[error("Database error: {0}")]

@@ -4,6 +4,7 @@ use crate::{
     infra::UserClaims,
     models::{
         Card, Turn,
+        game::{GameCommand, GameType},
         id::{LobbyId, PlayerId},
     },
     services::GameInfoDto,
@@ -12,12 +13,14 @@ use crate::{
 #[derive(serde::Serialize)]
 pub struct GetLobbyDto {
     pub id: LobbyId,
+    pub game_type: GameType,
     pub player_count: usize,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct CreateLobbyResponse {
     pub lobby_id: LobbyId,
+    pub game_type: GameType,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -47,19 +50,11 @@ pub struct PlayingMatchSnapshot {
 
 type PlayerPoints = HashMap<PlayerId, usize>;
 
-#[derive(serde::Deserialize, serde::Serialize, Clone, Copy, Debug)]
+#[derive(serde::Deserialize, serde::Serialize, Clone, Debug)]
 #[serde(tag = "type", content = "data")]
 pub enum ClientCommand {
-    PlayTurn { card: Card },
-    PutBid { bid: usize },
+    GameCommand(GameCommand),
     PlayerStatusChange { ready: bool },
-}
-
-#[derive(serde::Deserialize, serde::Serialize, Clone, Copy, Debug)]
-#[serde(tag = "type", content = "data")]
-pub enum GameCommand {
-    PlayTurn { card: Card },
-    PutBid { bid: usize },
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, Clone)]

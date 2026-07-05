@@ -5,8 +5,8 @@ use std::collections::HashMap;
 use crate::{
     models::{
         Card, Turn,
-        commands::{GameCommand, GetLobbyDto},
-        game::GameSettings,
+        commands::GetLobbyDto,
+        game::{GameCommand, GameSettings},
         id::PlayerId,
         lobby::{LobbyInfoInternal, MatchSnapshotInternal},
     },
@@ -108,10 +108,7 @@ impl MatchActorMessage {
             Self::CreateMatch { .. } => "create_match",
             Self::JoinLobby { .. } => "join_lobby",
             Self::StatusChange { .. } => "status_change",
-            Self::GameCommand { command, .. } => match command {
-                GameCommand::PlayTurn { .. } => "game.play_turn",
-                GameCommand::PutBid { .. } => "game.put_bid",
-            },
+            Self::GameCommand { command, .. } => command.kind(),
             Self::GetLobbySummary { .. } => "get_lobby_summary",
         }
     }

@@ -88,7 +88,14 @@ impl HttpClient {
         let mut request = self.client.post(self.url("/lobby")).bearer_auth(token);
 
         if let Some(settings) = settings {
-            request = request.json(&serde_json::json!({ "lifes": settings.lifes }));
+            match settings {
+                GameSettings::FodinhaClassic(settings) => {
+                    request = request.json(&serde_json::json!({
+                        "game_type": "fodinha_classic",
+                        "lifes": settings.lifes,
+                    }));
+                }
+            }
         }
 
         let res: CreateLobbyResponse = self.decode_json(request, "POST /lobby").await?;

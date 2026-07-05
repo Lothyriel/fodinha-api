@@ -8,7 +8,7 @@ impl<'de> serde::Deserialize<'de> for PlayerId {
     where
         D: serde::Deserializer<'de>,
     {
-        let s = <&str>::deserialize(deserializer)?;
+        let s = String::deserialize(deserializer)?;
         Ok(PlayerId(Arc::from(s)))
     }
 }
@@ -53,7 +53,7 @@ impl<'de> serde::Deserialize<'de> for LobbyId {
     where
         D: serde::Deserializer<'de>,
     {
-        let s = <&str>::deserialize(deserializer)?;
+        let s = String::deserialize(deserializer)?;
         Ok(LobbyId(Arc::from(s)))
     }
 }

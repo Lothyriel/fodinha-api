@@ -8,7 +8,7 @@ use crate::{
     infra::UserClaims,
     models::{
         commands::{CreateLobbyResponse, GetLobbyDto, LobbyInfo},
-        game::GameSettings,
+        game::{GameSettings, GameType, fodinha_classic},
         id::LobbyId,
     },
     services::ManagerError,
@@ -58,17 +58,24 @@ async fn create_lobby(
 
 #[derive(Default, serde::Deserialize)]
 struct CreateLobbyRequest {
+    game_type: Option<GameType>,
     lifes: Option<usize>,
 }
 
 impl CreateLobbyRequest {
     fn into_settings(self) -> GameSettings {
-        let mut settings = GameSettings::default();
+        match self.game_type.unwrap_or_default() {
+            GameType::FodinhaClassic => self.into_fodinha_classic_settings(),
+        }
+    }
+
+    fn into_fodinha_classic_settings(self) -> GameSettings {
+        let mut settings = fodinha_classic::GameSettings::default();
 
         if let Some(lifes) = self.lifes {
             settings.lifes = lifes.max(1);
         }
 
-        settings
+        GameSettings::FodinhaClassic(settings)
     }
 }

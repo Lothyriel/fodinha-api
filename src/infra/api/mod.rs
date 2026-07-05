@@ -139,6 +139,7 @@ impl IntoResponse for ManagerError {
             ManagerError::PlayerDisconnected(_) => StatusCode::GONE,
             ManagerError::Deal(_) => StatusCode::UNPROCESSABLE_ENTITY,
             ManagerError::Bid(_) => StatusCode::UNPROCESSABLE_ENTITY,
+            ManagerError::GameCommand(_) => StatusCode::UNPROCESSABLE_ENTITY,
             ManagerError::InvalidWebsocketMessageType => StatusCode::BAD_REQUEST,
             ManagerError::UnexpectedMessage(_) => StatusCode::BAD_REQUEST,
             ManagerError::Database(_) => StatusCode::INTERNAL_SERVER_ERROR,
@@ -180,6 +181,7 @@ mod tests {
             commands::{
                 ClientCommand, CreateLobbyResponse, LobbyInfo, MatchSnapshot, ServerMessage,
             },
+            game::{GameCommand, fodinha_classic},
             id::{LobbyId, PlayerId},
         },
         services::{
@@ -1244,9 +1246,11 @@ mod tests {
 
         let next = players.get_mut(&next).unwrap();
 
-        let msg = ClientCommand::PlayTurn {
-            card: next.deck.pop().unwrap(),
-        };
+        let msg = ClientCommand::GameCommand(GameCommand::FodinhaClassic(
+            fodinha_classic::GameCommand::PlayTurn {
+                card: next.deck.pop().unwrap(),
+            },
+        ));
 
         send_msg(&mut next.connection, msg).await;
 
@@ -1272,7 +1276,13 @@ mod tests {
 
         let next = players.get_mut(&next).unwrap();
 
-        send_msg(&mut next.connection, ClientCommand::PutBid { bid }).await;
+        send_msg(
+            &mut next.connection,
+            ClientCommand::GameCommand(GameCommand::FodinhaClassic(
+                fodinha_classic::GameCommand::PutBid { bid },
+            )),
+        )
+        .await;
 
         for p in players.values_mut() {
             assert_game_msg(&mut p.connection, validate_player_bidded).await;
@@ -1336,7 +1346,7 @@ mod tests {
         let msg = ClientCommand::PlayerStatusChange { ready: true };
 
         for p in players.values_mut() {
-            send_msg(&mut p.connection, msg).await;
+            send_msg(&mut p.connection, msg.clone()).await;
         }
 
         for _ in 0..players.len() {

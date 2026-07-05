@@ -237,8 +237,7 @@ async fn handle_client_command(
     msg: ClientCommand,
 ) -> Result<(), ManagerError> {
     match msg {
-        ClientCommand::PlayTurn { card } => manager.play_turn(card, player_id).await,
-        ClientCommand::PutBid { bid } => manager.bid(bid, player_id).await,
+        ClientCommand::GameCommand(command) => manager.game_command(command, player_id).await,
         ClientCommand::PlayerStatusChange { ready } => {
             manager.player_status_change(player_id, ready).await
         }

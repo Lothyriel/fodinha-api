@@ -5,8 +5,11 @@ use indexmap::IndexMap;
 use crate::{
     infra::UserClaims,
     models::{
-        Card, Game, GameOutcome, Turn,
-        game::{AppliedGameChange, MatchEvent},
+        Card, Turn,
+        game::{
+            GameEvent, MatchEvent,
+            fodinha_classic::{self, AppliedGameChange, GameOutcome},
+        },
         id::{MatchId, PlayerId},
     },
 };
@@ -45,7 +48,9 @@ pub(crate) fn project_match_stats(
                 players.insert(player_id.clone(), user_claims.clone());
                 ensure_player_stats(&mut stats, match_id, &player_id);
             }
-            MatchEvent::GameStarted { settings, set } => {
+            MatchEvent::Game(GameEvent::FodinhaClassic(
+                fodinha_classic::MatchEvent::GameStarted { settings, set },
+            )) => {
                 let player_ids = match players.is_empty() {
                     true => set.decks.keys().cloned().collect::<Vec<_>>(),
                     false => players.keys().cloned().collect::<Vec<_>>(),
@@ -55,7 +60,7 @@ pub(crate) fn project_match_stats(
                     ensure_player_stats(&mut stats, match_id, player_id);
                 }
 
-                game = Some(Game::from_started(
+                game = Some(fodinha_classic::Game::from_started(
                     &player_ids,
                     settings.clone(),
                     set.clone(),
@@ -65,7 +70,9 @@ pub(crate) fn project_match_stats(
                 current_rounds.clear();
                 add_dealt_trumps(&mut stats, match_id, &set.decks, set.upcard);
             }
-            MatchEvent::BidPlaced { player_id, bid } => {
+            MatchEvent::Game(GameEvent::FodinhaClassic(
+                event @ fodinha_classic::MatchEvent::BidPlaced { player_id, bid },
+            )) => {
                 let game = game.as_mut().ok_or(StatsProjectionError::GameNotStarted)?;
                 let AppliedGameChange::BidPlaced { .. } = game.apply_match_event(event.clone())
                 else {
@@ -77,7 +84,9 @@ pub(crate) fn project_match_stats(
                 player_stats.bid_count += 1;
                 current_bids.insert(player_id.clone(), *bid);
             }
-            MatchEvent::TurnPlayed { .. } => {
+            MatchEvent::Game(GameEvent::FodinhaClassic(
+                event @ fodinha_classic::MatchEvent::TurnPlayed { .. },
+            )) => {
                 let upcard = current_upcard.ok_or(StatsProjectionError::MissingUpcard)?;
                 let game = game.as_mut().ok_or(StatsProjectionError::GameNotStarted)?;
                 let AppliedGameChange::TurnPlayed(state) = game.apply_match_event(event.clone())
@@ -243,7 +252,9 @@ mod tests {
         infra::{AnonymousUserClaims, UserClaims},
         models::{
             Card, Rank, Suit,
-            game::{DealingMode, DeckShuffle, GameSettings, NewSet},
+            game::fodinha_classic::{
+                DealingMode, DeckShuffle, GameSettings, MatchEvent as FodinhaEvent, NewSet,
+            },
             id::{LobbyId, PlayerId},
         },
     };
@@ -260,10 +271,10 @@ mod tests {
         let losing_card = Card::new(Rank::Five, Suit::Golds);
         let events = vec![
             MatchEvent::MatchCreated {
-                settings: GameSettings {
+                settings: crate::models::game::GameSettings::FodinhaClassic(GameSettings {
                     lifes: 1,
                     ..Default::default()
-                },
+                }),
             },
             MatchEvent::PlayerJoined {
                 user_claims: anonymous(&player1, "Player 1"),
@@ -271,7 +282,7 @@ mod tests {
             MatchEvent::PlayerJoined {
                 user_claims: anonymous(&player2, "Player 2"),
             },
-            MatchEvent::GameStarted {
+            MatchEvent::Game(GameEvent::FodinhaClassic(FodinhaEvent::GameStarted {
                 settings: GameSettings {
                     lifes: 1,
                     ..Default::default()
@@ -289,29 +300,29 @@ mod tests {
                     },
                     upcard,
                 },
-            },
-            MatchEvent::BidPlaced {
+            })),
+            MatchEvent::Game(GameEvent::FodinhaClassic(FodinhaEvent::BidPlaced {
                 player_id: player1.clone(),
                 bid: 1,
-            },
-            MatchEvent::BidPlaced {
+            })),
+            MatchEvent::Game(GameEvent::FodinhaClassic(FodinhaEvent::BidPlaced {
                 player_id: player2.clone(),
                 bid: 1,
-            },
-            MatchEvent::TurnPlayed {
+            })),
+            MatchEvent::Game(GameEvent::FodinhaClassic(FodinhaEvent::TurnPlayed {
                 turn: Turn {
                     player_id: player1.clone(),
                     card: winning_card,
                 },
                 next_set: None,
-            },
-            MatchEvent::TurnPlayed {
+            })),
+            MatchEvent::Game(GameEvent::FodinhaClassic(FodinhaEvent::TurnPlayed {
                 turn: Turn {
                     player_id: player2.clone(),
                     card: losing_card,
                 },
                 next_set: None,
-            },
+            })),
         ];
 
         let stats = project_match_stats(&match_id, &events).unwrap();
