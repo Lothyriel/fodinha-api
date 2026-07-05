@@ -10,7 +10,7 @@ use crate::{
         id::PlayerId,
         lobby::{LobbyInfoInternal, MatchSnapshotInternal},
     },
-    services::ManagerError,
+    services::{ManagerError, PowerCardDto},
 };
 
 pub type MatchSender = flume::Sender<MatchActorMessage>;
@@ -49,6 +49,13 @@ pub enum OutboundMessage {
     },
     RoundEnded(PlayerPoints),
     PlayerDeck(Vec<Card>),
+    PlayerPowerCards(Vec<PowerCardDto>),
+    PowerCardPlayed {
+        player_id: PlayerId,
+        card: PowerCardDto,
+        target_player_id: Option<PlayerId>,
+        lifes: PlayerPoints,
+    },
     SetStart {
         upcard: Card,
     },

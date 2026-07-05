@@ -387,6 +387,18 @@ impl ManagerHandle {
             }
             OutboundMessage::RoundEnded(rounds) => Ok(ServerMessage::RoundEnded(rounds)),
             OutboundMessage::PlayerDeck(deck) => Ok(ServerMessage::PlayerDeck(deck)),
+            OutboundMessage::PlayerPowerCards(deck) => Ok(ServerMessage::PlayerPowerCards(deck)),
+            OutboundMessage::PowerCardPlayed {
+                player_id,
+                card,
+                target_player_id,
+                lifes,
+            } => Ok(ServerMessage::PowerCardPlayed {
+                player_id,
+                card,
+                target_player_id,
+                lifes,
+            }),
             OutboundMessage::SetStart { upcard } => Ok(ServerMessage::SetStart { upcard }),
             OutboundMessage::SetEnded { lifes } => Ok(ServerMessage::SetEnded { lifes }),
             OutboundMessage::GameEnded { lifes } => Ok(ServerMessage::GameEnded { lifes }),

@@ -147,6 +147,7 @@ pub(crate) fn project_match_stats(
                     }
                 }
             }
+            MatchEvent::Game(GameEvent::FodinhaPower(_)) => {}
         }
     }
 

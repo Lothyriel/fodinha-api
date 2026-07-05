@@ -23,6 +23,7 @@ pub struct Game {
     upcard: Card,
     seed: i64,
     next_shuffle_sequence: i64,
+    rules: GameRules,
 }
 
 #[derive(Debug, Clone)]
@@ -53,9 +54,33 @@ pub struct GameSettings {
     pub lifes: usize,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GameRules {
+    pub life_loss_per_bid_difference: usize,
+}
+
+impl Default for GameRules {
+    fn default() -> Self {
+        Self {
+            life_loss_per_bid_difference: 1,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlayerSnapshot {
+    pub lifes: usize,
+    pub deck: Vec<Card>,
+    pub bid: Option<usize>,
+    pub rounds: usize,
+}
+
+pub const DEFAULT_INITIAL_LIFES: usize = 5;
 impl Default for GameSettings {
     fn default() -> Self {
-        Self { lifes: 5 }
+        Self {
+            lifes: DEFAULT_INITIAL_LIFES,
+        }
     }
 }
 
@@ -240,6 +265,15 @@ impl Game {
         settings: GameSettings,
         set: NewSet,
     ) -> Result<Self, GameError> {
+        Self::from_started_with_rules(players, settings, set, GameRules::default())
+    }
+
+    pub fn from_started_with_rules(
+        players: &[PlayerId],
+        settings: GameSettings,
+        set: NewSet,
+        rules: GameRules,
+    ) -> Result<Self, GameError> {
         Self::validate_game(players, &settings)?;
 
         let game_players = players
@@ -260,6 +294,7 @@ impl Game {
             upcard: set.upcard,
             seed: set.shuffle.seed,
             next_shuffle_sequence: set.shuffle.sequence.wrapping_add(1),
+            rules,
         })
     }
 
@@ -389,6 +424,7 @@ impl Game {
 
         GameInfoDto {
             deck: Some(player.deck.clone()),
+            power_cards: None,
             upcard: Some(self.upcard),
             info,
             current_player: current_player.0.to_string(),
@@ -408,6 +444,66 @@ impl Game {
             .collect();
 
         (decks, self.upcard)
+    }
+
+    pub fn get_player_snapshots(&self) -> IndexMap<PlayerId, PlayerSnapshot> {
+        self.players
+            .iter()
+            .map(|(id, player)| {
+                (
+                    id.clone(),
+                    PlayerSnapshot {
+                        lifes: player.lifes,
+                        deck: player.deck.clone(),
+                        bid: player.bid,
+                        rounds: player.rounds,
+                    },
+                )
+            })
+            .collect()
+    }
+
+    pub fn apply_life_totals(&mut self, lifes: &HashMap<PlayerId, usize>) {
+        let eliminated: Vec<_> = lifes
+            .iter()
+            .filter_map(|(id, life)| {
+                let player = self.players.get_mut(id)?;
+
+                if !player.is_alive() {
+                    return None;
+                }
+
+                player.lifes = *life;
+
+                (player.lifes == 0).then(|| id.clone())
+            })
+            .collect();
+
+        for id in eliminated {
+            let Some(idx) = self.players.get_index_of(&id) else {
+                continue;
+            };
+
+            self.round_iter.remove(idx);
+            self.bidding_iter.remove(idx);
+        }
+    }
+
+    pub fn current_player(&self) -> Option<PlayerId> {
+        match self.get_stage() {
+            GameStage::Bidding => self.peek_current_bidder(),
+            GameStage::Dealing => self.peek_current_dealer(),
+        }
+    }
+
+    pub fn is_bidding_stage(&self) -> bool {
+        self.get_stage() == GameStage::Bidding
+    }
+
+    pub fn is_player_alive(&self, player_id: &PlayerId) -> bool {
+        self.players
+            .get(player_id)
+            .is_some_and(|player| player.is_alive())
     }
 
     pub fn get_bidding_player(&self) -> PlayerId {
@@ -649,7 +745,8 @@ impl Game {
             let bid = player.bid.expect("should have bid here");
             let diff = player.rounds.abs_diff(bid);
 
-            player.lifes = player.lifes.saturating_sub(diff);
+            let life_loss = diff.saturating_mul(self.rules.life_loss_per_bid_difference);
+            player.lifes = player.lifes.saturating_sub(life_loss);
 
             if player.lifes == 0 {
                 self.round_iter.remove(idx);
@@ -674,7 +771,7 @@ impl Game {
             .collect()
     }
 
-    fn get_lifes(&self) -> HashMap<PlayerId, usize> {
+    pub fn get_lifes(&self) -> HashMap<PlayerId, usize> {
         self.players
             .iter()
             .map(|(id, player)| (id.clone(), player.lifes))

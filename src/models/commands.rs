@@ -7,7 +7,7 @@ use crate::{
         game::{GameCommand, GameType},
         id::{LobbyId, PlayerId},
     },
-    services::GameInfoDto,
+    services::{GameInfoDto, PowerCardDto},
 };
 
 #[derive(serde::Serialize)]
@@ -80,6 +80,13 @@ pub enum ServerMessage {
     },
     RoundEnded(PlayerPoints),
     PlayerDeck(Vec<Card>),
+    PlayerPowerCards(Vec<PowerCardDto>),
+    PowerCardPlayed {
+        player_id: PlayerId,
+        card: PowerCardDto,
+        target_player_id: Option<PlayerId>,
+        lifes: PlayerPoints,
+    },
     SetStart {
         upcard: Card,
     },

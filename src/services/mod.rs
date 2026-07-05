@@ -12,9 +12,19 @@ pub mod stats;
 pub struct GameInfoDto {
     pub info: Vec<PlayerInfoDto>,
     pub deck: Option<Vec<Card>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub power_cards: Option<Vec<PowerCardDto>>,
     pub upcard: Option<Card>,
     pub current_player: String,
     pub stage: GameStageDto,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, Clone)]
+pub struct PowerCardDto {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub requires_target: bool,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, Clone)]

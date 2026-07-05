@@ -11,14 +11,14 @@ use crate::{
         Card, Game, GameError, GameOutcome, LobbyState,
         commands::GetLobbyDto,
         game::{
-            AppliedGameChange, BiddingState, GameEvent, GameSettings, MatchEvent, NewSet,
-            fodinha_classic,
+            AppliedGameChange, AppliedTurn, BiddingState, GameEvent, GameSettings, MatchEvent,
+            NewSet, fodinha_classic, fodinha_power,
         },
         id::{MatchId, PlayerId},
         lobby::{Lobby, LobbyInfoInternal, LobbyPlayerStatus},
     },
     services::{
-        LobbyError, ManagerError,
+        LobbyError, ManagerError, PowerCardDto,
         matches::{
             MatchActorMessage, MatchEntries, MatchReceiver, OutboundMessage, PlayerRoutes,
             PlayerSender, WAITING_LOBBY_INACTIVITY_CLOSE_CODE,
@@ -51,6 +51,7 @@ enum AppliedEvent {
     PlayerStatusChanged,
     GameStarted {
         set: NewSet,
+        power_decks: Option<IndexMap<PlayerId, Vec<PowerCardDto>>>,
         next: PlayerId,
         possible_bids: Vec<usize>,
     },
@@ -342,10 +343,10 @@ impl MatchActor {
 
         if !should_handle_waiting_disconnect {
             self.refresh_empty_playing_activity();
-            if self.is_empty_playing_lobby() {
-                if let Err(e) = self.repo.touch_metadata(&self.match_id).await {
-                    tracing::error!("Error touching empty playing match metadata: {e}");
-                }
+            if self.is_empty_playing_lobby()
+                && let Err(e) = self.repo.touch_metadata(&self.match_id).await
+            {
+                tracing::error!("Error touching empty playing match metadata: {e}");
             }
 
             return Ok(true);
@@ -433,13 +434,14 @@ impl MatchActor {
 
             if let AppliedEvent::GameStarted {
                 set,
+                power_decks,
                 next,
                 possible_bids,
             } = applied
             {
                 self.refresh_empty_playing_activity();
                 self.broadcast_snapshots().await;
-                self.init_set(set.decks, set.upcard, next, possible_bids)
+                self.init_set(set.decks, power_decks, set.upcard, next, possible_bids)
                     .await;
             }
         }
@@ -478,8 +480,17 @@ impl MatchActor {
                 self.broadcast_bid(player_id, bid, state).await;
                 Ok(ActorResult::Continue)
             }
-            AppliedEvent::Game(AppliedGameChange::TurnPlayed(state)) => {
-                let ended = self.broadcast_turn(state).await;
+            AppliedEvent::Game(AppliedGameChange::TurnPlayed(turn)) => {
+                let ended = self.broadcast_turn(turn).await;
+
+                if ended {
+                    Ok(ActorResult::Stop)
+                } else {
+                    Ok(ActorResult::Continue)
+                }
+            }
+            AppliedEvent::Game(AppliedGameChange::PowerCardPlayed(outcome)) => {
+                let ended = self.broadcast_power_card(outcome).await;
 
                 if ended {
                     Ok(ActorResult::Stop)
@@ -573,6 +584,39 @@ impl MatchActor {
 
                 Ok(AppliedEvent::GameStarted {
                     set,
+                    power_decks: None,
+                    next: game.get_bidding_player(),
+                    possible_bids: game.get_possible_bids(),
+                })
+            }
+            MatchEvent::Game(GameEvent::FodinhaPower(fodinha_power::MatchEvent::GameStarted {
+                settings,
+                set,
+                power_set,
+            })) => {
+                let lobby = self.lobby_mut()?;
+                let players = lobby.get_players_id();
+                let game = Game::FodinhaPower(
+                    fodinha_power::Game::from_started(
+                        &players,
+                        settings,
+                        set.clone(),
+                        power_set.clone(),
+                    )
+                    .map_err(|e| ManagerError::Lobby(LobbyError::GameError(e)))?,
+                );
+                let power_decks = Some(power_decks_to_dto(&power_set.decks));
+
+                lobby.state = LobbyState::Playing(game);
+
+                let game = match &lobby.state {
+                    LobbyState::Playing(game) => game,
+                    LobbyState::NotStarted(_) => unreachable!("game was just started"),
+                };
+
+                Ok(AppliedEvent::GameStarted {
+                    set,
+                    power_decks,
                     next: game.get_bidding_player(),
                     possible_bids: game.get_possible_bids(),
                 })
@@ -635,7 +679,8 @@ impl MatchActor {
         self.broadcast(msg).await;
     }
 
-    async fn broadcast_turn(&self, state: crate::models::game::DealState) -> bool {
+    async fn broadcast_turn(&self, turn: AppliedTurn) -> bool {
+        let state = turn.state;
         let msg = OutboundMessage::TurnPlayed { pile: state.pile };
         self.broadcast(msg).await;
 
@@ -650,7 +695,8 @@ impl MatchActor {
                 let msg = OutboundMessage::SetEnded { lifes };
                 self.broadcast(msg).await;
 
-                self.init_set(decks, upcard, next, possible).await;
+                self.init_set(decks, turn.power_decks, upcard, next, possible)
+                    .await;
 
                 false
             }
@@ -678,9 +724,29 @@ impl MatchActor {
         }
     }
 
+    async fn broadcast_power_card(&self, outcome: fodinha_power::PowerCardOutcome) -> bool {
+        let ended = outcome.ended;
+        let lifes = outcome.lifes.clone();
+
+        self.broadcast(OutboundMessage::PowerCardPlayed {
+            player_id: outcome.player_id,
+            card: outcome.card,
+            target_player_id: outcome.target_player_id,
+            lifes: outcome.lifes,
+        })
+        .await;
+
+        if ended {
+            self.broadcast(OutboundMessage::GameEnded { lifes }).await;
+        }
+
+        ended
+    }
+
     async fn init_set(
         &self,
         decks: IndexMap<PlayerId, Vec<Card>>,
+        power_decks: Option<IndexMap<PlayerId, Vec<PowerCardDto>>>,
         upcard: Card,
         next: PlayerId,
         possible_bids: Vec<usize>,
@@ -690,6 +756,13 @@ impl MatchActor {
         for (player, deck) in decks {
             self.send_to_player(&player, OutboundMessage::PlayerDeck(deck))
                 .await;
+        }
+
+        if let Some(power_decks) = power_decks {
+            for (player, deck) in power_decks {
+                self.send_to_player(&player, OutboundMessage::PlayerPowerCards(deck))
+                    .await;
+            }
         }
 
         self.broadcast(OutboundMessage::PlayerBiddingTurn {
@@ -937,15 +1010,41 @@ fn should_project_match_metadata(event: &MatchEvent, match_finished: bool) -> bo
         | MatchEvent::PlayerJoined { .. }
         | MatchEvent::Game(GameEvent::FodinhaClassic(fodinha_classic::MatchEvent::GameStarted {
             ..
+        }))
+        | MatchEvent::Game(GameEvent::FodinhaPower(fodinha_power::MatchEvent::GameStarted {
+            ..
         })) => true,
         MatchEvent::Game(GameEvent::FodinhaClassic(fodinha_classic::MatchEvent::TurnPlayed {
+            ..
+        }))
+        | MatchEvent::Game(GameEvent::FodinhaPower(fodinha_power::MatchEvent::TurnPlayed {
+            ..
+        }))
+        | MatchEvent::Game(GameEvent::FodinhaPower(fodinha_power::MatchEvent::PowerCardPlayed {
             ..
         })) => match_finished,
         MatchEvent::Game(GameEvent::FodinhaClassic(fodinha_classic::MatchEvent::BidPlaced {
             ..
         }))
+        | MatchEvent::Game(GameEvent::FodinhaPower(fodinha_power::MatchEvent::BidPlaced {
+            ..
+        }))
         | MatchEvent::PlayerStatusChanged { .. } => false,
     }
+}
+
+fn power_decks_to_dto(
+    decks: &IndexMap<PlayerId, Vec<fodinha_power::PowerCard>>,
+) -> IndexMap<PlayerId, Vec<PowerCardDto>> {
+    decks
+        .iter()
+        .map(|(player_id, deck)| {
+            (
+                player_id.clone(),
+                deck.iter().map(fodinha_power::PowerCard::to_dto).collect(),
+            )
+        })
+        .collect()
 }
 
 #[derive(Debug, PartialEq, Eq)]
