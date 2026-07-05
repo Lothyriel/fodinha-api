@@ -98,7 +98,10 @@ async fn main() {
         return;
     }
 
-    let ws_url = config.host.replace("http://", "ws://").replace("https://", "wss://");
+    let ws_url = config
+        .host
+        .replace("http://", "ws://")
+        .replace("https://", "wss://");
 
     let state = Arc::new(SharedState {
         desired_games: AtomicUsize::new(0),
@@ -204,7 +207,14 @@ async fn main() {
     let errors = state.error_count.load(Ordering::Relaxed);
 
     eprintln!("--- final ---");
-    eprintln!("  elapsed={:>4}s  desired={:<6}  running={:<6}  finished={:<6}  errors={}", start.elapsed().as_secs(), desired, running, finished, errors);
+    eprintln!(
+        "  elapsed={:>4}s  desired={:<6}  running={:<6}  finished={:<6}  errors={}",
+        start.elapsed().as_secs(),
+        desired,
+        running,
+        finished,
+        errors
+    );
 }
 
 fn load_config() -> Config {
@@ -260,25 +270,21 @@ async fn run_game_manager(
                     rng.random_range(c.min_players..=c.max_players)
                 };
 
-                let tokens = {
-                    let need = {
-                        let guard = lock(&*p);
-                        player_count.saturating_sub(guard.available.len())
-                    };
-                    let mut new_tokens = Vec::new();
-                    for _ in 0..need {
-                        let nickname = {
-                            let mut guard = lock(&*p);
-                            let name = format!("Bot{}", guard.next_id);
-                            guard.next_id += 1;
-                            name
-                        };
-                        let token = h.signup(&nickname).await;
-                        new_tokens.push(token);
+                let tokens = match acquire_tokens(&p, &h, player_count).await {
+                    Ok(tokens) => tokens,
+                    Err(e) => {
+                        let msg = e.to_string();
+                        log_error(&msg);
+
+                        s.error_count.fetch_add(1, Ordering::Relaxed);
+                        let _ = tx.send(RunnerCmd::GameFinished(GameResult {
+                            player_count,
+                            outcome: "ERROR".into(),
+                            info: String::new(),
+                        }));
+                        s.running_games.fetch_sub(1, Ordering::Relaxed);
+                        return;
                     }
-                    let mut guard = lock(&*p);
-                    guard.available.extend(new_tokens);
-                    guard.available.drain(..player_count).collect::<Vec<_>>()
                 };
 
                 match run_single_game(&tokens, &h, &w, &c).await {
@@ -332,10 +338,7 @@ async fn run_game_manager(
                     state.finished_games.fetch_add(1, Ordering::Relaxed);
 
                     if result.outcome == "OK" {
-                        println!(
-                            "OK  {:>2}P | {}",
-                            result.player_count, result.info,
-                        );
+                        println!("OK  {:>2}P | {}", result.player_count, result.info,);
                     }
                 }
                 Some(RunnerCmd::Shutdown) => {
@@ -347,6 +350,34 @@ async fn run_game_manager(
     }
 }
 
+async fn acquire_tokens(
+    pool: &Arc<Mutex<UserPool>>,
+    http: &HttpClient,
+    player_count: usize,
+) -> Result<Vec<String>, ClientError> {
+    let need = {
+        let guard = lock(&**pool);
+        player_count.saturating_sub(guard.available.len())
+    };
+    let mut new_tokens = Vec::new();
+
+    for _ in 0..need {
+        let nickname = {
+            let mut guard = lock(&**pool);
+            let name = format!("Bot{}", guard.next_id);
+            guard.next_id += 1;
+            name
+        };
+        let token = http.try_signup(&nickname).await?;
+        new_tokens.push(token);
+    }
+
+    let mut guard = lock(&**pool);
+    guard.available.extend(new_tokens);
+
+    Ok(guard.available.drain(..player_count).collect())
+}
+
 async fn run_single_game(
     tokens: &[String],
     http: &HttpClient,
@@ -354,10 +385,10 @@ async fn run_single_game(
     config: &Config,
 ) -> Result<GameResult, ClientError> {
     let player_count = tokens.len();
-    let lobby_id = http.create_lobby(&tokens[0]).await;
+    let lobby_id = http.try_create_lobby(&tokens[0]).await?;
 
     for token in tokens {
-        http.join_lobby(token, &lobby_id).await;
+        http.try_join_lobby(token, &lobby_id).await?;
     }
 
     let mut player_map = HashMap::new();

@@ -2,6 +2,7 @@ use std::time::Duration;
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use reqwest::Client;
+use serde::de::DeserializeOwned;
 
 use crate::{
     infra::api::models::Auth,
@@ -12,6 +13,8 @@ use crate::{
     },
     services::stats::PlayerStatsResponse,
 };
+
+use super::ws::{ClientError, err};
 
 pub const HTTP_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -41,22 +44,30 @@ impl HttpClient {
         auth.token
     }
 
+    pub async fn try_signup(&self, nickname: &str) -> Result<String, ClientError> {
+        Ok(self.try_signup_auth(nickname).await?.token)
+    }
+
     pub async fn signup_auth(&self, nickname: &str) -> Auth {
+        self.try_signup_auth(nickname).await.unwrap()
+    }
+
+    pub async fn try_signup_auth(&self, nickname: &str) -> Result<Auth, ClientError> {
         let params = serde_json::json!({ "nickname": nickname });
 
-        self.client
-            .post(self.url("/auth/signup"))
-            .json(&params)
-            .send()
-            .await
-            .unwrap()
-            .json()
-            .await
-            .unwrap()
+        self.decode_json(
+            self.client.post(self.url("/auth/signup")).json(&params),
+            "POST /auth/signup",
+        )
+        .await
     }
 
     pub async fn create_lobby(&self, token: &str) -> LobbyId {
         self.create_lobby_with_settings(token, None).await
+    }
+
+    pub async fn try_create_lobby(&self, token: &str) -> Result<LobbyId, ClientError> {
+        self.try_create_lobby_with_settings(token, None).await
     }
 
     pub async fn create_lobby_with_settings(
@@ -64,29 +75,43 @@ impl HttpClient {
         token: &str,
         settings: Option<GameSettings>,
     ) -> LobbyId {
+        self.try_create_lobby_with_settings(token, settings)
+            .await
+            .unwrap()
+    }
+
+    pub async fn try_create_lobby_with_settings(
+        &self,
+        token: &str,
+        settings: Option<GameSettings>,
+    ) -> Result<LobbyId, ClientError> {
         let mut request = self.client.post(self.url("/lobby")).bearer_auth(token);
 
         if let Some(settings) = settings {
             request = request.json(&serde_json::json!({ "lifes": settings.lifes }));
         }
 
-        let res = request.send().await.unwrap();
-        let body = res.text().await.unwrap();
-        let res: CreateLobbyResponse = serde_json::from_str(&body).unwrap();
+        let res: CreateLobbyResponse = self.decode_json(request, "POST /lobby").await?;
 
-        res.lobby_id
+        Ok(res.lobby_id)
     }
 
     pub async fn join_lobby(&self, token: &str, lobby_id: &LobbyId) -> LobbyInfo {
-        self.client
-            .put(self.url(&format!("/lobby/{}", lobby_id.as_str())))
-            .bearer_auth(token)
-            .send()
-            .await
-            .unwrap()
-            .json()
-            .await
-            .unwrap()
+        self.try_join_lobby(token, lobby_id).await.unwrap()
+    }
+
+    pub async fn try_join_lobby(
+        &self,
+        token: &str,
+        lobby_id: &LobbyId,
+    ) -> Result<LobbyInfo, ClientError> {
+        self.decode_json(
+            self.client
+                .put(self.url(&format!("/lobby/{}", lobby_id.as_str())))
+                .bearer_auth(token),
+            "PUT /lobby/{id}",
+        )
+        .await
     }
 
     pub async fn get_lobbies(&self) -> serde_json::Value {
@@ -112,11 +137,7 @@ impl HttpClient {
             .unwrap()
     }
 
-    pub async fn wait_for_my_stats(
-        &self,
-        token: &str,
-        timeout: Duration,
-    ) -> PlayerStatsResponse {
+    pub async fn wait_for_my_stats(&self, token: &str, timeout: Duration) -> PlayerStatsResponse {
         tokio::time::timeout(timeout, async {
             loop {
                 if let Some(stats) = self.get_my_stats(token).await {
@@ -148,5 +169,28 @@ impl HttpClient {
         .expect("Could not extract player id from token");
 
         PlayerId(std::sync::Arc::from(id))
+    }
+
+    async fn decode_json<T: DeserializeOwned>(
+        &self,
+        request: reqwest::RequestBuilder,
+        operation: &str,
+    ) -> Result<T, ClientError> {
+        let response = request
+            .send()
+            .await
+            .map_err(|e| err!("{operation} request failed: {e}"))?;
+        let status = response.status();
+        let body = response
+            .text()
+            .await
+            .map_err(|e| err!("{operation} response read failed: {e}"))?;
+
+        if !status.is_success() {
+            return Err(err!("{operation} failed with {status}: {body}"));
+        }
+
+        serde_json::from_str(&body)
+            .map_err(|e| err!("{operation} returned invalid JSON: {e}; body: {body}"))
     }
 }
