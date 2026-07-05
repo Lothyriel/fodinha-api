@@ -18,17 +18,17 @@ pub enum GameType {
     FodinhaClassic,
 }
 
-impl Default for GameType {
-    fn default() -> Self {
-        Self::FodinhaClassic
-    }
-}
-
 impl std::fmt::Display for GameType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
             Self::FodinhaClassic => "fodinha_classic",
         })
+    }
+}
+
+impl Default for GameType {
+    fn default() -> Self {
+        Self::FodinhaClassic
     }
 }
 
@@ -53,7 +53,7 @@ impl GameSettings {
 
     pub fn max_players(&self) -> usize {
         match self {
-            Self::FodinhaClassic(settings) => settings.max_players,
+            Self::FodinhaClassic(_) => fodinha_classic::MAX_PLAYER_COUNT,
         }
     }
 }
@@ -229,6 +229,21 @@ mod tests {
     use crate::models::{Card, Rank, Suit, game::fodinha_classic, id::PlayerId};
 
     use super::*;
+
+    #[test]
+    fn fodinha_settings_serializes_only_lifes() {
+        let settings = GameSettings::FodinhaClassic(fodinha_classic::GameSettings { lifes: 5 });
+
+        let document = mongodb::bson::to_document(&settings).unwrap();
+        let inner = document.get_document("settings").unwrap();
+
+        assert_eq!(document.get_str("game_type"), Ok("fodinha_classic"));
+        assert_eq!(inner.len(), 1);
+        assert_eq!(inner.get_i64("lifes"), Ok(5));
+        assert!(!inner.contains_key("cards_count"));
+        assert!(!inner.contains_key("mode"));
+        assert!(!inner.contains_key("max_players"));
+    }
 
     #[test]
     fn game_event_round_trips_through_bson() {

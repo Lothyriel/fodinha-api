@@ -58,13 +58,14 @@ async fn create_lobby(
 
 #[derive(Default, serde::Deserialize)]
 struct CreateLobbyRequest {
-    game_type: Option<GameType>,
+    #[serde(default)]
+    game_type: GameType,
     lifes: Option<usize>,
 }
 
 impl CreateLobbyRequest {
     fn into_settings(self) -> GameSettings {
-        match self.game_type.unwrap_or_default() {
+        match self.game_type {
             GameType::FodinhaClassic => self.into_fodinha_classic_settings(),
         }
     }

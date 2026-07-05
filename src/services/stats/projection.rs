@@ -273,7 +273,6 @@ mod tests {
             MatchEvent::MatchCreated {
                 settings: crate::models::game::GameSettings::FodinhaClassic(GameSettings {
                     lifes: 1,
-                    ..Default::default()
                 }),
             },
             MatchEvent::PlayerJoined {
@@ -283,10 +282,7 @@ mod tests {
                 user_claims: anonymous(&player2, "Player 2"),
             },
             MatchEvent::Game(GameEvent::FodinhaClassic(FodinhaEvent::GameStarted {
-                settings: GameSettings {
-                    lifes: 1,
-                    ..Default::default()
-                },
+                settings: GameSettings { lifes: 1 },
                 set: NewSet {
                     dealing_mode: DealingMode::Increasing,
                     cards_count: 1,

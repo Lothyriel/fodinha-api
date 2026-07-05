@@ -8,8 +8,9 @@ use crate::models::{
     BiddingError, Card, DealError, GameError, Turn, id::PlayerId, util::CyclicIterator,
 };
 
+const INITIAL_CARDS_COUNT: usize = 1;
 const MAX_AVAILABLE_CARDS: usize = 40 - 1;
-const MAX_PLAYER_COUNT: usize = 13;
+pub const MAX_PLAYER_COUNT: usize = 13;
 
 #[derive(Debug, Clone)]
 pub struct Game {
@@ -49,20 +50,12 @@ impl Player {
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct GameSettings {
-    pub cards_count: usize,
     pub lifes: usize,
-    pub mode: DealingMode,
-    pub max_players: usize,
 }
 
 impl Default for GameSettings {
     fn default() -> Self {
-        Self {
-            mode: DealingMode::Increasing,
-            cards_count: 1,
-            lifes: 5,
-            max_players: MAX_PLAYER_COUNT,
-        }
+        Self { lifes: 5 }
     }
 }
 
@@ -231,7 +224,13 @@ impl Game {
     ) -> Result<MatchEvent, GameError> {
         Self::validate_game(players, &settings)?;
 
-        let set = Self::new_set(players, settings.mode, settings.cards_count, seed, 0);
+        let set = Self::new_set(
+            players,
+            DealingMode::Increasing,
+            INITIAL_CARDS_COUNT,
+            seed,
+            0,
+        );
 
         Ok(MatchEvent::GameStarted { settings, set })
     }
@@ -701,12 +700,12 @@ impl Game {
         }
     }
 
-    fn validate_game(players: &[PlayerId], settings: &GameSettings) -> Result<(), GameError> {
+    fn validate_game(players: &[PlayerId], _settings: &GameSettings) -> Result<(), GameError> {
         if players.len() < 2 {
             return Err(GameError::NotEnoughPlayers);
         }
 
-        if players.len() > settings.max_players {
+        if players.len() > MAX_PLAYER_COUNT {
             return Err(GameError::TooManyPlayers);
         }
 
@@ -851,11 +850,7 @@ mod tests {
         let player1 = PlayerId("P1".into());
         let player2 = PlayerId("P2".into());
 
-        let settings = GameSettings {
-            cards_count: 2,
-            ..Default::default()
-        };
-        let mut game = Game::new(&[player1.clone(), player2.clone()], settings).unwrap();
+        let mut game = game_with_cards_count(&[player1.clone(), player2.clone()], 2);
 
         let possible = game.get_possible_bids();
         assert_eq!(possible, vec![0, 1, 2]);
@@ -865,11 +860,7 @@ mod tests {
         let possible = game.get_possible_bids();
         assert_eq!(possible, vec![0, 2]);
 
-        let settings = GameSettings {
-            cards_count: 3,
-            ..Default::default()
-        };
-        let mut game = Game::new(&[player1.clone(), player2], settings).unwrap();
+        let mut game = game_with_cards_count(&[player1.clone(), player2], 3);
 
         let possible = game.get_possible_bids();
         assert_eq!(possible, vec![0, 1, 2, 3]);
@@ -878,6 +869,12 @@ mod tests {
 
         let possible = game.get_possible_bids();
         assert_eq!(possible, vec![1, 2, 3]);
+    }
+
+    fn game_with_cards_count(players: &[PlayerId], cards_count: usize) -> Game {
+        let set = Game::new_set(players, DealingMode::Increasing, cards_count, 1, 0);
+
+        Game::from_started(players, GameSettings::default(), set).unwrap()
     }
 
     #[test]
