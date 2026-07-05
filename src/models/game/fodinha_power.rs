@@ -10,12 +10,14 @@ use crate::{
             power_lua::{PowerScriptError, PowerScriptInput, PowerScriptOutput, ScriptPlayerState},
         },
         id::PlayerId,
+        util::DeterministicRng,
     },
     services::{GameInfoDto, PowerCardDto},
 };
 
 const LIFE_LOSS_PER_BID_DIFFERENCE: usize = 10;
 const POWER_CARDS_PER_PLAYER: usize = 1;
+const POWER_CARD_RNG_SEQUENCE_MULTIPLIER: u64 = 0x517C_C1B7_2722_0A95;
 pub const MAX_PLAYER_COUNT: usize = fodinha_classic::MAX_PLAYER_COUNT;
 
 #[derive(Debug, Clone)]
@@ -537,35 +539,14 @@ fn default_power_card_definitions() -> &'static [PowerCardDefinition] {
 }
 
 fn shuffle_power_cards(deck: &mut [PowerCard], seed: i64, sequence: i64) {
-    let mut rng = DeterministicRng::new(seed, sequence);
+    let mut rng = DeterministicRng::with_sequence_multiplier(
+        seed,
+        sequence,
+        POWER_CARD_RNG_SEQUENCE_MULTIPLIER,
+    );
 
     for i in (1..deck.len()).rev() {
         deck.swap(i, rng.next_index(i + 1));
-    }
-}
-
-struct DeterministicRng {
-    state: u64,
-}
-
-impl DeterministicRng {
-    fn new(seed: i64, sequence: i64) -> Self {
-        Self {
-            state: seed as u64 ^ (sequence as u64).wrapping_mul(0x517C_C1B7_2722_0A95),
-        }
-    }
-
-    fn next_index(&mut self, upper_bound: usize) -> usize {
-        (self.next_u64() % upper_bound as u64) as usize
-    }
-
-    fn next_u64(&mut self) -> u64 {
-        self.state = self.state.wrapping_add(0x9E37_79B9_7F4A_7C15);
-
-        let mut value = self.state;
-        value = (value ^ (value >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-        value = (value ^ (value >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-        value ^ (value >> 31)
     }
 }
 

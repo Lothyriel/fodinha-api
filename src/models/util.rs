@@ -1,4 +1,40 @@
 #[derive(Debug, Clone)]
+pub(crate) struct DeterministicRng {
+    state: u64,
+}
+
+impl DeterministicRng {
+    const DEFAULT_SEQUENCE_MULTIPLIER: u64 = 0x9E37_79B9_7F4A_7C15;
+
+    pub(crate) fn new(seed: i64, sequence: i64) -> Self {
+        Self::with_sequence_multiplier(seed, sequence, Self::DEFAULT_SEQUENCE_MULTIPLIER)
+    }
+
+    pub(crate) fn with_sequence_multiplier(
+        seed: i64,
+        sequence: i64,
+        sequence_multiplier: u64,
+    ) -> Self {
+        Self {
+            state: seed as u64 ^ (sequence as u64).wrapping_mul(sequence_multiplier),
+        }
+    }
+
+    pub(crate) fn next_index(&mut self, upper_bound: usize) -> usize {
+        (self.next_u64() % upper_bound as u64) as usize
+    }
+
+    fn next_u64(&mut self) -> u64 {
+        self.state = self.state.wrapping_add(Self::DEFAULT_SEQUENCE_MULTIPLIER);
+
+        let mut value = self.state;
+        value = (value ^ (value >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        value = (value ^ (value >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        value ^ (value >> 31)
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct CyclicIterator {
     items: Vec<usize>,
     current_index: usize,

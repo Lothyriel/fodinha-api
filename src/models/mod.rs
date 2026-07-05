@@ -10,6 +10,7 @@ use strum::IntoEnumIterator;
 use strum_macros::{Display, EnumIter};
 
 use id::PlayerId;
+use util::DeterministicRng;
 
 pub use game::{Game, GameOutcome, LobbyState};
 
@@ -76,34 +77,6 @@ impl Card {
 
     pub(crate) fn is_trump(&self, upcard: Card) -> bool {
         upcard.rank.get_next() == self.rank
-    }
-}
-
-struct DeterministicRng {
-    state: u64,
-}
-
-impl DeterministicRng {
-    fn new(seed: i64, sequence: i64) -> Self {
-        let seed = seed as u64;
-        let sequence = sequence as u64;
-
-        Self {
-            state: seed ^ sequence.wrapping_mul(0x9E37_79B9_7F4A_7C15),
-        }
-    }
-
-    fn next_index(&mut self, upper_bound: usize) -> usize {
-        (self.next_u64() % upper_bound as u64) as usize
-    }
-
-    fn next_u64(&mut self) -> u64 {
-        self.state = self.state.wrapping_add(0x9E37_79B9_7F4A_7C15);
-
-        let mut value = self.state;
-        value = (value ^ (value >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-        value = (value ^ (value >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-        value ^ (value >> 31)
     }
 }
 
