@@ -4,7 +4,10 @@ use dashmap::{DashMap, mapref::entry::Entry};
 use tokio::sync::watch;
 
 use crate::{
-    models::id::{MatchId, PlayerId},
+    models::{
+        game::GameType,
+        id::{MatchId, PlayerId},
+    },
     services::ManagerError,
 };
 
@@ -15,8 +18,14 @@ pub type PlayerRoutes = Arc<DashMap<PlayerId, MatchId>>;
 
 #[derive(Clone)]
 pub enum MatchEntry {
-    Loading(Arc<watch::Sender<Option<MatchSender>>>),
-    Ready(MatchSender),
+    Loading(Arc<watch::Sender<Option<MatchActorContext>>>),
+    Ready(MatchActorContext),
+}
+
+#[derive(Clone)]
+pub(crate) struct MatchActorContext {
+    pub(crate) sender: MatchSender,
+    pub(crate) game_type: GameType,
 }
 
 #[derive(Clone)]
@@ -38,8 +47,11 @@ impl MatchRegistry {
         self.player_routes.len()
     }
 
-    pub(crate) fn mark_ready(&self, match_id: MatchId, sender: MatchSender) {
-        self.matches.insert(match_id, MatchEntry::Ready(sender));
+    pub(crate) fn mark_ready(&self, match_id: MatchId, sender: MatchSender, game_type: GameType) {
+        self.matches.insert(
+            match_id,
+            MatchEntry::Ready(MatchActorContext { sender, game_type }),
+        );
     }
 
     pub(crate) fn remove_match(&self, match_id: &MatchId) {
@@ -59,12 +71,12 @@ impl MatchRegistry {
         loop {
             match self.matches.entry(match_id.clone()) {
                 Entry::Occupied(entry) => match entry.get() {
-                    MatchEntry::Ready(sender) => return Ok(SenderLookup::Ready(sender.clone())),
+                    MatchEntry::Ready(context) => return Ok(SenderLookup::Ready(context.clone())),
                     MatchEntry::Loading(loading) => {
                         let mut rx = loading.subscribe();
 
-                        if let Some(sender) = rx.borrow().clone() {
-                            return Ok(SenderLookup::Ready(sender));
+                        if let Some(context) = rx.borrow().clone() {
+                            return Ok(SenderLookup::Ready(context));
                         }
 
                         drop(entry);
@@ -73,8 +85,8 @@ impl MatchRegistry {
                             continue;
                         }
 
-                        if let Some(sender) = rx.borrow().clone() {
-                            return Ok(SenderLookup::Ready(sender));
+                        if let Some(context) = rx.borrow().clone() {
+                            return Ok(SenderLookup::Ready(context));
                         }
                     }
                 },
@@ -92,12 +104,12 @@ impl MatchRegistry {
     pub(crate) fn finish_loading(
         &self,
         match_id: &MatchId,
-        loading: &Arc<watch::Sender<Option<MatchSender>>>,
-        result: &Result<MatchSender, ManagerError>,
+        loading: &Arc<watch::Sender<Option<MatchActorContext>>>,
+        result: &Result<MatchActorContext, ManagerError>,
     ) {
         match result {
-            Ok(sender) => {
-                let _ = loading.send(Some(sender.clone()));
+            Ok(context) => {
+                let _ = loading.send(Some(context.clone()));
             }
             Err(_) => {
                 self.remove_loading_entry(match_id, loading);
@@ -108,7 +120,7 @@ impl MatchRegistry {
     fn remove_loading_entry(
         &self,
         match_id: &MatchId,
-        loading: &Arc<watch::Sender<Option<MatchSender>>>,
+        loading: &Arc<watch::Sender<Option<MatchActorContext>>>,
     ) {
         let should_remove = self.matches.get(match_id).is_some_and(|entry| {
             matches!(entry.value(), MatchEntry::Loading(current) if Arc::ptr_eq(current, loading))
@@ -121,6 +133,6 @@ impl MatchRegistry {
 }
 
 pub(crate) enum SenderLookup {
-    Ready(MatchSender),
-    Load(Arc<watch::Sender<Option<MatchSender>>>),
+    Ready(MatchActorContext),
+    Load(Arc<watch::Sender<Option<MatchActorContext>>>),
 }

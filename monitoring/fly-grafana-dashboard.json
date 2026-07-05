@@ -4,7 +4,7 @@
   "tags": ["oh-hell", "fly", "backend"],
   "timezone": "browser",
   "schemaVersion": 39,
-  "version": 3,
+  "version": 4,
   "editable": true,
   "graphTooltip": 0,
   "time": {
@@ -58,6 +58,25 @@
         "label": "Region",
         "query": "label_values(http_server_request_count_total{app=~\"$app\"}, region)",
         "definition": "label_values(http_server_request_count_total{app=~\"$app\"}, region)",
+        "current": {
+          "selected": true,
+          "text": "All",
+          "value": "$__all"
+        }
+      },
+      {
+        "name": "game_type",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "$datasource"
+        },
+        "refresh": 1,
+        "includeAll": true,
+        "multi": true,
+        "label": "Game Type",
+        "query": "label_values(actor_message_count_total{app=~\"$app\",region=~\"$region\"}, game_type)",
+        "definition": "label_values(actor_message_count_total{app=~\"$app\",region=~\"$region\"}, game_type)",
         "current": {
           "selected": true,
           "text": "All",
@@ -264,7 +283,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(rate(actor_message_count_total{app=~\"$app\",region=~\"$region\"}[5m]))"
+          "expr": "sum(rate(actor_message_count_total{app=~\"$app\",region=~\"$region\",game_type=~\"$game_type\"}[5m]))"
         }
       ],
       "fieldConfig": {
@@ -393,8 +412,8 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "actor_active_count{app=~\"$app\",region=~\"$region\"}",
-          "legendFormat": "Active Actors"
+          "expr": "sum by (game_type) (actor_active_count{app=~\"$app\",region=~\"$region\",game_type=~\"$game_type\"})",
+          "legendFormat": "{{game_type}}"
         }
       ],
       "options": {
@@ -414,8 +433,8 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "ws_active_connections{app=~\"$app\",region=~\"$region\"}",
-          "legendFormat": "WS Connections"
+          "expr": "sum by (game_type) (ws_active_connections{app=~\"$app\",region=~\"$region\",game_type=~\"$game_type\"})",
+          "legendFormat": "{{game_type}}"
         }
       ],
       "options": {
@@ -435,8 +454,8 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "actor_queue_depth{app=~\"$app\",region=~\"$region\"}",
-          "legendFormat": "Queue Depth"
+          "expr": "sum by (game_type) (actor_queue_depth{app=~\"$app\",region=~\"$region\",game_type=~\"$game_type\"})",
+          "legendFormat": "{{game_type}}"
         }
       ],
       "options": {
@@ -456,8 +475,8 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (actor_message) (rate(actor_message_count_total{app=~\"$app\",region=~\"$region\"}[5m]))",
-          "legendFormat": "{{actor_message}}"
+          "expr": "sum by (game_type, actor_message) (rate(actor_message_count_total{app=~\"$app\",region=~\"$region\",game_type=~\"$game_type\"}[5m]))",
+          "legendFormat": "{{game_type}} {{actor_message}}"
         }
       ],
       "options": {
@@ -477,8 +496,8 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "histogram_quantile(0.95, sum by (le, actor_message) (rate(actor_message_duration_seconds_bucket{app=~\"$app\",region=~\"$region\"}[5m])))",
-          "legendFormat": "{{actor_message}}"
+          "expr": "histogram_quantile(0.95, sum by (le, game_type, actor_message) (rate(actor_message_duration_seconds_bucket{app=~\"$app\",region=~\"$region\",game_type=~\"$game_type\"}[5m])))",
+          "legendFormat": "{{game_type}} {{actor_message}}"
         }
       ],
       "fieldConfig": {
@@ -502,8 +521,8 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "histogram_quantile(0.95, sum by (le, actor_startup_kind) (rate(actor_startup_duration_seconds_bucket{app=~\"$app\",region=~\"$region\"}[5m])))",
-          "legendFormat": "{{actor_startup_kind}}"
+          "expr": "histogram_quantile(0.95, sum by (le, game_type, actor_startup_kind) (rate(actor_startup_duration_seconds_bucket{app=~\"$app\",region=~\"$region\",game_type=~\"$game_type\"}[5m])))",
+          "legendFormat": "{{game_type}} {{actor_startup_kind}}"
         }
       ],
       "fieldConfig": {

@@ -29,6 +29,8 @@ use prometheus::{Encoder, Registry, TextEncoder};
 use tracing::Instrument;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
+use crate::models::game::GameType;
+
 const DEFAULT_FILTER: &str = "debug,hyper=off,rustls=error,tungstenite=error";
 const LATENCY_HISTOGRAM_BUCKETS: &[f64] = &[
     0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0,
@@ -380,10 +382,16 @@ where
     result
 }
 
-pub(crate) fn record_actor_start(startup_kind: &'static str, duration: Duration, success: bool) {
+pub(crate) fn record_actor_start(
+    startup_kind: &'static str,
+    game_type: Option<GameType>,
+    duration: Duration,
+    success: bool,
+) {
     let attrs = [
         KeyValue::new("actor.type", "match"),
         KeyValue::new("actor.startup.kind", startup_kind),
+        KeyValue::new("game.type", game_type_label(game_type)),
         KeyValue::new("success", success),
     ];
 
@@ -392,10 +400,15 @@ pub(crate) fn record_actor_start(startup_kind: &'static str, duration: Duration,
         .record(duration.as_secs_f64(), &attrs);
 }
 
-pub(crate) fn record_actor_message(message_kind: &'static str, duration: Duration) {
+pub(crate) fn record_actor_message(
+    message_kind: &'static str,
+    game_type: GameType,
+    duration: Duration,
+) {
     let attrs = [
         KeyValue::new("actor.type", "match"),
         KeyValue::new("actor.message", message_kind),
+        KeyValue::new("game.type", game_type.to_string()),
     ];
 
     INSTRUMENTS.actor_messages.add(1, &attrs);
@@ -404,26 +417,44 @@ pub(crate) fn record_actor_message(message_kind: &'static str, duration: Duratio
         .record(duration.as_secs_f64(), &attrs);
 }
 
-pub(crate) fn inc_active_actors() {
-    INSTRUMENTS.actor_active_count.add(1, &[]);
+pub(crate) fn inc_active_actors(game_type: GameType) {
+    let attrs = [KeyValue::new("game.type", game_type.to_string())];
+
+    INSTRUMENTS.actor_active_count.add(1, &attrs);
 }
 
-pub(crate) fn dec_active_actors() {
-    INSTRUMENTS.actor_active_count.add(-1, &[]);
+pub(crate) fn dec_active_actors(game_type: GameType) {
+    let attrs = [KeyValue::new("game.type", game_type.to_string())];
+
+    INSTRUMENTS.actor_active_count.add(-1, &attrs);
 }
 
-pub(crate) fn inc_active_ws_connections() {
-    INSTRUMENTS.ws_active_connections.add(1, &[]);
+pub(crate) fn inc_active_ws_connections(game_type: GameType) {
+    let attrs = [KeyValue::new("game.type", game_type.to_string())];
+
+    INSTRUMENTS.ws_active_connections.add(1, &attrs);
 }
 
-pub(crate) fn dec_active_ws_connections() {
-    INSTRUMENTS.ws_active_connections.add(-1, &[]);
+pub(crate) fn dec_active_ws_connections(game_type: GameType) {
+    let attrs = [KeyValue::new("game.type", game_type.to_string())];
+
+    INSTRUMENTS.ws_active_connections.add(-1, &attrs);
 }
 
-pub(crate) fn inc_actor_queue_depth() {
-    INSTRUMENTS.actor_queue_depth.add(1, &[]);
+pub(crate) fn inc_actor_queue_depth(game_type: GameType) {
+    let attrs = [KeyValue::new("game.type", game_type.to_string())];
+
+    INSTRUMENTS.actor_queue_depth.add(1, &attrs);
 }
 
-pub(crate) fn dec_actor_queue_depth() {
-    INSTRUMENTS.actor_queue_depth.add(-1, &[]);
+pub(crate) fn dec_actor_queue_depth(game_type: GameType) {
+    let attrs = [KeyValue::new("game.type", game_type.to_string())];
+
+    INSTRUMENTS.actor_queue_depth.add(-1, &attrs);
+}
+
+fn game_type_label(game_type: Option<GameType>) -> String {
+    game_type
+        .map(|game_type| game_type.to_string())
+        .unwrap_or_else(|| "unknown".to_string())
 }

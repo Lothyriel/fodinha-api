@@ -20,7 +20,7 @@ use crate::{
             CreateLobbyResponse, GetLobbyDto, LobbyInfo, MatchSnapshot, PlayerStatus,
             PlayingMatchSnapshot, ServerMessage,
         },
-        game::{GameCommand, GameSettings, fodinha_classic},
+        game::{GameCommand, GameSettings, GameType, fodinha_classic},
         id::{self, MatchId, PlayerId},
         lobby::{
             LobbyInfoInternal, LobbyPlayerStatus, MatchSnapshotInternal,
@@ -30,10 +30,10 @@ use crate::{
     services::{
         LobbyError, ManagerError,
         matches::{
-            MatchActor, MatchActorMessage, MatchReceiver, MatchRegistry, MatchSender,
-            OutboundMessage, PlayerReceiver, PlayerSender, SenderLookup,
+            MatchActor, MatchActorContext, MatchActorMessage, MatchReceiver, MatchRegistry,
+            MatchSender, OutboundMessage, PlayerReceiver, PlayerSender, SenderLookup,
         },
-        repositories::matches::{MatchMetadataStatus, MatchesRepository},
+        repositories::matches::{MatchMetadataDto, MatchMetadataStatus, MatchesRepository},
         repositories::stats::StatsRepository,
         repositories::users::UsersRepository,
         stats::{PlayerStatsResponse, StatsProjectorHandle},
@@ -72,6 +72,7 @@ fn fallback_user_claims(player_id: &PlayerId) -> UserClaims {
 
 pub struct PlayerConnectionContext {
     pub match_id: MatchId,
+    pub game_type: GameType,
     pub outbound_tx: PlayerSender,
     pub outbound_rx: PlayerReceiver,
 }
@@ -193,18 +194,19 @@ impl ManagerHandle {
         let game_type = settings.game_type();
         let (tx, rx) = flume::unbounded();
 
-        let actor = self.new_actor(match_id.clone());
+        let actor = self.new_actor(match_id.clone(), game_type);
 
-        self.registry.mark_ready(match_id.clone(), tx.clone());
+        self.registry
+            .mark_ready(match_id.clone(), tx.clone(), game_type);
         self.background.actor_tasks.spawn(actor.run(rx));
 
-        let result = Self::request(&tx, |respond| MatchActorMessage::CreateMatch {
+        let result = Self::request(&tx, game_type, |respond| MatchActorMessage::CreateMatch {
             creator_id: player_id,
             settings,
             respond,
         })
         .await;
-        telemetry::record_actor_start("new", started.elapsed(), result.is_ok());
+        telemetry::record_actor_start("new", Some(game_type), started.elapsed(), result.is_ok());
 
         if result.is_err() {
             self.registry.remove_match(&match_id);
@@ -223,11 +225,10 @@ impl ManagerHandle {
         match_id: MatchId,
         player_id: PlayerId,
     ) -> Result<LobbyInfo, ManagerError> {
-        let sender = self.sender_for_match(&match_id).await?;
+        let context = self.sender_for_match(&match_id).await?;
 
-        let info = Self::request(&sender, |respond| MatchActorMessage::JoinLobby {
-            player_id,
-            respond,
+        let info = Self::request(&context.sender, context.game_type, |respond| {
+            MatchActorMessage::JoinLobby { player_id, respond }
         })
         .await?;
 
@@ -250,16 +251,16 @@ impl ManagerHandle {
         let mut lobbies = Vec::new();
 
         for match_id in match_ids {
-            let sender = match self.sender_for_match(&match_id).await {
-                Ok(sender) => sender,
+            let context = match self.sender_for_match(&match_id).await {
+                Ok(context) => context,
                 Err(e) => {
                     tracing::error!("Error loading match actor for {match_id:?}: {e}");
                     continue;
                 }
             };
 
-            let response = Self::request(&sender, |respond| MatchActorMessage::GetLobbySummary {
-                respond,
+            let response = Self::request(&context.sender, context.game_type, |respond| {
+                MatchActorMessage::GetLobbySummary { respond }
             })
             .await;
 
@@ -359,12 +360,14 @@ impl ManagerHandle {
         command: GameCommand,
         player_id: PlayerId,
     ) -> Result<(), ManagerError> {
-        let sender = self.sender_for_player(&player_id).await?;
+        let context = self.sender_for_player(&player_id).await?;
 
-        Self::request(&sender, |respond| MatchActorMessage::GameCommand {
-            player_id,
-            command,
-            respond,
+        Self::request(&context.sender, context.game_type, |respond| {
+            MatchActorMessage::GameCommand {
+                player_id,
+                command,
+                respond,
+            }
         })
         .await
     }
@@ -374,12 +377,14 @@ impl ManagerHandle {
         player_id: PlayerId,
         ready: bool,
     ) -> Result<(), ManagerError> {
-        let sender = self.sender_for_player(&player_id).await?;
+        let context = self.sender_for_player(&player_id).await?;
 
-        Self::request(&sender, |respond| MatchActorMessage::StatusChange {
-            player_id,
-            ready,
-            respond,
+        Self::request(&context.sender, context.game_type, |respond| {
+            MatchActorMessage::StatusChange {
+                player_id,
+                ready,
+                respond,
+            }
         })
         .await
     }
@@ -389,18 +394,21 @@ impl ManagerHandle {
         player_id: PlayerId,
     ) -> Result<PlayerConnectionContext, ManagerError> {
         let match_id = self.match_id_for_player(&player_id).await?;
-        let match_tx = self.sender_for_match(&match_id).await?;
+        let context = self.sender_for_match(&match_id).await?;
         let (outbound_tx, outbound_rx) = mpsc::channel(128);
 
-        Self::request(&match_tx, |respond| MatchActorMessage::ConnectPlayer {
-            player_id,
-            outbound_tx: outbound_tx.clone(),
-            respond,
+        Self::request(&context.sender, context.game_type, |respond| {
+            MatchActorMessage::ConnectPlayer {
+                player_id,
+                outbound_tx: outbound_tx.clone(),
+                respond,
+            }
         })
         .await?;
 
         Ok(PlayerConnectionContext {
             match_id,
+            game_type: context.game_type,
             outbound_tx,
             outbound_rx,
         })
@@ -467,7 +475,7 @@ impl ManagerHandle {
         outbound_tx: PlayerSender,
         shutting_down: bool,
     ) {
-        let Ok(sender) = self.sender_for_match(match_id).await else {
+        let Ok(context) = self.sender_for_match(match_id).await else {
             return;
         };
 
@@ -478,11 +486,11 @@ impl ManagerHandle {
         };
         let kind = message.kind();
         let started = Instant::now();
-        let result = sender.send_async(message).await;
+        let result = context.sender.send_async(message).await;
         if result.is_ok() {
-            telemetry::inc_actor_queue_depth();
+            telemetry::inc_actor_queue_depth(context.game_type);
         }
-        telemetry::record_actor_message(kind, started.elapsed());
+        telemetry::record_actor_message(kind, context.game_type, started.elapsed());
 
         if let Err(e) = result {
             tracing::warn!("Error enqueueing actor disconnect message: {e}");
@@ -587,6 +595,7 @@ impl ManagerHandle {
 
     async fn request<T>(
         sender: &MatchSender,
+        game_type: GameType,
         build: impl FnOnce(oneshot::Sender<Result<T, ManagerError>>) -> MatchActorMessage,
     ) -> Result<T, ManagerError> {
         let (tx, rx) = oneshot::channel();
@@ -599,15 +608,18 @@ impl ManagerHandle {
             .await
             .map_err(|_| ManagerError::ReceiverDisposed)?;
 
-        telemetry::inc_actor_queue_depth();
+        telemetry::inc_actor_queue_depth(game_type);
 
         let result = rx.await.map_err(|_| ManagerError::ReceiverDisposed)?;
-        telemetry::record_actor_message(kind, started.elapsed());
+        telemetry::record_actor_message(kind, game_type, started.elapsed());
 
         result
     }
 
-    async fn sender_for_player(&self, player_id: &PlayerId) -> Result<MatchSender, ManagerError> {
+    async fn sender_for_player(
+        &self,
+        player_id: &PlayerId,
+    ) -> Result<MatchActorContext, ManagerError> {
         let match_id = self.match_id_for_player(player_id).await?;
 
         self.sender_for_match(&match_id).await
@@ -625,9 +637,12 @@ impl ManagerHandle {
             .ok_or_else(|| LobbyError::PlayerNotInLobby.into())
     }
 
-    async fn sender_for_match(&self, match_id: &MatchId) -> Result<MatchSender, ManagerError> {
+    async fn sender_for_match(
+        &self,
+        match_id: &MatchId,
+    ) -> Result<MatchActorContext, ManagerError> {
         match self.registry.sender_or_mark_loading(match_id).await? {
-            SenderLookup::Ready(sender) => Ok(sender),
+            SenderLookup::Ready(context) => Ok(context),
             SenderLookup::Load(loading) => {
                 let result = self.load_match_actor(match_id).await;
                 self.registry.finish_loading(match_id, &loading, &result);
@@ -636,20 +651,23 @@ impl ManagerHandle {
         }
     }
 
-    async fn load_match_actor(&self, match_id: &MatchId) -> Result<MatchSender, ManagerError> {
+    async fn load_match_actor(
+        &self,
+        match_id: &MatchId,
+    ) -> Result<MatchActorContext, ManagerError> {
         let started = Instant::now();
-        let metadata = self
-            .repo
-            .active_metadata(match_id)
-            .await?
-            .ok_or(LobbyError::InvalidLobby)?;
+        let metadata = self.repo.active_metadata(match_id).await?.ok_or_else(|| {
+            telemetry::record_actor_start("load", None, started.elapsed(), false);
+            LobbyError::InvalidLobby
+        })?;
+        let game_type = metadata_game_type(&metadata);
 
         if metadata.is_waiting_stale(self.waiting_lobby_timeout) {
             if let Err(e) = self.repo.delete_metadata(match_id).await {
                 tracing::error!("Error deleting stale waiting match metadata: {e}");
             }
 
-            telemetry::record_actor_start("load", started.elapsed(), false);
+            telemetry::record_actor_start("load", Some(game_type), started.elapsed(), false);
             return Err(LobbyError::InvalidLobby.into());
         }
 
@@ -658,7 +676,7 @@ impl ManagerHandle {
                 tracing::error!("Error abandoning stale playing match metadata: {e}");
             }
 
-            telemetry::record_actor_start("load", started.elapsed(), false);
+            telemetry::record_actor_start("load", Some(game_type), started.elapsed(), false);
             return Err(LobbyError::InvalidLobby.into());
         }
 
@@ -666,11 +684,11 @@ impl ManagerHandle {
         let events = self.repo.load_events(match_id).await?;
 
         if events.is_empty() && metadata_status != MatchMetadataStatus::Waiting {
-            telemetry::record_actor_start("load", started.elapsed(), false);
+            telemetry::record_actor_start("load", Some(game_type), started.elapsed(), false);
             return Err(LobbyError::InvalidLobby.into());
         }
 
-        let mut actor = self.new_actor(match_id.clone());
+        let mut actor = self.new_actor(match_id.clone(), game_type);
 
         actor.restore_from_metadata(metadata);
 
@@ -679,7 +697,7 @@ impl ManagerHandle {
 
             if let Err(e) = actor.replay_event(event.event) {
                 self.registry.remove_match(match_id);
-                telemetry::record_actor_start("load", started.elapsed(), false);
+                telemetry::record_actor_start("load", Some(game_type), started.elapsed(), false);
 
                 return Err(e);
             }
@@ -693,23 +711,28 @@ impl ManagerHandle {
             }
 
             self.stats_projector.notify_match_finished(match_id);
-            telemetry::record_actor_start("load", started.elapsed(), false);
+            telemetry::record_actor_start("load", Some(game_type), started.elapsed(), false);
 
             return Err(LobbyError::InvalidLobby.into());
         }
 
         let (tx, rx): (MatchSender, MatchReceiver) = flume::unbounded();
 
-        self.registry.mark_ready(match_id.clone(), tx.clone());
+        self.registry
+            .mark_ready(match_id.clone(), tx.clone(), game_type);
         self.background.actor_tasks.spawn(actor.run(rx));
-        telemetry::record_actor_start("load", started.elapsed(), true);
+        telemetry::record_actor_start("load", Some(game_type), started.elapsed(), true);
 
-        Ok(tx)
+        Ok(MatchActorContext {
+            sender: tx,
+            game_type,
+        })
     }
 
-    fn new_actor(&self, match_id: MatchId) -> MatchActor {
+    fn new_actor(&self, match_id: MatchId, game_type: GameType) -> MatchActor {
         MatchActor::new(
             match_id,
+            game_type,
             self.repo.clone(),
             self.stats_projector.clone(),
             self.background.deferred_tasks.clone(),
@@ -719,6 +742,14 @@ impl ManagerHandle {
             self.empty_playing_timeout,
         )
     }
+}
+
+fn metadata_game_type(metadata: &MatchMetadataDto) -> GameType {
+    metadata
+        .settings
+        .as_ref()
+        .map(GameSettings::game_type)
+        .unwrap_or_else(|| GameSettings::default().game_type())
 }
 
 async fn abandon_stale_playing_matches(

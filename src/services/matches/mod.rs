@@ -12,4 +12,6 @@ pub(crate) use message::{
     WAITING_LOBBY_INACTIVITY_CLOSE_REASON,
 };
 pub(crate) use projection::project_match_metadata;
-pub(crate) use registry::{MatchEntries, MatchRegistry, PlayerRoutes, SenderLookup};
+pub(crate) use registry::{
+    MatchActorContext, MatchEntries, MatchRegistry, PlayerRoutes, SenderLookup,
+};

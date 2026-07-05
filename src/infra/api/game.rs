@@ -56,12 +56,10 @@ pub async fn handler(
 
     let response = ws
         .on_upgrade(|socket| async move {
-            telemetry::inc_active_ws_connections();
             match handle_connection(socket, manager, claims, shutdown_rx).await {
                 Ok(_) => tracing::warn!(">>>> {who:?} closed normally"),
                 Err(e) => tracing::error!(">>>> {who:?} closed from error: {e}"),
             }
-            telemetry::dec_active_ws_connections();
         })
         .into_response();
 
@@ -80,6 +78,9 @@ async fn handle_connection(
 ) -> Result<(), ManagerError> {
     let player_id = auth.id();
     let context = manager.connect_player(player_id.clone()).await?;
+    let game_type = context.game_type;
+
+    telemetry::inc_active_ws_connections(game_type);
 
     let connection = PlayerConnection {
         player_id,
@@ -92,7 +93,10 @@ async fn handle_connection(
         shutting_down: false,
     };
 
-    connection.run().await
+    let result = connection.run().await;
+    telemetry::dec_active_ws_connections(game_type);
+
+    result
 }
 
 struct PlayerConnection {

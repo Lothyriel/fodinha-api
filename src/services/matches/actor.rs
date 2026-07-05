@@ -11,8 +11,8 @@ use crate::{
         Card, Game, GameError, GameOutcome, LobbyState,
         commands::GetLobbyDto,
         game::{
-            AppliedGameChange, AppliedTurn, BiddingState, GameEvent, GameSettings, MatchEvent,
-            NewSet, fodinha_classic, fodinha_power,
+            AppliedGameChange, AppliedTurn, BiddingState, GameEvent, GameSettings, GameType,
+            MatchEvent, NewSet, fodinha_classic, fodinha_power,
         },
         id::{MatchId, PlayerId},
         lobby::{Lobby, LobbyInfoInternal, LobbyPlayerStatus},
@@ -32,6 +32,7 @@ use crate::{
 
 pub(crate) struct MatchActor {
     match_id: MatchId,
+    game_type: GameType,
     lobby: Option<Lobby>,
     creator_id: Option<PlayerId>,
     connections: HashMap<PlayerId, PlayerSender>,
@@ -63,6 +64,7 @@ enum AppliedEvent {
 impl MatchActor {
     pub(crate) fn new(
         match_id: MatchId,
+        game_type: GameType,
         repo: MatchesRepository,
         stats_projector: StatsProjectorHandle,
         deferred_tasks: TaskTracker,
@@ -73,6 +75,7 @@ impl MatchActor {
     ) -> Self {
         Self {
             match_id,
+            game_type,
             lobby: None,
             creator_id: None,
             connections: HashMap::new(),
@@ -90,7 +93,7 @@ impl MatchActor {
     }
 
     pub(crate) async fn run(mut self, rx: MatchReceiver) {
-        telemetry::inc_active_actors();
+        telemetry::inc_active_actors(self.game_type);
 
         loop {
             let command = match self.next_command(&rx).await {
@@ -116,7 +119,7 @@ impl MatchActor {
             }
         }
 
-        telemetry::dec_active_actors();
+        telemetry::dec_active_actors(self.game_type);
     }
 
     async fn next_command(
@@ -128,7 +131,7 @@ impl MatchActor {
                 .await
             {
                 Ok(Ok(command)) => {
-                    telemetry::dec_actor_queue_depth();
+                    telemetry::dec_actor_queue_depth(self.game_type);
                     Ok(Some(command))
                 }
                 Ok(Err(_)) => Ok(None),
@@ -147,7 +150,7 @@ impl MatchActor {
             .await
             {
                 Ok(Ok(command)) => {
-                    telemetry::dec_actor_queue_depth();
+                    telemetry::dec_actor_queue_depth(self.game_type);
                     Ok(Some(command))
                 }
                 Ok(Err(_)) => Ok(None),
@@ -160,7 +163,7 @@ impl MatchActor {
 
         match rx.recv_async().await {
             Ok(command) => {
-                telemetry::dec_actor_queue_depth();
+                telemetry::dec_actor_queue_depth(self.game_type);
                 Ok(Some(command))
             }
             Err(_) => Ok(None),
