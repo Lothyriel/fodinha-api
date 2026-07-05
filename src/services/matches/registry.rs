@@ -42,11 +42,6 @@ impl MatchRegistry {
         }
     }
 
-    #[cfg(test)]
-    pub(crate) fn player_route_count(&self) -> usize {
-        self.player_routes.len()
-    }
-
     pub(crate) fn mark_ready(&self, match_id: MatchId, sender: MatchSender, game_type: GameType) {
         self.matches.insert(
             match_id,

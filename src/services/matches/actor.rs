@@ -20,8 +20,8 @@ use crate::{
     services::{
         LobbyError, ManagerError, PowerCardDto,
         matches::{
-            MatchActorMessage, MatchEntries, MatchReceiver, OutboundMessage, PlayerRoutes,
-            PlayerSender, WAITING_LOBBY_INACTIVITY_CLOSE_CODE,
+            MatchActorMessage, MatchEntries, MatchReceiver, MatchRegistry, OutboundMessage,
+            PlayerRoutes, PlayerSender, WAITING_LOBBY_INACTIVITY_CLOSE_CODE,
             WAITING_LOBBY_INACTIVITY_CLOSE_REASON, project_match_metadata,
         },
         repositories::matches::{MatchMetadataDto, MatchesRepository},
@@ -68,11 +68,11 @@ impl MatchActor {
         repo: MatchesRepository,
         stats_projector: StatsProjectorHandle,
         deferred_tasks: TaskTracker,
-        match_entries: MatchEntries,
-        player_routes: PlayerRoutes,
-        waiting_lobby_timeout: Duration,
-        empty_playing_timeout: Duration,
+        registry: MatchRegistry,
+        timeouts: (Duration, Duration),
     ) -> Self {
+        let (waiting_lobby_timeout, empty_playing_timeout) = timeouts;
+
         Self {
             match_id,
             game_type,
@@ -83,8 +83,8 @@ impl MatchActor {
             repo,
             stats_projector,
             deferred_tasks,
-            match_entries,
-            player_routes,
+            match_entries: registry.matches,
+            player_routes: registry.player_routes,
             last_activity: Instant::now(),
             waiting_lobby_timeout,
             empty_playing_since: None,

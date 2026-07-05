@@ -172,18 +172,6 @@ impl ManagerHandle {
         }
     }
 
-    pub(crate) async fn abandon_stale_playing_matches(
-        &self,
-        empty_playing_timeout: Duration,
-    ) -> Result<(), ManagerError> {
-        abandon_stale_playing_matches(&self.repo, &self.registry, empty_playing_timeout).await
-    }
-
-    #[cfg(test)]
-    pub(crate) fn active_player_route_count(&self) -> usize {
-        self.registry.player_route_count()
-    }
-
     pub async fn create_lobby(
         &self,
         player_id: PlayerId,
@@ -736,10 +724,8 @@ impl ManagerHandle {
             self.repo.clone(),
             self.stats_projector.clone(),
             self.background.deferred_tasks.clone(),
-            self.registry.matches.clone(),
-            self.registry.player_routes.clone(),
-            self.waiting_lobby_timeout,
-            self.empty_playing_timeout,
+            self.registry.clone(),
+            (self.waiting_lobby_timeout, self.empty_playing_timeout),
         )
     }
 }

@@ -366,7 +366,7 @@ mod tests {
             timeout(WS_TIMEOUT, async {
                 loop {
                     if self.manager.registry.matches.is_empty()
-                        && self.manager.active_player_route_count() == 0
+                        && self.active_player_route_count() == 0
                     {
                         return;
                     }
@@ -376,6 +376,41 @@ mod tests {
             })
             .await
             .expect("Timed out waiting for match actor cleanup");
+        }
+
+        fn active_player_route_count(&self) -> usize {
+            self.manager.registry.player_routes.len()
+        }
+
+        async fn wait_until_match_metadata_status(
+            &self,
+            match_id: &LobbyId,
+            expected_status: &str,
+        ) {
+            timeout(WS_TIMEOUT, async {
+                loop {
+                    let metadata = self
+                        .database
+                        .as_ref()
+                        .unwrap()
+                        .collection::<Document>("MatchMetadata")
+                        .find_one(doc! { "match_id": match_id.as_str() })
+                        .await
+                        .unwrap();
+
+                    if metadata
+                        .as_ref()
+                        .and_then(|metadata| metadata.get_str("status").ok())
+                        == Some(expected_status)
+                    {
+                        return;
+                    }
+
+                    sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("Timed out waiting for match metadata status");
         }
 
         async fn stop_without_dropping_database(mut self) -> String {
@@ -539,7 +574,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_janitor_abandons_stale_playing_metadata_without_actor() {
-        let server = TestServer::start().await;
+        let server = TestServer::start_with_timeouts(
+            WAITING_LOBBY_TIMEOUT,
+            Duration::from_secs(1),
+            Duration::from_millis(10),
+        )
+        .await;
         let match_id = LobbyId("stale-playing-match".into());
 
         server
@@ -558,10 +598,8 @@ mod tests {
             .unwrap();
 
         server
-            .manager
-            .abandon_stale_playing_matches(Duration::from_secs(1))
-            .await
-            .unwrap();
+            .wait_until_match_metadata_status(&match_id, "abandoned")
+            .await;
 
         let metadata = server
             .database
@@ -642,7 +680,7 @@ mod tests {
         let server = TestServer::start_with_database(mongo_database).await;
 
         assert!(server.manager.registry.matches.is_empty());
-        assert_eq!(server.manager.active_player_route_count(), 0);
+        assert_eq!(server.active_player_route_count(), 0);
 
         let (mut first_connection, mut second_connection) = tokio::join!(
             connect_ws(&server, &tokens[0]),
@@ -666,7 +704,7 @@ mod tests {
         }
 
         assert_eq!(server.manager.registry.matches.len(), 1);
-        assert_eq!(server.manager.active_player_route_count(), 2);
+        assert_eq!(server.active_player_route_count(), 2);
 
         drop(first_connection);
         drop(second_connection);
@@ -689,7 +727,7 @@ mod tests {
         let server = TestServer::start_with_database(mongo_database).await;
 
         assert!(server.manager.registry.matches.is_empty());
-        assert_eq!(server.manager.active_player_route_count(), 0);
+        assert_eq!(server.active_player_route_count(), 0);
 
         let (mut first_connection, mut second_connection) = tokio::join!(
             connect_ws(&server, &tokens[0]),
@@ -703,7 +741,7 @@ mod tests {
         assert!(matches!(first_snapshot, MatchSnapshot::Waiting(players) if players.len() == 2));
         assert!(matches!(second_snapshot, MatchSnapshot::Waiting(players) if players.len() == 2));
         assert_eq!(server.manager.registry.matches.len(), 1);
-        assert_eq!(server.manager.active_player_route_count(), 2);
+        assert_eq!(server.active_player_route_count(), 2);
 
         drop(first_connection);
         drop(second_connection);
@@ -779,7 +817,7 @@ mod tests {
         let server = TestServer::start_with_database(mongo_database).await;
 
         assert!(server.manager.registry.matches.is_empty());
-        assert_eq!(server.manager.active_player_route_count(), 0);
+        assert_eq!(server.active_player_route_count(), 0);
 
         let lobbies = server.manager.get_lobbies().await;
         assert!(
