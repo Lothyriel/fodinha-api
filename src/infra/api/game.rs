@@ -18,7 +18,7 @@ use crate::{
     },
     services::{
         ManagerError,
-        matches::{ManagerHandle, PlayerReceiver, PlayerSender},
+        matches::{ManagerHandle, OutboundMessage, PlayerReceiver, PlayerSender},
     },
 };
 
@@ -140,8 +140,22 @@ impl PlayerConnection {
                         return Ok(());
                     };
 
-                    let msg = self.manager.hydrate_outbound_message(msg).await?;
-                    self.send_server_msg(msg).await?;
+                    match msg {
+                        OutboundMessage::Close { code, reason } => {
+                            self.socket
+                                .send(Message::Close(Some(CloseFrame {
+                                    code,
+                                    reason: reason.into(),
+                                })))
+                                .await
+                                .map_err(|e| ManagerError::PlayerDisconnected(e.to_string()))?;
+                            return Ok(());
+                        }
+                        msg => {
+                            let msg = self.manager.hydrate_outbound_message(msg).await?;
+                            self.send_server_msg(msg).await?;
+                        }
+                    }
                 }
                 inbound = self.socket.next() => {
                     match inbound {

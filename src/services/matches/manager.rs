@@ -354,6 +354,7 @@ impl ManagerHandle {
         msg: OutboundMessage,
     ) -> Result<ServerMessage, ManagerError> {
         match msg {
+            OutboundMessage::Close { reason, .. } => Err(ManagerError::PlayerDisconnected(reason)),
             OutboundMessage::PlayerTurn { player_id } => {
                 Ok(ServerMessage::PlayerTurn { player_id })
             }

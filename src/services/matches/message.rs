@@ -18,10 +18,17 @@ pub type MatchReceiver = flume::Receiver<MatchActorMessage>;
 pub type PlayerSender = mpsc::Sender<OutboundMessage>;
 pub type PlayerReceiver = mpsc::Receiver<OutboundMessage>;
 
+pub const WAITING_LOBBY_INACTIVITY_CLOSE_CODE: u16 = 4001;
+pub const WAITING_LOBBY_INACTIVITY_CLOSE_REASON: &str = "waiting_lobby_inactive";
+
 type PlayerPoints = HashMap<PlayerId, usize>;
 
 #[derive(Clone, Debug)]
 pub enum OutboundMessage {
+    Close {
+        code: u16,
+        reason: String,
+    },
     PlayerTurn {
         player_id: PlayerId,
     },

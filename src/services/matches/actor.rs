@@ -18,7 +18,8 @@ use crate::{
         LobbyError, ManagerError,
         matches::{
             MatchActorMessage, MatchEntries, MatchReceiver, OutboundMessage, PlayerRoutes,
-            PlayerSender, project_match_metadata,
+            PlayerSender, WAITING_LOBBY_INACTIVITY_CLOSE_CODE,
+            WAITING_LOBBY_INACTIVITY_CLOSE_REASON, project_match_metadata,
         },
         repositories::matches::{MatchMetadataDto, MatchesRepository},
         stats::StatsProjectorHandle,
@@ -359,7 +360,7 @@ impl MatchActor {
             return Ok(true);
         }
 
-        if self.connections.is_empty() && !self.is_creator(&player_id) {
+        if self.connections.is_empty() {
             self.touch_lobby_activity().await?;
             return Ok(true);
         }
@@ -738,6 +739,14 @@ impl MatchActor {
         }
     }
 
+    async fn close_connections(&self, code: u16, reason: &str) {
+        self.broadcast(OutboundMessage::Close {
+            code,
+            reason: reason.to_string(),
+        })
+        .await;
+    }
+
     fn stop_match(&mut self) {
         self.match_entries.remove(&self.match_id);
 
@@ -755,6 +764,11 @@ impl MatchActor {
             return Ok(());
         }
 
+        self.close_connections(
+            WAITING_LOBBY_INACTIVITY_CLOSE_CODE,
+            WAITING_LOBBY_INACTIVITY_CLOSE_REASON,
+        )
+        .await;
         self.repo.delete_metadata(&self.match_id).await?;
         self.stop_match();
 
@@ -838,12 +852,6 @@ impl MatchActor {
         let idle = Duration::from_secs(idle_seconds).min(self.waiting_lobby_timeout);
 
         self.last_activity = Instant::now() - idle;
-    }
-
-    fn is_creator(&self, player_id: &PlayerId) -> bool {
-        self.creator_id
-            .as_ref()
-            .is_some_and(|creator| creator == player_id)
     }
 
     fn start_game_data(&self) -> Result<Option<(Vec<PlayerId>, GameSettings)>, ManagerError> {
