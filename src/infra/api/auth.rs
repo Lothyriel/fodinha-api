@@ -279,12 +279,9 @@ fn merge_guest_profile(mut google: UserClaims, guest: &AnonymousUserClaims) -> U
 pub async fn get_claims_from_token(
     token: &str,
     jwt_key: &str,
-    google_client_id: Option<&str>,
+    _google_client_id: Option<&str>,
 ) -> Result<UserClaims, AuthError> {
-    match get_access_token_claims(token, jwt_key) {
-        Ok(c) => Ok(c),
-        Err(_) => get_google_claims(token, google_client_id).await,
-    }
+    get_access_token_claims(token, jwt_key)
 }
 
 fn get_access_token_claims(token: &str, jwt_key: &str) -> Result<UserClaims, AuthError> {
