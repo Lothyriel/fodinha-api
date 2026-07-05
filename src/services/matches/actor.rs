@@ -37,6 +37,8 @@ pub(crate) struct MatchActor {
     player_routes: PlayerRoutes,
     last_activity: Instant,
     waiting_lobby_timeout: Duration,
+    empty_playing_since: Option<Instant>,
+    empty_playing_timeout: Duration,
 }
 
 enum AppliedEvent {
@@ -59,6 +61,7 @@ impl MatchActor {
         match_entries: MatchEntries,
         player_routes: PlayerRoutes,
         waiting_lobby_timeout: Duration,
+        empty_playing_timeout: Duration,
     ) -> Self {
         Self {
             match_id,
@@ -72,6 +75,8 @@ impl MatchActor {
             player_routes,
             last_activity: Instant::now(),
             waiting_lobby_timeout,
+            empty_playing_since: None,
+            empty_playing_timeout,
         }
     }
 
@@ -79,29 +84,13 @@ impl MatchActor {
         telemetry::inc_active_actors();
 
         loop {
-            let command = if self.is_waiting_lobby() {
-                match tokio::time::timeout(self.time_until_waiting_timeout(), rx.recv_async()).await
-                {
-                    Ok(Ok(command)) => {
-                        telemetry::dec_actor_queue_depth();
-                        command
-                    }
-                    Ok(Err(_)) => break,
-                    Err(_) => {
-                        if let Err(e) = self.handle_waiting_timeout().await {
-                            tracing::error!("Error handling waiting lobby timeout: {e}");
-                        }
-
-                        break;
-                    }
-                }
-            } else {
-                match rx.recv_async().await {
-                    Ok(command) => {
-                        telemetry::dec_actor_queue_depth();
-                        command
-                    }
-                    Err(_) => break,
+            let command = match self.next_command(&rx).await {
+                Ok(Some(command)) => command,
+                Ok(None) => break,
+                Err(e) => {
+                    tracing::error!("Error handling match actor timeout: {e}");
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                    continue;
                 }
             };
 
@@ -119,6 +108,54 @@ impl MatchActor {
         }
 
         telemetry::dec_active_actors();
+    }
+
+    async fn next_command(
+        &mut self,
+        rx: &MatchReceiver,
+    ) -> Result<Option<MatchActorMessage>, ManagerError> {
+        if self.is_waiting_lobby() {
+            return match tokio::time::timeout(self.time_until_waiting_timeout(), rx.recv_async())
+                .await
+            {
+                Ok(Ok(command)) => {
+                    telemetry::dec_actor_queue_depth();
+                    Ok(Some(command))
+                }
+                Ok(Err(_)) => Ok(None),
+                Err(_) => {
+                    self.handle_waiting_timeout().await?;
+                    Ok(None)
+                }
+            };
+        }
+
+        if self.is_empty_playing_lobby() {
+            return match tokio::time::timeout(
+                self.time_until_empty_playing_timeout(),
+                rx.recv_async(),
+            )
+            .await
+            {
+                Ok(Ok(command)) => {
+                    telemetry::dec_actor_queue_depth();
+                    Ok(Some(command))
+                }
+                Ok(Err(_)) => Ok(None),
+                Err(_) => {
+                    self.handle_empty_playing_timeout().await?;
+                    Ok(None)
+                }
+            };
+        }
+
+        match rx.recv_async().await {
+            Ok(command) => {
+                telemetry::dec_actor_queue_depth();
+                Ok(Some(command))
+            }
+            Err(_) => Ok(None),
+        }
     }
 
     async fn handle(&mut self, command: MatchActorMessage) -> bool {
@@ -226,7 +263,14 @@ impl MatchActor {
 
         self.connections.insert(player_id.clone(), outbound_tx);
 
-        self.touch_waiting_lobby().await?;
+        self.empty_playing_since = None;
+        if self.is_playing_lobby() {
+            if let Err(e) = self.repo.touch_metadata(&self.match_id).await {
+                tracing::error!("Error touching playing match metadata on reconnect: {e}");
+            }
+        } else {
+            self.touch_lobby_activity().await?;
+        }
 
         self.send_to_player(&player_id, OutboundMessage::Snapshot(snapshot))
             .await;
@@ -243,7 +287,7 @@ impl MatchActor {
                 let info = lobby.get_info(&player_id);
                 self.player_routes
                     .insert(player_id.clone(), self.match_id.clone());
-                self.touch_waiting_lobby().await?;
+                self.touch_lobby_activity().await?;
                 return Ok(info);
             }
 
@@ -293,6 +337,13 @@ impl MatchActor {
         );
 
         if !should_handle_waiting_disconnect {
+            self.refresh_empty_playing_activity();
+            if self.is_empty_playing_lobby() {
+                if let Err(e) = self.repo.touch_metadata(&self.match_id).await {
+                    tracing::error!("Error touching empty playing match metadata: {e}");
+                }
+            }
+
             return Ok(true);
         }
 
@@ -309,7 +360,7 @@ impl MatchActor {
         }
 
         if self.connections.is_empty() && !self.is_creator(&player_id) {
-            self.touch_waiting_lobby().await?;
+            self.touch_lobby_activity().await?;
             return Ok(true);
         }
 
@@ -382,6 +433,7 @@ impl MatchActor {
                 possible_bids,
             } = applied
             {
+                self.refresh_empty_playing_activity();
                 self.broadcast_snapshots().await;
                 self.init_set(set.decks, set.upcard, next, possible_bids)
                     .await;
@@ -709,6 +761,17 @@ impl MatchActor {
         Ok(())
     }
 
+    async fn handle_empty_playing_timeout(&mut self) -> Result<(), ManagerError> {
+        if !self.is_empty_playing_lobby() {
+            return Ok(());
+        }
+
+        self.repo.mark_metadata_abandoned(&self.match_id).await?;
+        self.stop_match();
+
+        Ok(())
+    }
+
     fn is_waiting_lobby(&self) -> bool {
         matches!(
             self.lobby.as_ref().map(|lobby| &lobby.state),
@@ -721,13 +784,41 @@ impl MatchActor {
             .saturating_sub(self.last_activity.elapsed())
     }
 
+    fn is_empty_playing_lobby(&self) -> bool {
+        self.is_playing_lobby() && self.connections.is_empty() && self.empty_playing_since.is_some()
+    }
+
+    fn is_playing_lobby(&self) -> bool {
+        matches!(
+            self.lobby.as_ref().map(|lobby| &lobby.state),
+            Some(LobbyState::Playing(_))
+        )
+    }
+
+    fn time_until_empty_playing_timeout(&self) -> Duration {
+        let Some(empty_since) = self.empty_playing_since else {
+            return self.empty_playing_timeout;
+        };
+
+        self.empty_playing_timeout
+            .saturating_sub(empty_since.elapsed())
+    }
+
     fn refresh_waiting_activity(&mut self) {
         if self.is_waiting_lobby() {
             self.last_activity = Instant::now();
         }
     }
 
-    async fn touch_waiting_lobby(&mut self) -> Result<(), ManagerError> {
+    fn refresh_empty_playing_activity(&mut self) {
+        if self.is_playing_lobby() && self.connections.is_empty() {
+            self.empty_playing_since.get_or_insert_with(Instant::now);
+        } else {
+            self.empty_playing_since = None;
+        }
+    }
+
+    async fn touch_lobby_activity(&mut self) -> Result<(), ManagerError> {
         if !self.is_waiting_lobby() {
             return Ok(());
         }

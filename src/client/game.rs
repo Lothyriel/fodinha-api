@@ -10,9 +10,8 @@ use crate::models::{
 };
 
 use super::ws::{
-    ClientError, WebSocket, WsClient, err, validate_player_bidded,
-    validate_player_status_change, validate_round_ended, validate_set_start,
-    validate_turn_played,
+    ClientError, WebSocket, WsClient, err, validate_player_bidded, validate_player_status_change,
+    validate_round_ended, validate_set_start, validate_turn_played,
 };
 
 pub struct TurnDelay {

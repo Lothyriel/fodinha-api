@@ -67,8 +67,7 @@ impl WsClient {
             .into_client_request()
             .map_err(|e| err!("Invalid WS request: {e}"))?;
 
-        match tokio::time::timeout(WS_CONNECT_TIMEOUT, tokio_tungstenite::connect_async(req))
-            .await
+        match tokio::time::timeout(WS_CONNECT_TIMEOUT, tokio_tungstenite::connect_async(req)).await
         {
             Ok(Ok((stream, _))) => Ok(stream),
             Ok(Err(e)) => Err(err!("Failed to connect WebSocket: {e}")),
@@ -117,7 +116,10 @@ impl WsClient {
         }
     }
 
-    pub async fn assert_msg<F>(stream: &mut WebSocket, predicate: F) -> Result<ServerMessage, ClientError>
+    pub async fn assert_msg<F>(
+        stream: &mut WebSocket,
+        predicate: F,
+    ) -> Result<ServerMessage, ClientError>
     where
         F: FnOnce(&ServerMessage) -> bool,
     {
