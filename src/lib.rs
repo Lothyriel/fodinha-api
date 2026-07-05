@@ -22,7 +22,7 @@ impl AppSettings {
         let cfg = Config::builder()
             .set_default("mongo_conn_string", "mongodb://localhost/?retryWrites=true")?
             .set_default("mongo_database", "oh_hell")?
-            .set_default("mongo_max_pool_size", 100)?
+            .set_default("mongo_max_pool_size", 64)?
             .add_source(Environment::default())
             .build()?;
 
