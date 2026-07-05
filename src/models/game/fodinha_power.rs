@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::OnceLock};
 
 use indexmap::IndexMap;
 
@@ -19,6 +19,8 @@ const LIFE_LOSS_PER_BID_DIFFERENCE: usize = 10;
 const POWER_CARDS_PER_PLAYER: usize = 1;
 const POWER_CARD_RNG_SEQUENCE_MULTIPLIER: u64 = 0x517C_C1B7_2722_0A95;
 pub const MAX_PLAYER_COUNT: usize = fodinha_classic::MAX_PLAYER_COUNT;
+
+include!(concat!(env!("OUT_DIR"), "/power_card_sources.rs"));
 
 #[derive(Debug, Clone)]
 pub struct Game {
@@ -158,12 +160,24 @@ pub enum PowerCardError {
     InvalidPowerCard,
     #[error("power card script failed: {0}")]
     Script(#[from] PowerScriptError),
+    #[error("power card definitions failed: {0}")]
+    Definitions(#[from] PowerCardDefinitionError),
+}
+
+#[derive(Debug, Clone, thiserror::Error)]
+pub enum PowerCardDefinitionError {
+    #[error("no FodinhaPower card Lua files were found")]
+    MissingDefinitions,
+    #[error("invalid FodinhaPower card definition {path}: {message}")]
+    InvalidDefinition { path: &'static str, message: String },
+    #[error("duplicate FodinhaPower card id `{id}` in {path}")]
+    DuplicateId { id: String, path: &'static str },
 }
 
 struct PowerCardDefinition {
-    id: &'static str,
-    name: &'static str,
-    description: &'static str,
+    id: String,
+    name: String,
+    description: String,
     requires_target: bool,
     script: &'static str,
 }
@@ -171,9 +185,9 @@ struct PowerCardDefinition {
 impl PowerCardDefinition {
     fn to_card(&self) -> PowerCard {
         PowerCard {
-            id: self.id.to_string(),
-            name: self.name.to_string(),
-            description: self.description.to_string(),
+            id: self.id.clone(),
+            name: self.name.clone(),
+            description: self.description.clone(),
             requires_target: self.requires_target,
         }
     }
@@ -219,7 +233,7 @@ impl Game {
         let fodinha_classic::MatchEvent::GameStarted { set, .. } = classic_event else {
             unreachable!("classic start_match_event only emits GameStarted")
         };
-        let power_set = Self::new_power_set(players, seed, 0);
+        let power_set = Self::new_power_set(players, seed, 0)?;
 
         Ok(MatchEvent::GameStarted {
             settings,
@@ -304,7 +318,8 @@ impl Game {
             .cloned()
             .ok_or(PowerCardError::InvalidPowerCard)?;
 
-        let definition = power_card_definition(&card.id).ok_or(PowerCardError::InvalidPowerCard)?;
+        let definition =
+            power_card_definition(&card.id)?.ok_or(PowerCardError::InvalidPowerCard)?;
 
         if definition.requires_target && target_player_id.is_none() {
             return Err(PowerCardError::TargetRequired);
@@ -463,10 +478,15 @@ impl Game {
 
     fn new_power_set_for_game(&self, players: &[PlayerId]) -> PowerSet {
         Self::new_power_set(players, self.power_seed, self.next_power_shuffle_sequence)
+            .expect("FodinhaPower card definitions are loaded before the game starts")
     }
 
-    fn new_power_set(players: &[PlayerId], seed: i64, sequence: i64) -> PowerSet {
-        let definitions = default_power_card_definitions();
+    fn new_power_set(
+        players: &[PlayerId],
+        seed: i64,
+        sequence: i64,
+    ) -> Result<PowerSet, PowerCardDefinitionError> {
+        let definitions = power_card_definitions()?;
         let needed_cards = players.len().saturating_mul(POWER_CARDS_PER_PLAYER);
         let mut deck = (0..needed_cards)
             .map(|idx| definitions[idx % definitions.len()].to_card())
@@ -485,10 +505,10 @@ impl Game {
             })
             .collect();
 
-        PowerSet {
+        Ok(PowerSet {
             shuffle: DeckShuffle { seed, sequence },
             decks,
-        }
+        })
     }
 
     fn from_classic_event(event: fodinha_classic::MatchEvent) -> MatchEvent {
@@ -513,29 +533,58 @@ fn dto_decks(decks: &IndexMap<PlayerId, Vec<PowerCard>>) -> IndexMap<PlayerId, V
         .collect()
 }
 
-fn power_card_definition(id: &str) -> Option<&'static PowerCardDefinition> {
-    default_power_card_definitions()
+fn power_card_definition(
+    id: &str,
+) -> Result<Option<&'static PowerCardDefinition>, PowerCardDefinitionError> {
+    Ok(power_card_definitions()?
         .iter()
-        .find(|definition| definition.id == id)
+        .find(|definition| definition.id == id))
 }
 
-fn default_power_card_definitions() -> &'static [PowerCardDefinition] {
-    &[
-        PowerCardDefinition {
-            id: "heal_10",
-            name: "Heal 10",
-            description: "Restore 10 lives to yourself.",
-            requires_target: false,
-            script: "game.add_lives(card.owner_id, 10)",
-        },
-        PowerCardDefinition {
-            id: "strike_10",
-            name: "Strike 10",
-            description: "Remove 10 lives from a target player.",
-            requires_target: true,
-            script: "game.add_lives(card.target_player_id, -10)",
-        },
-    ]
+fn power_card_definitions() -> Result<&'static [PowerCardDefinition], PowerCardDefinitionError> {
+    static DEFINITIONS: OnceLock<Result<Vec<PowerCardDefinition>, PowerCardDefinitionError>> =
+        OnceLock::new();
+
+    match DEFINITIONS.get_or_init(load_power_card_definitions) {
+        Ok(definitions) => Ok(definitions),
+        Err(error) => Err(error.clone()),
+    }
+}
+
+fn load_power_card_definitions() -> Result<Vec<PowerCardDefinition>, PowerCardDefinitionError> {
+    if POWER_CARD_SOURCES.is_empty() {
+        return Err(PowerCardDefinitionError::MissingDefinitions);
+    }
+
+    let mut definitions = Vec::with_capacity(POWER_CARD_SOURCES.len());
+
+    for source in POWER_CARD_SOURCES {
+        let metadata = super::power_lua::load_power_card_metadata(source.source, source.path)
+            .map_err(|error| PowerCardDefinitionError::InvalidDefinition {
+                path: source.path,
+                message: error.to_string(),
+            })?;
+
+        if definitions
+            .iter()
+            .any(|definition: &PowerCardDefinition| definition.id == metadata.id)
+        {
+            return Err(PowerCardDefinitionError::DuplicateId {
+                id: metadata.id,
+                path: source.path,
+            });
+        }
+
+        definitions.push(PowerCardDefinition {
+            id: metadata.id,
+            name: metadata.name,
+            description: metadata.description,
+            requires_target: metadata.requires_target,
+            script: source.source,
+        });
+    }
+
+    Ok(definitions)
 }
 
 fn shuffle_power_cards(deck: &mut [PowerCard], seed: i64, sequence: i64) {
@@ -557,6 +606,27 @@ mod tests {
     use crate::models::id::PlayerId;
 
     use super::*;
+
+    #[test]
+    fn loads_power_cards_from_embedded_lua_files() {
+        let definitions = power_card_definitions().unwrap();
+
+        assert!(
+            definitions
+                .iter()
+                .any(|definition| definition.id == "heal_10")
+        );
+        assert!(
+            definitions
+                .iter()
+                .any(|definition| definition.id == "strike_10")
+        );
+        assert!(
+            definitions
+                .iter()
+                .all(|definition| !definition.script.is_empty())
+        );
+    }
 
     #[test]
     fn bid_mismatch_costs_ten_lives() {
@@ -602,7 +672,12 @@ mod tests {
 
         game.power_decks.insert(
             player1.clone(),
-            vec![power_card_definition("strike_10").unwrap().to_card()],
+            vec![
+                power_card_definition("strike_10")
+                    .unwrap()
+                    .unwrap()
+                    .to_card(),
+            ],
         );
 
         let event = game
@@ -625,7 +700,12 @@ mod tests {
 
         game.power_decks.insert(
             player1.clone(),
-            vec![power_card_definition("strike_10").unwrap().to_card()],
+            vec![
+                power_card_definition("strike_10")
+                    .unwrap()
+                    .unwrap()
+                    .to_card(),
+            ],
         );
 
         assert!(matches!(
@@ -658,7 +738,10 @@ mod tests {
         let player2 = PlayerId(Arc::from("P2"));
         let players = [player1.clone(), player2.clone()];
         let mut game = Game::new_with_seed(&players, GameSettings::default(), 42).unwrap();
-        let card = power_card_definition("strike_10").unwrap().to_card();
+        let card = power_card_definition("strike_10")
+            .unwrap()
+            .unwrap()
+            .to_card();
 
         game.power_decks.insert(player1.clone(), vec![card.clone()]);
 

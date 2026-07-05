@@ -5,7 +5,7 @@ use std::{
     rc::Rc,
 };
 
-use mlua::{HookTriggers, Lua, LuaOptions, StdLib, VmState};
+use mlua::{HookTriggers, Lua, LuaOptions, StdLib, Value, VmState};
 
 use crate::models::id::PlayerId;
 
@@ -32,10 +32,54 @@ pub struct PowerScriptOutput {
     pub lifes: HashMap<PlayerId, usize>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PowerCardMetadata {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub requires_target: bool,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum PowerScriptError {
     #[error("lua error: {0}")]
     Lua(#[from] mlua::Error),
+}
+
+pub fn load_power_card_metadata(
+    source: &str,
+    path: &str,
+) -> Result<PowerCardMetadata, mlua::Error> {
+    let lua = Lua::new_with(
+        StdLib::TABLE | StdLib::STRING | StdLib::MATH,
+        LuaOptions::new(),
+    )?;
+
+    set_limits(&lua)?;
+
+    let table: mlua::Table = lua.load(source).set_name(path).eval()?;
+    let effect: Value = table.get("effect")?;
+
+    if !matches!(effect, Value::Function(_)) {
+        return Err(mlua::Error::external("card effect must be a function"));
+    }
+
+    let metadata = PowerCardMetadata {
+        id: table.get("id")?,
+        name: table.get("name")?,
+        description: table.get("description")?,
+        requires_target: table.get("requires_target")?,
+    };
+
+    if metadata.id.trim().is_empty() {
+        return Err(mlua::Error::external("card id cannot be empty"));
+    }
+
+    if metadata.name.trim().is_empty() {
+        return Err(mlua::Error::external("card name cannot be empty"));
+    }
+
+    Ok(metadata)
 }
 
 pub fn run_power_card_script(
@@ -58,11 +102,19 @@ pub fn run_power_card_script(
     set_limits(&lua)?;
 
     let globals = lua.globals();
+    let game = build_game_api(&lua, Rc::clone(&players))?;
+    let card = build_card_table(&lua, &input)?;
 
-    globals.set("game", build_game_api(&lua, Rc::clone(&players))?)?;
-    globals.set("card", build_card_table(&lua, &input)?)?;
+    globals.set("game", game.clone())?;
+    globals.set("card", card.clone())?;
 
-    lua.load(script).set_name("power_card").exec()?;
+    match lua.load(script).set_name("power_card").eval()? {
+        Value::Table(table) => {
+            let effect: mlua::Function = table.get("effect")?;
+            effect.call::<()>((game, card))?;
+        }
+        _ => {}
+    }
 
     let players = players.borrow();
     let lifes = input
@@ -260,6 +312,43 @@ mod tests {
         .unwrap();
 
         assert_eq!(output.lifes.get(&player2), Some(&40));
+    }
+
+    #[test]
+    fn card_file_metadata_and_effect_can_be_loaded() {
+        let player = PlayerId(Arc::from("P1"));
+        let source = r#"
+            return {
+                id = "heal_10",
+                name = "Heal 10",
+                description = "Restore 10 lives to yourself.",
+                requires_target = false,
+                effect = function(game, card)
+                    game.add_lives(card.owner_id, 10)
+                end,
+            }
+        "#;
+
+        let metadata = load_power_card_metadata(source, "test.lua").unwrap();
+        let output = run_power_card_script(
+            source,
+            PowerScriptInput {
+                owner_id: player.clone(),
+                target_player_id: None,
+                players: HashMap::from([(
+                    player.clone(),
+                    ScriptPlayerState {
+                        lifes: 50,
+                        bid: None,
+                        rounds: 0,
+                    },
+                )]),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(metadata.id, "heal_10");
+        assert_eq!(output.lifes.get(&player), Some(&60));
     }
 
     #[test]

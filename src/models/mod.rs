@@ -133,6 +133,8 @@ pub enum GameError {
     InvalidDeal(#[from] DealError),
     #[error("Invalid bid | {0}")]
     InvalidBid(#[from] BiddingError),
+    #[error("Invalid power cards | {0}")]
+    InvalidPowerCards(#[from] game::fodinha_power::PowerCardDefinitionError),
 }
 
 #[derive(Debug, thiserror::Error)]

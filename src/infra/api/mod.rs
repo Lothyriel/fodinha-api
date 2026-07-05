@@ -128,6 +128,7 @@ impl IntoResponse for LobbyError {
                 GameError::InvalidDeal(_) => StatusCode::UNPROCESSABLE_ENTITY,
                 GameError::InvalidBid(_) => StatusCode::UNPROCESSABLE_ENTITY,
                 GameError::InvalidStage => StatusCode::UNPROCESSABLE_ENTITY,
+                GameError::InvalidPowerCards(_) => StatusCode::INTERNAL_SERVER_ERROR,
             },
         };
 
