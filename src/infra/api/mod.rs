@@ -118,6 +118,7 @@ impl IntoResponse for LobbyError {
     fn into_response(self) -> axum::response::Response {
         let code = match &self {
             LobbyError::InvalidLobby => StatusCode::NOT_FOUND,
+            LobbyError::InvalidSettings(_) => StatusCode::BAD_REQUEST,
             LobbyError::GameAlreadyStarted => StatusCode::CONFLICT,
             LobbyError::GameNotStarted => StatusCode::PRECONDITION_FAILED,
             LobbyError::WrongLobby => StatusCode::FORBIDDEN,
@@ -1234,6 +1235,67 @@ mod tests {
         );
 
         drop(player_data);
+        server.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn test_create_lobby_validates_lifes_ranges_by_game_type() {
+        let server = TestServer::start().await;
+
+        let client = http_client();
+        let tokens = get_players(&client, &server, 1).await;
+        let cases = [
+            (
+                serde_json::json!({ "game_type": "fodinha_classic", "lifes": 0 }),
+                "between 1 and 10",
+            ),
+            (
+                serde_json::json!({ "game_type": "fodinha_classic", "lifes": 11 }),
+                "between 1 and 10",
+            ),
+            (
+                serde_json::json!({ "game_type": "fodinha_power", "lifes": 5 }),
+                "between 10 and 100",
+            ),
+            (
+                serde_json::json!({ "game_type": "fodinha_power", "lifes": 110 }),
+                "between 10 and 100",
+            ),
+        ];
+
+        for (params, expected_error) in cases {
+            let res = client
+                .post(server.url("/lobby"))
+                .bearer_auth(&tokens[0])
+                .json(&params)
+                .send()
+                .await
+                .unwrap();
+            let status = res.status();
+            let body = res.text().await.unwrap();
+
+            assert_eq!(status, StatusCode::BAD_REQUEST, "unexpected body: {body}");
+            assert!(
+                body.contains(expected_error),
+                "expected body to contain {expected_error:?}, got {body}"
+            );
+        }
+
+        let res = client
+            .post(server.url("/lobby"))
+            .bearer_auth(&tokens[0])
+            .json(&serde_json::json!({ "game_type": "fodinha_power", "lifes": 15 }))
+            .send()
+            .await
+            .unwrap();
+        let status = res.status();
+        let body = res.text().await.unwrap();
+
+        assert!(
+            status.is_success(),
+            "Expected power lobby creation with 15 lifes to succeed, got {status}: {body}"
+        );
+
         server.shutdown().await;
     }
 

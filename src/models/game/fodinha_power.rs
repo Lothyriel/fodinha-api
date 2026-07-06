@@ -17,7 +17,10 @@ use crate::{
 
 const LIFE_LOSS_PER_BID_DIFFERENCE: usize = 10;
 const POWER_CARDS_PER_PLAYER: usize = 1;
-const POWER_CARD_RNG_SEQUENCE_MULTIPLIER: u64 = 0x517C_C1B7_2722_0A95;
+
+pub const DEFAULT_INITIAL_LIFES: usize = 50;
+pub const MIN_INITIAL_LIFES: usize = 10;
+pub const MAX_INITIAL_LIFES: usize = 100;
 pub const MAX_PLAYER_COUNT: usize = fodinha_classic::MAX_PLAYER_COUNT;
 
 include!(concat!(env!("OUT_DIR"), "/power_card_sources.rs"));
@@ -37,7 +40,9 @@ pub struct GameSettings {
 
 impl Default for GameSettings {
     fn default() -> Self {
-        Self { lifes: 50 }
+        Self {
+            lifes: DEFAULT_INITIAL_LIFES,
+        }
     }
 }
 
@@ -588,11 +593,7 @@ fn load_power_card_definitions() -> Result<Vec<PowerCardDefinition>, PowerCardDe
 }
 
 fn shuffle_power_cards(deck: &mut [PowerCard], seed: i64, sequence: i64) {
-    let mut rng = DeterministicRng::with_sequence_multiplier(
-        seed,
-        sequence,
-        POWER_CARD_RNG_SEQUENCE_MULTIPLIER,
-    );
+    let mut rng = DeterministicRng::new(seed, sequence);
 
     for i in (1..deck.len()).rev() {
         deck.swap(i, rng.next_index(i + 1));

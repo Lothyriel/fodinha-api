@@ -71,6 +71,8 @@ pub enum ManagerError {
 pub enum LobbyError {
     #[error("Invalid lobby id")]
     InvalidLobby,
+    #[error("Invalid lobby settings | {0}")]
+    InvalidSettings(String),
     #[error("This lobby is already playing")]
     GameAlreadyStarted,
     #[error("This player isn't in a lobby")]
