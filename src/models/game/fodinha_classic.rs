@@ -76,6 +76,9 @@ pub struct PlayerSnapshot {
 }
 
 pub const DEFAULT_INITIAL_LIFES: usize = 5;
+pub const MIN_INITIAL_LIFES: usize = 1;
+pub const MAX_INITIAL_LIFES: usize = 10;
+
 impl Default for GameSettings {
     fn default() -> Self {
         Self {
