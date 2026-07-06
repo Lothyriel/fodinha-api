@@ -412,15 +412,19 @@ mod tests {
     }
 
     #[test]
-    fn fodinha_power_settings_serializes_only_lifes() {
-        let settings = GameSettings::FodinhaPower(fodinha_power::GameSettings { lifes: 50 });
+    fn fodinha_power_settings_serializes_lifes_and_power_deck() {
+        let settings = GameSettings::FodinhaPower(fodinha_power::GameSettings {
+            lifes: 50,
+            power_deck_id: crate::models::id::DeckId(Arc::from("test_deck")),
+        });
 
         let document = mongodb::bson::to_document(&settings).unwrap();
         let inner = document.get_document("settings").unwrap();
 
         assert_eq!(document.get_str("game_type"), Ok("fodinha_power"));
-        assert_eq!(inner.len(), 1);
+        assert_eq!(inner.len(), 2);
         assert_eq!(inner.get_i64("lifes"), Ok(50));
+        assert_eq!(inner.get_str("power_deck_id"), Ok("test_deck"));
     }
 
     #[test]
@@ -457,10 +461,11 @@ mod tests {
             fodinha_power::MatchEvent::PowerCardPlayed {
                 player_id: player_id.clone(),
                 card: fodinha_power::PowerCard {
-                    id: "heal_10".to_string(),
+                    id: crate::models::id::CardId(Arc::from("heal_10")),
                     name: "Heal 10".to_string(),
                     description: "Restore 10 lives to yourself.".to_string(),
-                    requires_target: false,
+                    card_type: fodinha_power::PowerCardType::Instant,
+                    image_url: None,
                 },
                 target_player_id: None,
                 effects: fodinha_power::PowerCardEffects {

@@ -35,6 +35,74 @@ impl PlayerId {
 }
 
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
+pub struct CardId(pub Arc<str>);
+
+impl serde::Serialize for CardId {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&self.0)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for CardId {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        Ok(CardId(Arc::from(s)))
+    }
+}
+
+impl CardId {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for CardId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+#[derive(Debug, PartialEq, Eq, Hash, Clone)]
+pub struct DeckId(pub Arc<str>);
+
+impl serde::Serialize for DeckId {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&self.0)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for DeckId {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        Ok(DeckId(Arc::from(s)))
+    }
+}
+
+impl DeckId {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for DeckId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+#[derive(Debug, PartialEq, Eq, Hash, Clone)]
 pub struct LobbyId(pub Arc<str>);
 
 pub type MatchId = LobbyId;
@@ -83,6 +151,14 @@ pub fn gen_lobbyid() -> LobbyId {
 
 pub fn gen_matchid() -> MatchId {
     gen_lobbyid()
+}
+
+pub fn gen_cardid() -> CardId {
+    CardId(nanoid::nanoid!(16, ALPHABET).into())
+}
+
+pub fn gen_deckid() -> DeckId {
+    DeckId(nanoid::nanoid!(16, ALPHABET).into())
 }
 
 pub fn gen_uid() -> Uid {

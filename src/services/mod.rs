@@ -1,10 +1,16 @@
 use crate::{
     infra::AuthError,
-    models::{BiddingError, Card, DealError, GameError, game::GameCommandError, id::PlayerId},
+    models::{
+        BiddingError, Card, DealError, GameError,
+        game::{GameCommandError, fodinha_power::PowerCardType},
+        id::{CardId, PlayerId},
+    },
 };
 
+pub mod card_definitions;
 pub mod manager;
 pub mod matches;
+pub mod object_storage;
 pub mod repositories;
 pub mod stats;
 pub(crate) mod tasks;
@@ -22,10 +28,13 @@ pub struct GameInfoDto {
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, Clone)]
 pub struct PowerCardDto {
-    pub id: String,
+    pub id: CardId,
     pub name: String,
     pub description: String,
-    pub requires_target: bool,
+    #[serde(rename = "type")]
+    pub card_type: PowerCardType,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_url: Option<String>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, Clone)]

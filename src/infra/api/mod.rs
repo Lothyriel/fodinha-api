@@ -1,4 +1,5 @@
 mod auth;
+mod card_definitions;
 mod game;
 mod lobby;
 pub mod models;
@@ -15,7 +16,9 @@ use crate::{
     AppSettings,
     infra::telemetry,
     models::GameError,
-    services::{LobbyError, ManagerError, matches::ManagerHandle},
+    services::{
+        LobbyError, ManagerError, card_definitions::CardDefinitionError, matches::ManagerHandle,
+    },
 };
 
 #[derive(Clone)]
@@ -93,7 +96,12 @@ fn build_app(
         .route("/healthz", routing::get(readiness_handler))
         .route("/metrics", routing::get(telemetry::metrics_handler))
         .route("/game", routing::get(game::handler))
-        .nest("/lobby", lobby::router().layer(auth))
+        .nest("/lobby", lobby::router().layer(auth.clone()))
+        .nest(
+            "/card-definitions",
+            card_definitions::cards_router().layer(auth.clone()),
+        )
+        .nest("/power-decks", card_definitions::decks_router().layer(auth))
         .nest("/stats", stats::router(state.clone()))
         .nest("/auth", auth::router(state.clone()))
         .fallback(fallback_handler)
@@ -156,6 +164,21 @@ impl IntoResponse for ManagerError {
     }
 }
 
+impl IntoResponse for CardDefinitionError {
+    fn into_response(self) -> axum::response::Response {
+        let code = match &self {
+            CardDefinitionError::Invalid(_)
+            | CardDefinitionError::Script(_)
+            | CardDefinitionError::Definitions(_) => StatusCode::BAD_REQUEST,
+            CardDefinitionError::Storage(_) | CardDefinitionError::Database(_) => {
+                StatusCode::INTERNAL_SERVER_ERROR
+            }
+        };
+
+        (code, Json(serde_json::json!({"error": self.to_string()}))).into_response()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::{collections::HashMap, net::Ipv4Addr};
@@ -187,7 +210,7 @@ mod tests {
                 ClientCommand, CreateLobbyResponse, LobbyInfo, MatchSnapshot, ServerMessage,
             },
             game::{GameCommand, GameType, fodinha_classic, fodinha_power},
-            id::{LobbyId, PlayerId},
+            id::{CardId, DeckId, LobbyId, PlayerId},
         },
         services::{
             manager::GameManager,
@@ -214,6 +237,23 @@ mod tests {
     const WS_TIMEOUT: Duration = Duration::from_secs(5);
 
     type Deck = Vec<Card>;
+
+    const TEST_HEAL_10_SCRIPT: &str = r#"
+return {
+    effect = function(game, card)
+        game.add_lives(card.owner_id, 10)
+    end,
+}
+"#;
+
+    const TEST_STRIKE_10_SCRIPT: &str = r#"
+return {
+    effect = function(game, card)
+        game.add_lives(card.target_player_id, -10)
+    end,
+}
+"#;
+    const TEST_POWER_DECK_ID: &str = "test_deck";
 
     enum EndMessage {
         Set(HashMap<PlayerId, usize>),
@@ -288,6 +328,8 @@ mod tests {
             empty_playing_timeout: Duration,
             abandoned_match_scan_interval: Duration,
         ) -> Self {
+            install_test_power_card_definitions();
+
             let mongo_conn_string = MONGO_CONN_STRING.to_string();
             let settings = AppSettings {
                 jwt_key: TEST_JWT_KEY.to_string(),
@@ -295,6 +337,7 @@ mod tests {
                 mongo_conn_string: mongo_conn_string.clone(),
                 mongo_database: mongo_database.clone(),
                 mongo_max_pool_size: 10,
+                ..AppSettings::default()
             };
 
             let client = get_mongo_client(&mongo_conn_string, settings.mongo_max_pool_size)
@@ -448,6 +491,33 @@ mod tests {
 
             self.manager.shutdown().await;
         }
+    }
+
+    fn install_test_power_card_definitions() {
+        fodinha_power::replace_power_card_definitions(
+            DeckId(TEST_POWER_DECK_ID.into()),
+            vec![
+                fodinha_power::PowerCardDefinitionInput {
+                    id: CardId("heal_10".into()),
+                    name: "Heal 10".to_string(),
+                    description: "Restore 10 lives to yourself.".to_string(),
+                    card_type: fodinha_power::PowerCardType::Instant,
+                    image_url: None,
+                    script: TEST_HEAL_10_SCRIPT.to_string(),
+                    source: "test/heal_10.lua".to_string(),
+                },
+                fodinha_power::PowerCardDefinitionInput {
+                    id: CardId("strike_10".into()),
+                    name: "Strike 10".to_string(),
+                    description: "Remove 10 lives from a target player.".to_string(),
+                    card_type: fodinha_power::PowerCardType::Targetable,
+                    image_url: None,
+                    script: TEST_STRIKE_10_SCRIPT.to_string(),
+                    source: "test/strike_10.lua".to_string(),
+                },
+            ],
+        )
+        .expect("valid test power card definitions");
     }
 
     impl Drop for TestServer {
@@ -1254,11 +1324,19 @@ mod tests {
                 "between 1 and 10",
             ),
             (
-                serde_json::json!({ "game_type": "fodinha_power", "lifes": 5 }),
+                serde_json::json!({
+                    "game_type": "fodinha_power",
+                    "lifes": 5,
+                    "power_deck_id": TEST_POWER_DECK_ID,
+                }),
                 "between 10 and 100",
             ),
             (
-                serde_json::json!({ "game_type": "fodinha_power", "lifes": 110 }),
+                serde_json::json!({
+                    "game_type": "fodinha_power",
+                    "lifes": 110,
+                    "power_deck_id": TEST_POWER_DECK_ID,
+                }),
                 "between 10 and 100",
             ),
         ];
@@ -1284,7 +1362,11 @@ mod tests {
         let res = client
             .post(server.url("/lobby"))
             .bearer_auth(&tokens[0])
-            .json(&serde_json::json!({ "game_type": "fodinha_power", "lifes": 15 }))
+            .json(&serde_json::json!({
+                "game_type": "fodinha_power",
+                "lifes": 15,
+                "power_deck_id": TEST_POWER_DECK_ID,
+            }))
             .send()
             .await
             .unwrap();
@@ -1374,7 +1456,7 @@ mod tests {
         }
 
         let card = power_cards_by_player[&bidding_player][0].clone();
-        let target_player_id = card.requires_target.then(|| {
+        let target_player_id = card.card_type.needs_target().then(|| {
             player_data
                 .keys()
                 .find(|player_id| **player_id != bidding_player)
@@ -1405,7 +1487,7 @@ mod tests {
                     assert_eq!(played_card.id, card.id);
                     assert_eq!(played_target, target_player_id);
 
-                    if card.requires_target {
+                    if card.card_type.needs_target() {
                         assert_eq!(lifes.get(target_player_id.as_ref().unwrap()), Some(&40));
                     } else {
                         assert_eq!(lifes.get(&bidding_player), Some(&60));
@@ -2011,7 +2093,10 @@ mod tests {
         let res = client
             .post(server.url("/lobby"))
             .bearer_auth(token)
-            .json(&serde_json::json!({ "game_type": "fodinha_power" }))
+            .json(&serde_json::json!({
+                "game_type": "fodinha_power",
+                "power_deck_id": TEST_POWER_DECK_ID,
+            }))
             .send()
             .await
             .unwrap();

@@ -3,8 +3,11 @@ use std::time::Duration;
 use crate::{
     AppSettings,
     services::{
+        card_definitions::CardDefinitionsService,
         matches::ManagerHandle,
+        object_storage::ObjectStorage,
         repositories::{
+            card_decks::CardDecksRepository, card_definitions::CardDefinitionsRepository,
             get_mongo_client, matches::MatchesRepository, stats::StatsRepository,
             users::UsersRepository,
         },
@@ -45,8 +48,17 @@ impl GameManager {
             .expect("Expected to create mongo client")
             .database(database);
         let matches_repo = MatchesRepository::new(&db);
+        let card_definitions_repo = CardDefinitionsRepository::new(&db);
+        let card_decks_repo = CardDecksRepository::new(&db);
         let stats_repo = StatsRepository::new(&db);
         let users_repo = UsersRepository::new(&db);
+        let object_storage = ObjectStorage::new(settings);
+        let card_definitions = CardDefinitionsService::new(
+            card_definitions_repo.clone(),
+            card_decks_repo.clone(),
+            object_storage,
+            users_repo.clone(),
+        );
 
         if let Err(e) = matches_repo.ensure_indexes().await {
             tracing::error!("Error creating match indexes: {e}");
@@ -60,12 +72,26 @@ impl GameManager {
             tracing::error!("Error creating users indexes: {e}");
         }
 
+        if let Err(e) = card_definitions_repo.ensure_indexes().await {
+            tracing::error!("Error creating card definition indexes: {e}");
+        }
+
+        if let Err(e) = card_decks_repo.ensure_indexes().await {
+            tracing::error!("Error creating power deck indexes: {e}");
+        }
+
+        match card_definitions.load_power_card_registry().await {
+            Ok(count) => tracing::info!("Loaded {count} FodinhaPower card definitions"),
+            Err(e) => tracing::warn!("Could not load FodinhaPower card definitions: {e}"),
+        }
+
         let stats_projector = StatsProjector::start(matches_repo.clone(), stats_repo.clone());
 
         let manager = ManagerHandle::new(
             matches_repo,
             stats_repo,
             users_repo,
+            card_definitions,
             stats_projector,
             waiting_lobby_timeout,
             empty_playing_timeout,

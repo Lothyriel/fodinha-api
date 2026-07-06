@@ -7,7 +7,7 @@ use std::{
 
 use mlua::{HookTriggers, Lua, LuaOptions, StdLib, Value, VmState};
 
-use crate::models::id::PlayerId;
+use crate::models::{game::fodinha_power::PowerCardType, id::PlayerId};
 
 const LUA_MEMORY_LIMIT_BYTES: usize = 256 * 1024;
 const LUA_HOOK_INSTRUCTION_INTERVAL: u32 = 1_000;
@@ -37,7 +37,7 @@ pub struct PowerCardMetadata {
     pub id: String,
     pub name: String,
     pub description: String,
-    pub requires_target: bool,
+    pub card_type: PowerCardType,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -50,6 +50,41 @@ pub fn load_power_card_metadata(
     source: &str,
     path: &str,
 ) -> Result<PowerCardMetadata, mlua::Error> {
+    with_power_card_table(source, path, |table| {
+        validate_power_card_table(&table)?;
+
+        let card_type = table
+            .get::<String>("type")?
+            .parse::<PowerCardType>()
+            .map_err(mlua::Error::external)?;
+        let metadata = PowerCardMetadata {
+            id: table.get("id")?,
+            name: table.get("name")?,
+            description: table.get("description")?,
+            card_type,
+        };
+
+        if metadata.id.trim().is_empty() {
+            return Err(mlua::Error::external("card id cannot be empty"));
+        }
+
+        if metadata.name.trim().is_empty() {
+            return Err(mlua::Error::external("card name cannot be empty"));
+        }
+
+        Ok(metadata)
+    })
+}
+
+pub fn validate_power_card_script(source: &str, path: &str) -> Result<(), mlua::Error> {
+    with_power_card_table(source, path, |table| validate_power_card_table(&table))
+}
+
+fn with_power_card_table<T>(
+    source: &str,
+    path: &str,
+    f: impl FnOnce(mlua::Table) -> Result<T, mlua::Error>,
+) -> Result<T, mlua::Error> {
     let lua = Lua::new_with(
         StdLib::TABLE | StdLib::STRING | StdLib::MATH,
         LuaOptions::new(),
@@ -57,29 +92,19 @@ pub fn load_power_card_metadata(
 
     set_limits(&lua)?;
 
-    let table: mlua::Table = lua.load(source).set_name(path).eval()?;
+    let table = lua.load(source).set_name(path).eval()?;
+
+    f(table)
+}
+
+fn validate_power_card_table(table: &mlua::Table) -> Result<(), mlua::Error> {
     let effect: Value = table.get("effect")?;
 
     if !matches!(effect, Value::Function(_)) {
         return Err(mlua::Error::external("card effect must be a function"));
     }
 
-    let metadata = PowerCardMetadata {
-        id: table.get("id")?,
-        name: table.get("name")?,
-        description: table.get("description")?,
-        requires_target: table.get("requires_target")?,
-    };
-
-    if metadata.id.trim().is_empty() {
-        return Err(mlua::Error::external("card id cannot be empty"));
-    }
-
-    if metadata.name.trim().is_empty() {
-        return Err(mlua::Error::external("card name cannot be empty"));
-    }
-
-    Ok(metadata)
+    Ok(())
 }
 
 pub fn run_power_card_script(
@@ -319,7 +344,7 @@ mod tests {
                 id = "heal_10",
                 name = "Heal 10",
                 description = "Restore 10 lives to yourself.",
-                requires_target = false,
+                type = "instant",
                 effect = function(game, card)
                     game.add_lives(card.owner_id, 10)
                 end,
@@ -345,6 +370,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(metadata.id, "heal_10");
+        assert_eq!(metadata.card_type, PowerCardType::Instant);
         assert_eq!(output.lifes.get(&player), Some(&60));
     }
 

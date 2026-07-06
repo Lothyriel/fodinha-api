@@ -29,6 +29,10 @@ use crate::{
     },
     services::{
         LobbyError, ManagerError,
+        card_definitions::{
+            CardDefinitionError, CardDefinitionResponse, CardDefinitionsService,
+            CreateCardDefinitionInput, CreatePowerDeckInput, PowerDeckResponse,
+        },
         matches::{
             MatchActor, MatchActorContext, MatchActorMessage, MatchReceiver, MatchRegistry,
             MatchSender, OutboundMessage, PlayerReceiver, PlayerSender, SenderLookup,
@@ -49,6 +53,7 @@ pub struct ManagerHandle {
     repo: MatchesRepository,
     stats_repo: StatsRepository,
     users_repo: UsersRepository,
+    card_definitions: CardDefinitionsService,
     user_cache: Arc<DashMap<PlayerId, UserClaims>>,
     stats_projector: StatsProjectorHandle,
     background: ManagerBackground,
@@ -82,6 +87,7 @@ impl ManagerHandle {
         repo: MatchesRepository,
         stats_repo: StatsRepository,
         users_repo: UsersRepository,
+        card_definitions: CardDefinitionsService,
         stats_projector: StatsProjectorHandle,
         waiting_lobby_timeout: Duration,
         empty_playing_timeout: Duration,
@@ -91,6 +97,7 @@ impl ManagerHandle {
             repo,
             stats_repo,
             users_repo,
+            card_definitions,
             user_cache: Arc::new(DashMap::new()),
             stats_projector,
             background: ManagerBackground::default(),
@@ -177,6 +184,8 @@ impl ManagerHandle {
         player_id: PlayerId,
         settings: GameSettings,
     ) -> Result<CreateLobbyResponse, ManagerError> {
+        self.validate_lobby_settings(&settings).await?;
+
         let started = Instant::now();
         let match_id = id::gen_matchid();
         let game_type = settings.game_type();
@@ -206,6 +215,23 @@ impl ManagerHandle {
             lobby_id: match_id,
             game_type,
         })
+    }
+
+    async fn validate_lobby_settings(&self, settings: &GameSettings) -> Result<(), ManagerError> {
+        if let GameSettings::FodinhaPower(settings) = settings
+            && !self
+                .card_definitions
+                .power_deck_exists(&settings.power_deck_id)
+                .await?
+        {
+            return Err(LobbyError::InvalidSettings(format!(
+                "power deck `{}` does not exist",
+                settings.power_deck_id
+            ))
+            .into());
+        }
+
+        Ok(())
     }
 
     pub async fn join_lobby(
@@ -289,6 +315,32 @@ impl ManagerHandle {
         let user = self.users_repo.user(player_id.as_str()).await?;
 
         Ok(Some(stats.into_response(user)))
+    }
+
+    pub async fn create_card_definition(
+        &self,
+        creator_id: PlayerId,
+        input: CreateCardDefinitionInput,
+    ) -> Result<CardDefinitionResponse, CardDefinitionError> {
+        self.card_definitions.create_card(creator_id, input).await
+    }
+
+    pub async fn card_definitions(
+        &self,
+    ) -> Result<Vec<CardDefinitionResponse>, CardDefinitionError> {
+        self.card_definitions.list_cards().await
+    }
+
+    pub async fn create_power_deck(
+        &self,
+        creator_id: PlayerId,
+        input: CreatePowerDeckInput,
+    ) -> Result<PowerDeckResponse, CardDefinitionError> {
+        self.card_definitions.create_deck(creator_id, input).await
+    }
+
+    pub async fn power_decks(&self) -> Result<Vec<PowerDeckResponse>, CardDefinitionError> {
+        self.card_definitions.list_decks().await
     }
 
     pub async fn upsert_user(&self, user: &UserClaims) -> Result<(), ManagerError> {

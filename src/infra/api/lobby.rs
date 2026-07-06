@@ -9,7 +9,7 @@ use crate::{
     models::{
         commands::{CreateLobbyResponse, GetLobbyDto, LobbyInfo},
         game::{GameSettings, GameType, fodinha_classic, fodinha_power},
-        id::LobbyId,
+        id::{DeckId, LobbyId},
     },
     services::{LobbyError, ManagerError},
 };
@@ -56,6 +56,7 @@ async fn create_lobby(
 struct CreateLobbyRequest {
     game_type: GameType,
     lifes: Option<usize>,
+    power_deck_id: Option<DeckId>,
 }
 
 impl CreateLobbyRequest {
@@ -82,18 +83,25 @@ impl CreateLobbyRequest {
     }
 
     fn into_fodinha_power_settings(self) -> Result<GameSettings, LobbyError> {
-        let mut settings = fodinha_power::GameSettings::default();
+        let power_deck_id = self.power_deck_id.clone().ok_or_else(|| {
+            LobbyError::InvalidSettings("power_deck_id is required for Fodinha Power".to_string())
+        })?;
 
-        if let Some(lifes) = self.lifes {
-            settings.lifes = validate_lifes(
+        let lifes = if let Some(lifes) = self.lifes {
+            validate_lifes(
                 self.game_type,
                 lifes,
                 fodinha_power::MIN_INITIAL_LIFES,
                 fodinha_power::MAX_INITIAL_LIFES,
-            )?;
-        }
+            )?
+        } else {
+            fodinha_power::DEFAULT_INITIAL_LIFES
+        };
 
-        Ok(GameSettings::FodinhaPower(settings))
+        Ok(GameSettings::FodinhaPower(fodinha_power::GameSettings {
+            lifes,
+            power_deck_id,
+        }))
     }
 }
 

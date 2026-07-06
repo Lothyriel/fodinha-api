@@ -98,6 +98,7 @@ impl HttpClient {
                 request = request.json(&serde_json::json!({
                     "game_type": "fodinha_power",
                     "lifes": settings.lifes,
+                    "power_deck_id": settings.power_deck_id,
                 }));
             }
         }

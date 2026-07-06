@@ -1,0 +1,188 @@
+use axum::{
+    Extension, Json, Router,
+    extract::{Multipart, State},
+    middleware, routing,
+};
+
+use crate::{
+    infra::{UserClaims, telemetry},
+    models::{game::fodinha_power::PowerCardType, id::CardId},
+    services::card_definitions::{
+        CardDefinitionError, CreateCardDefinitionInput, CreatePowerDeckInput,
+    },
+};
+
+use super::ApiState;
+
+const MAX_IMAGE_BYTES: usize = 5 * 1024 * 1024;
+const MAX_SCRIPT_BYTES: usize = 128 * 1024;
+
+pub fn cards_router() -> Router<ApiState> {
+    Router::new()
+        .route("/", routing::get(list_cards))
+        .route("/", routing::post(create_card))
+        .layer(middleware::from_fn(telemetry::http_middleware))
+}
+
+pub fn decks_router() -> Router<ApiState> {
+    Router::new()
+        .route("/", routing::get(list_decks))
+        .route("/", routing::post(create_deck))
+        .layer(middleware::from_fn(telemetry::http_middleware))
+}
+
+async fn list_cards(
+    State(state): State<ApiState>,
+) -> Result<Json<Vec<crate::services::card_definitions::CardDefinitionResponse>>, CardDefinitionError>
+{
+    Ok(Json(state.manager.card_definitions().await?))
+}
+
+async fn create_card(
+    State(state): State<ApiState>,
+    Extension(user_claims): Extension<UserClaims>,
+    multipart: Multipart,
+) -> Result<Json<crate::services::card_definitions::CardDefinitionResponse>, CardDefinitionError> {
+    let input = read_create_card_input(multipart).await?;
+    let card = state
+        .manager
+        .create_card_definition(user_claims.id(), input)
+        .await?;
+
+    Ok(Json(card))
+}
+
+async fn list_decks(
+    State(state): State<ApiState>,
+) -> Result<Json<Vec<crate::services::card_definitions::PowerDeckResponse>>, CardDefinitionError> {
+    Ok(Json(state.manager.power_decks().await?))
+}
+
+async fn create_deck(
+    State(state): State<ApiState>,
+    Extension(user_claims): Extension<UserClaims>,
+    Json(body): Json<CreatePowerDeckRequest>,
+) -> Result<Json<crate::services::card_definitions::PowerDeckResponse>, CardDefinitionError> {
+    let deck = state
+        .manager
+        .create_power_deck(
+            user_claims.id(),
+            CreatePowerDeckInput {
+                name: body.name,
+                description: body.description.unwrap_or_default(),
+                card_ids: body.card_ids,
+            },
+        )
+        .await?;
+
+    Ok(Json(deck))
+}
+
+#[derive(serde::Deserialize)]
+struct CreatePowerDeckRequest {
+    name: String,
+    description: Option<String>,
+    card_ids: Vec<CardId>,
+}
+
+async fn read_create_card_input(
+    mut multipart: Multipart,
+) -> Result<CreateCardDefinitionInput, CardDefinitionError> {
+    let mut name = String::new();
+    let mut description = String::new();
+    let mut life = None;
+    let mut card_type = None;
+    let mut image = Vec::new();
+    let mut script = Vec::new();
+
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|error| CardDefinitionError::Invalid(error.to_string()))?
+    {
+        let field_name = field.name().unwrap_or_default().to_string();
+
+        match field_name.as_str() {
+            "name" => {
+                name = field
+                    .text()
+                    .await
+                    .map_err(|error| CardDefinitionError::Invalid(error.to_string()))?;
+            }
+            "description" => {
+                description = field
+                    .text()
+                    .await
+                    .map_err(|error| CardDefinitionError::Invalid(error.to_string()))?;
+            }
+            "life" => {
+                let value = field
+                    .text()
+                    .await
+                    .map_err(|error| CardDefinitionError::Invalid(error.to_string()))?;
+                let trimmed = value.trim();
+
+                if !trimmed.is_empty() {
+                    life = Some(trimmed.parse::<i32>().map_err(|_| {
+                        CardDefinitionError::Invalid("life must be a number".to_string())
+                    })?);
+                }
+            }
+            "type" => {
+                let value = field
+                    .text()
+                    .await
+                    .map_err(|error| CardDefinitionError::Invalid(error.to_string()))?;
+                card_type = Some(
+                    value
+                        .parse::<PowerCardType>()
+                        .map_err(CardDefinitionError::Invalid)?,
+                );
+            }
+            "image" => {
+                image = field_bytes(field, MAX_IMAGE_BYTES, "image").await?;
+            }
+            "script" => {
+                if let Some(file_name) = field.file_name()
+                    && !file_name.ends_with(".lua")
+                {
+                    return Err(CardDefinitionError::Invalid(
+                        "script must be a .lua file".to_string(),
+                    ));
+                }
+
+                script = field_bytes(field, MAX_SCRIPT_BYTES, "script").await?;
+            }
+            _ => {}
+        }
+    }
+
+    Ok(CreateCardDefinitionInput {
+        name,
+        description,
+        life,
+        card_type: card_type
+            .ok_or_else(|| CardDefinitionError::Invalid("type is required".to_string()))?,
+        image,
+        script,
+    })
+}
+
+async fn field_bytes(
+    field: axum::extract::multipart::Field<'_>,
+    max_bytes: usize,
+    label: &str,
+) -> Result<Vec<u8>, CardDefinitionError> {
+    let bytes = field
+        .bytes()
+        .await
+        .map_err(|error| CardDefinitionError::Invalid(error.to_string()))?;
+
+    if bytes.len() > max_bytes {
+        return Err(CardDefinitionError::Invalid(format!(
+            "{label} must be at most {max_bytes} bytes"
+        )));
+    }
+
+    Ok(bytes.to_vec())
+}

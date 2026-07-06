@@ -5,8 +5,9 @@ edition = "2024"
 default-run = "oh_hell"
 
 [dependencies]
-axum = { version = "0.8.9", features = ["ws"] }
+axum = { version = "0.8.9", features = ["ws", "multipart"] }
 tower-http = { version = "0.7.0", features = ["trace", "cors"] }
+aws-sdk-s3 = "1.115.0"
 
 tokio = { version = "1.52.3", features = ["rt-multi-thread", "signal"] }
 futures = "0.3.32"
