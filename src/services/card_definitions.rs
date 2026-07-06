@@ -130,7 +130,9 @@ impl CardDefinitionsService {
             })
             .collect();
 
-        fodinha_power::replace_power_card_registry(definitions, decks)?;
+        if count > 0 {
+            fodinha_power::replace_power_card_registry(definitions, decks)?;
+        }
 
         Ok(count)
     }

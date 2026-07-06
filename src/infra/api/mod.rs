@@ -215,7 +215,10 @@ mod tests {
         services::{
             manager::GameManager,
             matches::{ManagerHandle, WAITING_LOBBY_INACTIVITY_CLOSE_CODE},
-            repositories::get_mongo_client,
+            repositories::{
+                card_decks::{CardDeckDto, CardDecksRepository, NewCardDeck},
+                get_mongo_client,
+            },
             stats::PlayerStatsResponse,
         },
     };
@@ -328,8 +331,6 @@ return {
             empty_playing_timeout: Duration,
             abandoned_match_scan_interval: Duration,
         ) -> Self {
-            install_test_power_card_definitions();
-
             let mongo_conn_string = MONGO_CONN_STRING.to_string();
             let settings = AppSettings {
                 jwt_key: TEST_JWT_KEY.to_string(),
@@ -352,6 +353,9 @@ return {
                 abandoned_match_scan_interval,
             )
             .await;
+            insert_test_power_deck(&database).await;
+            install_test_power_card_definitions();
+
             let server_manager = manager.clone();
             let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
                 .await
@@ -518,6 +522,30 @@ return {
             ],
         )
         .expect("valid test power card definitions");
+    }
+
+    async fn insert_test_power_deck(database: &Database) {
+        let repository = CardDecksRepository::new(database);
+        let deck_id = DeckId(TEST_POWER_DECK_ID.into());
+
+        if repository
+            .active_deck_exists(&deck_id)
+            .await
+            .expect("expected to check test power deck")
+        {
+            return;
+        }
+
+        repository
+            .insert(CardDeckDto::new(NewCardDeck {
+                deck_id,
+                name: "Test Power Deck".to_string(),
+                description: "Test Fodinha Power deck".to_string(),
+                creator_id: PlayerId("test".into()),
+                card_ids: vec![CardId("heal_10".into()), CardId("strike_10".into())],
+            }))
+            .await
+            .expect("expected to insert test power deck");
     }
 
     impl Drop for TestServer {
