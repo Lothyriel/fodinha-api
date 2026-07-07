@@ -250,6 +250,26 @@ fn build_game_api(
         })?,
     )?;
 
+    let add_bids_players = Rc::clone(&players);
+    game.set(
+        "add_bids",
+        lua.create_function(move |_, (player_id, bid_count): (String, i64)| {
+            let mut players = add_bids_players.borrow_mut();
+
+            let Some(player) = players.get_mut(&player_id) else {
+                return Err(mlua::Error::external(format!(
+                    "unknown player_id: {player_id}"
+                )));
+            };
+
+            if let Some(bid) = player.bid.as_mut() {
+                *bid += bid_count as usize;
+            };
+
+            Ok(())
+        })?,
+    )?;
+
     let get_rounds_players = Rc::clone(&players);
     game.set(
         "get_rounds",
