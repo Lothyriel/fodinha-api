@@ -198,6 +198,7 @@ impl<'de> Deserialize<'de> for MatchEvent {
     {
         let value = serde_json::Value::deserialize(deserializer)?;
 
+        #[allow(clippy::large_enum_variant)]
         #[derive(Deserialize)]
         #[serde(tag = "type", content = "data")]
         enum TaggedMatchEvent {
