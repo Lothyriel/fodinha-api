@@ -14,7 +14,7 @@ use crate::{
     services::{
         object_storage::{ObjectStorage, ObjectStorageError},
         repositories::{
-            card_decks::{CardDeckDto, CardDecksRepository, NewCardDeck},
+            card_decks::{CardDeckDto, CardDeckKind, CardDecksRepository, NewCardDeck},
             card_definitions::{
                 CardDefinitionDto, CardDefinitionKind, CardDefinitionsRepository, NewCardDefinition,
             },
@@ -36,6 +36,7 @@ pub struct CardDefinitionsService {
 
 #[derive(Debug)]
 pub struct CreateCardDefinitionInput {
+    pub kind: CardDefinitionKind,
     pub name: String,
     pub description: String,
     pub life: Option<i32>,
@@ -46,6 +47,7 @@ pub struct CreateCardDefinitionInput {
 
 #[derive(Debug)]
 pub struct CreatePowerDeckInput {
+    pub kind: CardDeckKind,
     pub name: String,
     pub description: String,
     pub card_ids: Vec<CardId>,
@@ -69,6 +71,7 @@ pub struct CardDefinitionResponse {
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct PowerDeckResponse {
     pub id: DeckId,
+    pub kind: CardDeckKind,
     pub name: String,
     pub description: String,
     pub creator_id: PlayerId,
@@ -89,6 +92,8 @@ pub enum CardDefinitionError {
     Database(#[from] mongodb::error::Error),
     #[error("card definition script failed: {0}")]
     Script(String),
+    #[error("card definition forbidden: {0}")]
+    Forbidden(String),
     #[error("card definitions failed: {0}")]
     Definitions(#[from] fodinha_power::PowerCardDefinitionError),
 }
@@ -146,6 +151,9 @@ impl CardDefinitionsService {
         creator_id: PlayerId,
         input: CreateCardDefinitionInput,
     ) -> Result<CardDefinitionResponse, CardDefinitionError> {
+        self.ensure_can_create_card_kind(&creator_id, input.kind)
+            .await?;
+
         let name = input.name.trim();
         let description = input.description.trim();
 
@@ -203,7 +211,7 @@ impl CardDefinitionsService {
 
         let card = CardDefinitionDto::new(NewCardDefinition {
             card_id,
-            kind: CardDefinitionKind::Community,
+            kind: input.kind,
             name: name.to_string(),
             description: description.to_string(),
             life: input.life,
@@ -227,6 +235,9 @@ impl CardDefinitionsService {
         creator_id: PlayerId,
         input: CreatePowerDeckInput,
     ) -> Result<PowerDeckResponse, CardDefinitionError> {
+        self.ensure_can_create_deck_kind(&creator_id, input.kind)
+            .await?;
+
         let name = input.name.trim();
         let description = input.description.trim();
         let card_ids = input
@@ -256,6 +267,7 @@ impl CardDefinitionsService {
 
         let deck = CardDeckDto::new(NewCardDeck {
             deck_id: gen_deckid(),
+            kind: input.kind,
             name: name.to_string(),
             description: description.to_string(),
             creator_id,
@@ -337,6 +349,7 @@ impl CardDefinitionsService {
 
                 PowerDeckResponse {
                     id: deck.deck_id,
+                    kind: deck.kind,
                     name: deck.name,
                     description: deck.description,
                     creator_id: deck.creator_id.clone(),
@@ -377,6 +390,46 @@ impl CardDefinitionsService {
                 created_at: card.created_at,
             })
             .collect()
+    }
+
+    async fn ensure_can_create_card_kind(
+        &self,
+        creator_id: &PlayerId,
+        kind: CardDefinitionKind,
+    ) -> Result<(), CardDefinitionError> {
+        if kind == CardDefinitionKind::Official {
+            self.ensure_admin(creator_id, "only admin users can create official cards")
+                .await?;
+        }
+
+        Ok(())
+    }
+
+    async fn ensure_can_create_deck_kind(
+        &self,
+        creator_id: &PlayerId,
+        kind: CardDeckKind,
+    ) -> Result<(), CardDefinitionError> {
+        if kind == CardDeckKind::Official {
+            self.ensure_admin(creator_id, "only admin users can create official decks")
+                .await?;
+        }
+
+        Ok(())
+    }
+
+    async fn ensure_admin(
+        &self,
+        creator_id: &PlayerId,
+        message: &str,
+    ) -> Result<(), CardDefinitionError> {
+        let user = self.users.user(creator_id.as_str()).await?;
+
+        if user.as_ref().is_some_and(UserClaims::is_admin) {
+            return Ok(());
+        }
+
+        Err(CardDefinitionError::Forbidden(message.to_string()))
     }
 
     fn definition_input(

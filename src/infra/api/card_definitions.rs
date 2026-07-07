@@ -7,8 +7,9 @@ use axum::{
 use crate::{
     infra::{UserClaims, telemetry},
     models::{game::fodinha_power::PowerCardType, id::CardId},
-    services::card_definitions::{
-        CardDefinitionError, CreateCardDefinitionInput, CreatePowerDeckInput,
+    services::{
+        card_definitions::{CardDefinitionError, CreateCardDefinitionInput, CreatePowerDeckInput},
+        repositories::{card_decks::CardDeckKind, card_definitions::CardDefinitionKind},
     },
 };
 
@@ -68,6 +69,7 @@ async fn create_deck(
         .create_power_deck(
             user_claims.id(),
             CreatePowerDeckInput {
+                kind: body.kind.unwrap_or(CardDeckKind::Community),
                 name: body.name,
                 description: body.description.unwrap_or_default(),
                 card_ids: body.card_ids,
@@ -80,6 +82,7 @@ async fn create_deck(
 
 #[derive(serde::Deserialize)]
 struct CreatePowerDeckRequest {
+    kind: Option<CardDeckKind>,
     name: String,
     description: Option<String>,
     card_ids: Vec<CardId>,
@@ -90,6 +93,7 @@ async fn read_create_card_input(
 ) -> Result<CreateCardDefinitionInput, CardDefinitionError> {
     let mut name = String::new();
     let mut description = String::new();
+    let mut kind = CardDefinitionKind::Community;
     let mut life = None;
     let mut card_type = None;
     let mut image = Vec::new();
@@ -114,6 +118,15 @@ async fn read_create_card_input(
                     .text()
                     .await
                     .map_err(|error| CardDefinitionError::Invalid(error.to_string()))?;
+            }
+            "kind" => {
+                let value = field
+                    .text()
+                    .await
+                    .map_err(|error| CardDefinitionError::Invalid(error.to_string()))?;
+                kind = value
+                    .parse::<CardDefinitionKind>()
+                    .map_err(CardDefinitionError::Invalid)?;
             }
             "life" => {
                 let value = field
@@ -158,6 +171,7 @@ async fn read_create_card_input(
     }
 
     Ok(CreateCardDefinitionInput {
+        kind,
         name,
         description,
         life,

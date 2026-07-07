@@ -170,6 +170,7 @@ impl IntoResponse for CardDefinitionError {
             CardDefinitionError::Invalid(_)
             | CardDefinitionError::Script(_)
             | CardDefinitionError::Definitions(_) => StatusCode::BAD_REQUEST,
+            CardDefinitionError::Forbidden(_) => StatusCode::FORBIDDEN,
             CardDefinitionError::Storage(_) | CardDefinitionError::Database(_) => {
                 StatusCode::INTERNAL_SERVER_ERROR
             }
@@ -216,7 +217,7 @@ mod tests {
             manager::GameManager,
             matches::{ManagerHandle, WAITING_LOBBY_INACTIVITY_CLOSE_CODE},
             repositories::{
-                card_decks::{CardDeckDto, CardDecksRepository, NewCardDeck},
+                card_decks::{CardDeckDto, CardDeckKind, CardDecksRepository, NewCardDeck},
                 get_mongo_client,
             },
             stats::PlayerStatsResponse,
@@ -539,6 +540,7 @@ return {
         repository
             .insert(CardDeckDto::new(NewCardDeck {
                 deck_id,
+                kind: CardDeckKind::Community,
                 name: "Test Power Deck".to_string(),
                 description: "Test Fodinha Power deck".to_string(),
                 creator_id: PlayerId("test".into()),

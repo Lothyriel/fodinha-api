@@ -84,6 +84,8 @@ impl CardDecksRepository {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CardDeckDto {
     pub deck_id: DeckId,
+    #[serde(default = "default_card_deck_kind")]
+    pub kind: CardDeckKind,
     pub name: String,
     pub description: String,
     pub creator_id: PlayerId,
@@ -100,6 +102,7 @@ impl CardDeckDto {
 
         Self {
             deck_id: input.deck_id,
+            kind: input.kind,
             name: input.name,
             description: input.description,
             creator_id: input.creator_id,
@@ -117,6 +120,7 @@ impl CardDeckDto {
 
 pub struct NewCardDeck {
     pub deck_id: DeckId,
+    pub kind: CardDeckKind,
     pub name: String,
     pub description: String,
     pub creator_id: PlayerId,
@@ -125,4 +129,36 @@ pub struct NewCardDeck {
 
 fn default_active() -> bool {
     true
+}
+
+fn default_card_deck_kind() -> CardDeckKind {
+    CardDeckKind::Community
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CardDeckKind {
+    Official,
+    Community,
+}
+
+impl CardDeckKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Official => "official",
+            Self::Community => "community",
+        }
+    }
+}
+
+impl std::str::FromStr for CardDeckKind {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "official" => Ok(Self::Official),
+            "community" => Ok(Self::Community),
+            _ => Err("kind must be official or community".to_string()),
+        }
+    }
 }

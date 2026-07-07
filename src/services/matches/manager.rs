@@ -72,6 +72,7 @@ fn fallback_user_claims(player_id: &PlayerId) -> UserClaims {
     UserClaims::Anonymous(AnonymousUserClaims {
         id: player_id.clone(),
         data: serde_json::json!({ "nickname": player_id.as_str() }),
+        role: Default::default(),
     })
 }
 
@@ -343,11 +344,11 @@ impl ManagerHandle {
         self.card_definitions.list_decks().await
     }
 
-    pub async fn upsert_user(&self, user: &UserClaims) -> Result<(), ManagerError> {
-        self.users_repo.upsert_user(user).await?;
+    pub async fn upsert_user(&self, user: &UserClaims) -> Result<UserClaims, ManagerError> {
+        let user = self.users_repo.upsert_user(user).await?;
         self.cache_user(user.clone());
 
-        Ok(())
+        Ok(user)
     }
 
     pub async fn user(&self, player_id: &PlayerId) -> Result<Option<UserClaims>, ManagerError> {

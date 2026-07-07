@@ -17,12 +17,50 @@ impl UserClaims {
             UserClaims::Google(g) => g.email.clone(),
         }
     }
+
+    pub fn role(&self) -> UserRole {
+        match self {
+            UserClaims::Anonymous(a) => a.role,
+            UserClaims::Google(g) => g.role,
+        }
+    }
+
+    pub fn is_admin(&self) -> bool {
+        self.role().is_admin()
+    }
+
+    pub fn with_role(mut self, role: UserRole) -> Self {
+        match &mut self {
+            UserClaims::Anonymous(a) => a.role = role,
+            UserClaims::Google(g) => g.role = role,
+        }
+
+        self
+    }
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[serde(rename_all = "PascalCase")]
+pub enum UserRole {
+    #[serde(alias = "admin", alias = "ADMIN")]
+    Admin,
+    #[default]
+    #[serde(alias = "player", alias = "PLAYER")]
+    Player,
+}
+
+impl UserRole {
+    pub fn is_admin(self) -> bool {
+        matches!(self, Self::Admin)
+    }
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, PartialEq, Eq, Debug)]
 pub struct AnonymousUserClaims {
     pub id: PlayerId,
     pub data: serde_json::Value,
+    #[serde(default)]
+    pub role: UserRole,
 }
 
 #[derive(serde::Deserialize, serde::Serialize, Clone, PartialEq, Eq, Debug)]
@@ -34,6 +72,8 @@ pub struct GoogleUserClaims {
     pub nickname: Option<String>,
     #[serde(default)]
     pub picture_override: Option<String>,
+    #[serde(default)]
+    pub role: UserRole,
 }
 
 #[derive(thiserror::Error, Debug)]

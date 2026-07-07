@@ -348,6 +348,7 @@ mod tests {
         UserClaims::Anonymous(AnonymousUserClaims {
             id: player_id.clone(),
             data: serde_json::json!({ "nickname": nickname }),
+            role: Default::default(),
         })
     }
 }

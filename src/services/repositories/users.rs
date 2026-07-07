@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use futures::TryStreamExt;
 use mongodb::{Collection, Database, IndexModel, bson::doc};
 
-use crate::infra::{UserClaims, telemetry};
+use crate::infra::{UserClaims, UserRole, telemetry};
 
 #[derive(Clone)]
 pub struct UsersRepository {
@@ -28,22 +28,39 @@ impl UsersRepository {
         Ok(())
     }
 
-    pub async fn upsert_user(&self, user: &UserClaims) -> mongodb::error::Result<()> {
+    pub async fn upsert_user(&self, user: &UserClaims) -> mongodb::error::Result<UserClaims> {
         let player_id = user.id();
-        let user = mongodb::bson::to_bson(user)?;
+        let existing = telemetry::db_query("Users", "find_one.before_upsert", async {
+            self.users
+                .find_one(doc! { "player_id": player_id.as_str() })
+                .await
+        })
+        .await?;
+        let role = existing.as_ref().map(UserDto::role).unwrap_or_default();
+        let user = user.clone().with_role(role);
+        let user = mongodb::bson::to_bson(&user)?;
+        let role = mongodb::bson::to_bson(&role)?;
 
         telemetry::db_query("Users", "update_one.upsert", async {
             self.users
                 .update_one(
                     doc! { "player_id": player_id.as_str() },
-                    doc! { "$set": { "player_id": player_id.as_str(), "user": user } },
+                    doc! {
+                        "$set": {
+                            "player_id": player_id.as_str(),
+                            "user": user,
+                            "role": role,
+                        },
+                    },
                 )
                 .upsert(true)
                 .await
         })
         .await?;
 
-        Ok(())
+        self.user(player_id.as_str())
+            .await
+            .map(|user| user.expect("upserted user should exist"))
     }
 
     pub async fn user(&self, player_id: &str) -> mongodb::error::Result<Option<UserClaims>> {
@@ -51,7 +68,7 @@ impl UsersRepository {
             self.users.find_one(doc! { "player_id": player_id }).await
         })
         .await
-        .map(|user| user.map(|user| user.user))
+        .map(|user| user.map(UserDto::into_user))
     }
 
     pub async fn users_by_id(
@@ -74,7 +91,7 @@ impl UsersRepository {
 
         Ok(users
             .into_iter()
-            .map(|user| (user.player_id, user.user))
+            .map(|user| (user.player_id.clone(), user.into_user()))
             .collect())
     }
 
@@ -131,7 +148,21 @@ struct UserDto {
     player_id: String,
     user: UserClaims,
     #[serde(default)]
+    role: Option<UserRole>,
+    #[serde(default)]
     refresh_token: Option<String>,
     #[serde(default)]
     refresh_token_expires_at: Option<i64>,
+}
+
+impl UserDto {
+    fn role(&self) -> UserRole {
+        self.role.unwrap_or_else(|| self.user.role())
+    }
+
+    fn into_user(self) -> UserClaims {
+        let role = self.role();
+
+        self.user.with_role(role)
+    }
 }

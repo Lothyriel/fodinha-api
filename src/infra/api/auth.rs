@@ -99,6 +99,7 @@ async fn update(
         UserClaims::Anonymous(claim) => UserClaims::Anonymous(AnonymousUserClaims {
             id: claim.id,
             data: params,
+            role: claim.role,
         }),
         UserClaims::Google(claim) => UserClaims::Google(GoogleUserClaims {
             email: claim.email,
@@ -114,12 +115,14 @@ async fn update(
                 .and_then(Value::as_str)
                 .filter(|picture| !picture.is_empty())
                 .map(ToOwned::to_owned),
+            role: claim.role,
         }),
     };
 
-    if let Err(e) = state.manager.upsert_user(&user).await {
-        return e.into_response();
-    }
+    let user = match state.manager.upsert_user(&user).await {
+        Ok(user) => user,
+        Err(e) => return e.into_response(),
+    };
 
     let token = match issue_auth_session(&state, user).await {
         Ok(token) => token,
@@ -137,12 +140,14 @@ async fn sign_up(State(state): State<ApiState>, Json(params): Json<Value>) -> im
     let claims = AnonymousUserClaims {
         id: gen_playerid(),
         data: params,
+        role: Default::default(),
     };
     let user = UserClaims::Anonymous(claims.clone());
 
-    if let Err(e) = state.manager.upsert_user(&user).await {
-        return e.into_response();
-    }
+    let user = match state.manager.upsert_user(&user).await {
+        Ok(user) => user,
+        Err(e) => return e.into_response(),
+    };
 
     let token = match issue_auth_session(&state, user).await {
         Ok(token) => token,
@@ -170,9 +175,10 @@ async fn exchange_google_token(
         claims = merge_guest_profile(claims, &guest);
     }
 
-    if let Err(error) = state.manager.upsert_user(&claims).await {
-        return error.into_response();
-    }
+    let claims = match state.manager.upsert_user(&claims).await {
+        Ok(claims) => claims,
+        Err(error) => return error.into_response(),
+    };
 
     let token = match issue_auth_session(&state, claims).await {
         Ok(token) => token,
@@ -366,6 +372,7 @@ mod tests {
             picture: "google-picture".to_string(),
             nickname: None,
             picture_override: None,
+            role: Default::default(),
         });
         let guest = AnonymousUserClaims {
             id: PlayerId("guest-id".into()),
@@ -373,6 +380,7 @@ mod tests {
                 "nickname": "Guest Hero",
                 "picture": "guest-picture"
             }),
+            role: Default::default(),
         };
 
         let merged = merge_guest_profile(google, &guest);

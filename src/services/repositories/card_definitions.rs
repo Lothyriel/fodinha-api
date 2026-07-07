@@ -110,6 +110,18 @@ impl CardDefinitionKind {
     }
 }
 
+impl std::str::FromStr for CardDefinitionKind {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "official" => Ok(Self::Official),
+            "community" => Ok(Self::Community),
+            _ => Err("kind must be official or community".to_string()),
+        }
+    }
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CardDefinitionDto {
     pub card_id: CardId,
