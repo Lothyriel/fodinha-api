@@ -63,7 +63,6 @@ pub struct CardDefinitionResponse {
     #[serde(rename = "type")]
     pub card_type: PowerCardType,
     pub creator_id: PlayerId,
-    pub creator: Option<UserClaims>,
     pub image_url: Option<String>,
     pub created_at: i64,
 }
@@ -75,7 +74,6 @@ pub struct PowerDeckResponse {
     pub name: String,
     pub description: String,
     pub creator_id: PlayerId,
-    pub creator: Option<UserClaims>,
     pub card_ids: Vec<CardId>,
     pub card_count: usize,
     pub cards: Vec<CardDefinitionResponse>,
@@ -198,16 +196,15 @@ impl CardDefinitionsService {
             source: script_object_key.clone(),
         };
 
-        self.storage
-            .put(
+        tokio::try_join!(
+            self.storage.put(
                 &script_object_key,
-                script.into_bytes(),
+                script.clone().into_bytes(),
                 SCRIPT_OBJECT_CONTENT_TYPE,
-            )
-            .await?;
-        self.storage
-            .put(&image_object_key, input.image, IMAGE_OBJECT_CONTENT_TYPE)
-            .await?;
+            ),
+            self.storage
+                .put(&image_object_key, input.image, IMAGE_OBJECT_CONTENT_TYPE),
+        )?;
 
         let card = CardDefinitionDto::new(NewCardDefinition {
             card_id,
@@ -225,7 +222,7 @@ impl CardDefinitionsService {
         self.cards.insert(card.clone()).await?;
         fodinha_power::upsert_power_card_definition(definition)?;
 
-        let mut cards = self.hydrate_cards(vec![card]).await?;
+        let mut cards = self.card_responses(vec![card]);
 
         Ok(cards.remove(0))
     }
@@ -288,26 +285,13 @@ impl CardDefinitionsService {
     pub async fn list_cards(&self) -> Result<Vec<CardDefinitionResponse>, CardDefinitionError> {
         let cards = self.cards.active_cards().await?;
 
-        self.hydrate_cards(cards).await
+        Ok(self.card_responses(cards))
     }
 
     pub async fn list_decks(&self) -> Result<Vec<PowerDeckResponse>, CardDefinitionError> {
         let decks = self.decks.active_decks().await?;
 
         self.hydrate_decks(decks).await
-    }
-
-    async fn hydrate_cards(
-        &self,
-        cards: Vec<CardDefinitionDto>,
-    ) -> Result<Vec<CardDefinitionResponse>, CardDefinitionError> {
-        let creator_ids = cards
-            .iter()
-            .map(|card| card.creator_id.as_str().to_string())
-            .collect::<Vec<_>>();
-        let creators = self.users.users_by_id(&creator_ids).await?;
-
-        Ok(self.card_responses(cards, &creators))
     }
 
     async fn hydrate_decks(
@@ -326,17 +310,6 @@ impl CardDefinitionsService {
             .cloned()
             .map(|card| (card.card_id.clone(), card))
             .collect::<HashMap<_, _>>();
-        let creator_ids = decks
-            .iter()
-            .map(|deck| deck.creator_id.as_str().to_string())
-            .chain(
-                cards
-                    .iter()
-                    .map(|card| card.creator_id.as_str().to_string()),
-            )
-            .collect::<Vec<_>>();
-        let creators = self.users.users_by_id(&creator_ids).await?;
-
         let mut responses = decks
             .into_iter()
             .map(|deck| {
@@ -345,7 +318,7 @@ impl CardDefinitionsService {
                     .iter()
                     .filter_map(|card_id| cards_by_id.get(card_id).cloned())
                     .collect::<Vec<_>>();
-                let card_responses = self.card_responses(cards, &creators);
+                let card_responses = self.card_responses(cards);
 
                 PowerDeckResponse {
                     id: deck.deck_id,
@@ -353,7 +326,6 @@ impl CardDefinitionsService {
                     name: deck.name,
                     description: deck.description,
                     creator_id: deck.creator_id.clone(),
-                    creator: creators.get(deck.creator_id.as_str()).cloned(),
                     card_ids: deck.card_ids,
                     card_count: card_responses.len(),
                     cards: card_responses,
@@ -367,11 +339,7 @@ impl CardDefinitionsService {
         Ok(responses)
     }
 
-    fn card_responses(
-        &self,
-        cards: Vec<CardDefinitionDto>,
-        creators: &HashMap<String, UserClaims>,
-    ) -> Vec<CardDefinitionResponse> {
+    fn card_responses(&self, cards: Vec<CardDefinitionDto>) -> Vec<CardDefinitionResponse> {
         cards
             .into_iter()
             .map(|card| CardDefinitionResponse {
@@ -382,7 +350,6 @@ impl CardDefinitionsService {
                 life: card.life,
                 card_type: card.card_type,
                 creator_id: card.creator_id.clone(),
-                creator: creators.get(card.creator_id.as_str()).cloned(),
                 image_url: card
                     .image_object_key
                     .as_deref()

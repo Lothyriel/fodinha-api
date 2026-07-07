@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 use aws_sdk_s3::{
     Client,
     config::{BehaviorVersion, Builder, Credentials, Region},
@@ -57,6 +59,9 @@ impl ObjectStorage {
         bytes: Vec<u8>,
         content_type: &str,
     ) -> Result<(), ObjectStorageError> {
+        let byte_len = bytes.len();
+        let started = Instant::now();
+
         self.client
             .put_object()
             .bucket(&self.bucket)
@@ -79,6 +84,16 @@ impl ObjectStorage {
                     operation: "put_object",
                 }
             })?;
+
+        tracing::info!(
+            bucket = %self.bucket,
+            key,
+            operation = "put_object",
+            content_type,
+            byte_len,
+            duration_ms = started.elapsed().as_millis(),
+            "object storage request completed"
+        );
 
         Ok(())
     }
