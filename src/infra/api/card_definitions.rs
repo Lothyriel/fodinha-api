@@ -8,7 +8,10 @@ use crate::{
     infra::{UserClaims, telemetry},
     models::{game::fodinha_power::PowerCardType, id::CardId},
     services::{
-        card_definitions::{CardDefinitionError, CreateCardDefinitionInput, CreatePowerDeckInput},
+        card_definitions::{
+            CardDefinitionError, CreateCardDefinitionAssetInput,
+            CreateCardDefinitionFromAssetInput, CreateCardDefinitionInput, CreatePowerDeckInput,
+        },
         repositories::{card_decks::CardDeckKind, card_definitions::CardDefinitionKind},
     },
 };
@@ -22,6 +25,8 @@ pub fn cards_router() -> Router<ApiState> {
     Router::new()
         .route("/", routing::get(list_cards))
         .route("/", routing::post(create_card))
+        .route("/assets", routing::post(create_card_asset))
+        .route("/from-asset", routing::post(create_card_from_asset))
         .layer(middleware::from_fn(telemetry::http_middleware))
 }
 
@@ -48,6 +53,40 @@ async fn create_card(
     let card = state
         .manager
         .create_card_definition(user_claims.id(), input)
+        .await?;
+
+    Ok(Json(card))
+}
+
+async fn create_card_asset(
+    State(state): State<ApiState>,
+    multipart: Multipart,
+) -> Result<Json<crate::services::card_definitions::CardDefinitionAssetResponse>, CardDefinitionError>
+{
+    let input = read_create_card_asset_input(multipart).await?;
+    let asset = state.manager.create_card_definition_asset(input).await?;
+
+    Ok(Json(asset))
+}
+
+async fn create_card_from_asset(
+    State(state): State<ApiState>,
+    Extension(user_claims): Extension<UserClaims>,
+    Json(body): Json<CreateCardFromAssetRequest>,
+) -> Result<Json<crate::services::card_definitions::CardDefinitionResponse>, CardDefinitionError> {
+    let card = state
+        .manager
+        .create_card_definition_from_asset(
+            user_claims.id(),
+            CreateCardDefinitionFromAssetInput {
+                asset_id: body.asset_id,
+                kind: body.kind.unwrap_or(CardDefinitionKind::Community),
+                name: body.name,
+                description: body.description.unwrap_or_default(),
+                life: body.life,
+                card_type: body.card_type,
+            },
+        )
         .await?;
 
     Ok(Json(card))
@@ -86,6 +125,52 @@ struct CreatePowerDeckRequest {
     name: String,
     description: Option<String>,
     card_ids: Vec<CardId>,
+}
+
+#[derive(serde::Deserialize)]
+struct CreateCardFromAssetRequest {
+    asset_id: CardId,
+    kind: Option<CardDefinitionKind>,
+    name: String,
+    description: Option<String>,
+    life: Option<i32>,
+    #[serde(rename = "type")]
+    card_type: PowerCardType,
+}
+
+async fn read_create_card_asset_input(
+    mut multipart: Multipart,
+) -> Result<CreateCardDefinitionAssetInput, CardDefinitionError> {
+    let mut image = Vec::new();
+    let mut script = Vec::new();
+
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|error| CardDefinitionError::Invalid(error.to_string()))?
+    {
+        let field_name = field.name().unwrap_or_default().to_string();
+
+        match field_name.as_str() {
+            "image" => {
+                image = field_bytes(field, MAX_IMAGE_BYTES, "image").await?;
+            }
+            "script" => {
+                if let Some(file_name) = field.file_name()
+                    && !file_name.ends_with(".lua")
+                {
+                    return Err(CardDefinitionError::Invalid(
+                        "script must be a .lua file".to_string(),
+                    ));
+                }
+
+                script = field_bytes(field, MAX_SCRIPT_BYTES, "script").await?;
+            }
+            _ => {}
+        }
+    }
+
+    Ok(CreateCardDefinitionAssetInput { image, script })
 }
 
 async fn read_create_card_input(

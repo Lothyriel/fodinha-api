@@ -25,6 +25,7 @@ use crate::{
 
 const IMAGE_OBJECT_CONTENT_TYPE: &str = "image/png";
 const SCRIPT_OBJECT_CONTENT_TYPE: &str = "text/x-lua";
+const CARD_ASSET_ID_LEN: usize = 16;
 
 #[derive(Clone)]
 pub struct CardDefinitionsService {
@@ -43,6 +44,22 @@ pub struct CreateCardDefinitionInput {
     pub card_type: PowerCardType,
     pub image: Vec<u8>,
     pub script: Vec<u8>,
+}
+
+#[derive(Debug)]
+pub struct CreateCardDefinitionAssetInput {
+    pub image: Vec<u8>,
+    pub script: Vec<u8>,
+}
+
+#[derive(Debug)]
+pub struct CreateCardDefinitionFromAssetInput {
+    pub asset_id: CardId,
+    pub kind: CardDefinitionKind,
+    pub name: String,
+    pub description: String,
+    pub life: Option<i32>,
+    pub card_type: PowerCardType,
 }
 
 #[derive(Debug)]
@@ -65,6 +82,12 @@ pub struct CardDefinitionResponse {
     pub creator_id: PlayerId,
     pub image_url: Option<String>,
     pub created_at: i64,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct CardDefinitionAssetResponse {
+    pub asset_id: CardId,
+    pub image_url: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -180,8 +203,8 @@ impl CardDefinitionsService {
         let script = String::from_utf8(input.script)
             .map_err(|error| CardDefinitionError::Script(error.to_string()))?;
         let card_id = gen_cardid();
-        let image_object_key = format!("card-definitions/{}/card.png", card_id.as_str());
-        let script_object_key = format!("card-definitions/{}/effect.lua", card_id.as_str());
+        let image_object_key = card_image_object_key(&card_id);
+        let script_object_key = card_script_object_key(&card_id);
 
         power_lua::validate_power_card_script(&script, &script_object_key)
             .map_err(|error| CardDefinitionError::Script(error.to_string()))?;
@@ -205,6 +228,115 @@ impl CardDefinitionsService {
             self.storage
                 .put(&image_object_key, input.image, IMAGE_OBJECT_CONTENT_TYPE),
         )?;
+
+        let card = CardDefinitionDto::new(NewCardDefinition {
+            card_id,
+            kind: input.kind,
+            name: name.to_string(),
+            description: description.to_string(),
+            life: input.life,
+            card_type: input.card_type,
+            creator_id,
+            image_object_key: Some(image_object_key),
+            script_object_key,
+            image_content_type: Some(IMAGE_OBJECT_CONTENT_TYPE.to_string()),
+        });
+
+        self.cards.insert(card.clone()).await?;
+        fodinha_power::upsert_power_card_definition(definition)?;
+
+        let mut cards = self.card_responses(vec![card]);
+
+        Ok(cards.remove(0))
+    }
+
+    pub async fn create_card_asset(
+        &self,
+        input: CreateCardDefinitionAssetInput,
+    ) -> Result<CardDefinitionAssetResponse, CardDefinitionError> {
+        if input.image.is_empty() {
+            return Err(CardDefinitionError::Invalid(
+                "image is required".to_string(),
+            ));
+        }
+
+        if input.script.is_empty() {
+            return Err(CardDefinitionError::Invalid(
+                "lua script is required".to_string(),
+            ));
+        }
+
+        let asset_id = gen_cardid();
+        let image_object_key = card_image_object_key(&asset_id);
+        let script_object_key = card_script_object_key(&asset_id);
+        let script = String::from_utf8(input.script)
+            .map_err(|error| CardDefinitionError::Script(error.to_string()))?;
+
+        power_lua::validate_power_card_script(&script, &script_object_key)
+            .map_err(|error| CardDefinitionError::Script(error.to_string()))?;
+
+        tokio::try_join!(
+            self.storage.put(
+                &script_object_key,
+                script.into_bytes(),
+                SCRIPT_OBJECT_CONTENT_TYPE,
+            ),
+            self.storage
+                .put(&image_object_key, input.image, IMAGE_OBJECT_CONTENT_TYPE),
+        )?;
+
+        Ok(CardDefinitionAssetResponse {
+            asset_id,
+            image_url: self.storage.public_url(&image_object_key),
+        })
+    }
+
+    pub async fn create_card_from_asset(
+        &self,
+        creator_id: PlayerId,
+        input: CreateCardDefinitionFromAssetInput,
+    ) -> Result<CardDefinitionResponse, CardDefinitionError> {
+        self.ensure_can_create_card_kind(&creator_id, input.kind)
+            .await?;
+
+        let name = input.name.trim();
+        let description = input.description.trim();
+
+        if !is_card_asset_id(input.asset_id.as_str()) {
+            return Err(CardDefinitionError::Invalid(
+                "invalid card asset id".to_string(),
+            ));
+        }
+
+        if name.is_empty() {
+            return Err(CardDefinitionError::Invalid("name is required".to_string()));
+        }
+
+        if description.is_empty() {
+            return Err(CardDefinitionError::Invalid(
+                "description is required".to_string(),
+            ));
+        }
+
+        let card_id = input.asset_id;
+        let image_object_key = card_image_object_key(&card_id);
+        let script_object_key = card_script_object_key(&card_id);
+        let script = self.storage.get_bytes(&script_object_key).await?;
+        let script = String::from_utf8(script)
+            .map_err(|error| CardDefinitionError::Script(error.to_string()))?;
+
+        power_lua::validate_power_card_script(&script, &script_object_key)
+            .map_err(|error| CardDefinitionError::Script(error.to_string()))?;
+
+        let definition = PowerCardDefinitionInput {
+            id: card_id.clone(),
+            name: name.to_string(),
+            description: description.to_string(),
+            card_type: input.card_type,
+            image_url: self.storage.public_url(&image_object_key),
+            script,
+            source: script_object_key.clone(),
+        };
 
         let card = CardDefinitionDto::new(NewCardDefinition {
             card_id,
@@ -417,4 +549,19 @@ impl CardDefinitionsService {
             source: card.script_object_key.clone(),
         }
     }
+}
+
+fn card_image_object_key(card_id: &CardId) -> String {
+    format!("card-definitions/{}/card.png", card_id.as_str())
+}
+
+fn card_script_object_key(card_id: &CardId) -> String {
+    format!("card-definitions/{}/effect.lua", card_id.as_str())
+}
+
+fn is_card_asset_id(value: &str) -> bool {
+    value.len() == CARD_ASSET_ID_LEN
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
 }

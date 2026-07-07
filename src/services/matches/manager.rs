@@ -30,8 +30,10 @@ use crate::{
     services::{
         LobbyError, ManagerError,
         card_definitions::{
-            CardDefinitionError, CardDefinitionResponse, CardDefinitionsService,
-            CreateCardDefinitionInput, CreatePowerDeckInput, PowerDeckResponse,
+            CardDefinitionAssetResponse, CardDefinitionError, CardDefinitionResponse,
+            CardDefinitionsService, CreateCardDefinitionAssetInput,
+            CreateCardDefinitionFromAssetInput, CreateCardDefinitionInput, CreatePowerDeckInput,
+            PowerDeckResponse,
         },
         matches::{
             MatchActor, MatchActorContext, MatchActorMessage, MatchReceiver, MatchRegistry,
@@ -324,6 +326,23 @@ impl ManagerHandle {
         input: CreateCardDefinitionInput,
     ) -> Result<CardDefinitionResponse, CardDefinitionError> {
         self.card_definitions.create_card(creator_id, input).await
+    }
+
+    pub async fn create_card_definition_asset(
+        &self,
+        input: CreateCardDefinitionAssetInput,
+    ) -> Result<CardDefinitionAssetResponse, CardDefinitionError> {
+        self.card_definitions.create_card_asset(input).await
+    }
+
+    pub async fn create_card_definition_from_asset(
+        &self,
+        creator_id: PlayerId,
+        input: CreateCardDefinitionFromAssetInput,
+    ) -> Result<CardDefinitionResponse, CardDefinitionError> {
+        self.card_definitions
+            .create_card_from_asset(creator_id, input)
+            .await
     }
 
     pub async fn card_definitions(
