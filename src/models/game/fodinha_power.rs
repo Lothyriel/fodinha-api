@@ -600,6 +600,10 @@ impl Game {
         let definition = power_card_definition(&self.power_deck_id, &card.id)?
             .ok_or(PowerCardError::InvalidPowerCard)?;
 
+        if definition.card_type.needs_target() && target_player_id.is_none() {
+            return Err(PowerCardError::TargetRequired);
+        }
+
         if self
             .mana
             .get(player_id)
@@ -608,10 +612,6 @@ impl Game {
             < definition.mana_cost
         {
             return Err(PowerCardError::NotEnoughMana);
-        }
-
-        if definition.card_type.needs_target() && target_player_id.is_none() {
-            return Err(PowerCardError::TargetRequired);
         }
 
         if let Some(target_player_id) = target_player_id.as_ref()
@@ -1255,6 +1255,13 @@ return {
                     .to_card(),
             ],
         );
+        game.mana.insert(
+            player1.clone(),
+            PlayerMana {
+                current: 3,
+                max: 3,
+            },
+        );
 
         let event = game
             .validate_power_card(&player1, &card_id("strike_10"), Some(player2.clone()))
@@ -1282,6 +1289,13 @@ return {
                     .unwrap()
                     .to_card(),
             ],
+        );
+        game.mana.insert(
+            player1.clone(),
+            PlayerMana {
+                current: 5,
+                max: 5,
+            },
         );
 
         let event = game
@@ -1356,6 +1370,13 @@ return {
             power_deck_id: custom_deck_id,
         };
         let mut game = Game::new_with_seed(&players, settings, 42).unwrap();
+        game.mana.insert(
+            player1.clone(),
+            PlayerMana {
+                current: 3,
+                max: 3,
+            },
+        );
 
         let event = game
             .validate_power_card(&player1, &card_id("strike_10"), Some(player2.clone()))
@@ -1506,7 +1527,7 @@ return {
         game.mana.insert(
             player2.clone(),
             PlayerMana {
-                current: 4,
+                current: 1,
                 max: INITIAL_MANA_POOL,
             },
         );
@@ -1516,7 +1537,7 @@ return {
             panic!("expected bid event");
         };
 
-        assert_eq!(mana.get(&player2), Some(&PlayerMana { current: 5, max: 5 }));
+        assert_eq!(mana.get(&player2), Some(&PlayerMana { current: 2, max: 2 }));
 
         let AppliedGameChange::BidPlaced { mana, .. } = game.apply_match_event(event) else {
             panic!("expected bid change");
@@ -1524,9 +1545,9 @@ return {
 
         assert_eq!(
             mana.get(&player2),
-            Some(&PlayerManaDto { current: 5, max: 5 })
+            Some(&PlayerManaDto { current: 2, max: 2 })
         );
-        assert_eq!(game.mana[&player2].current, 5);
+        assert_eq!(game.mana[&player2].current, 2);
     }
 
     #[test]
@@ -1581,16 +1602,16 @@ return {
 
         assert_eq!(
             mana.get(&player1),
-            Some(&PlayerManaDto { current: 6, max: 6 })
+            Some(&PlayerManaDto { current: 3, max: 3 })
         );
         assert_eq!(
             mana.get(&player2),
-            Some(&PlayerManaDto { current: 6, max: 6 })
+            Some(&PlayerManaDto { current: 3, max: 3 })
         );
-        assert_eq!(game.mana[&player1].current, 6);
-        assert_eq!(game.mana[&player1].max, 6);
-        assert_eq!(game.mana[&player2].current, 6);
-        assert_eq!(game.mana[&player2].max, 6);
+        assert_eq!(game.mana[&player1].current, 3);
+        assert_eq!(game.mana[&player1].max, 3);
+        assert_eq!(game.mana[&player2].current, 3);
+        assert_eq!(game.mana[&player2].max, 3);
     }
 
     #[test]

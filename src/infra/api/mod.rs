@@ -1434,6 +1434,7 @@ return {
                 MatchSnapshot::Playing(data) => {
                     assert_eq!(data.game.info.len(), 2);
                     assert!(data.game.info.iter().all(|player| player.lifes == 50));
+                    assert!(data.game.info.iter().all(|player| player.mana.is_some()));
                     assert_eq!(data.game.power_cards.as_ref().unwrap().len(), 1);
                 }
                 snapshot => panic!("Expected playing snapshot, got {snapshot:?}"),
@@ -1442,6 +1443,10 @@ return {
 
         for p in player_data.values_mut() {
             assert_game_msg(&mut p.connection, validate_set_start).await;
+        }
+
+        for p in player_data.values_mut() {
+            assert_eq!(get_players_mana(&mut p.connection).await.len(), 2);
         }
 
         for p in player_data.values_mut() {
@@ -1471,6 +1476,10 @@ return {
 
         for p in player_data.values_mut() {
             assert_game_msg(&mut p.connection, validate_set_start).await;
+        }
+
+        for p in player_data.values_mut() {
+            assert_eq!(get_players_mana(&mut p.connection).await.len(), 2);
         }
 
         let mut power_cards_by_player = HashMap::new();
@@ -1759,8 +1768,14 @@ return {
     }
 
     async fn get_power_decks(players: &mut TestPlayersData) {
+        let player_count = players.len();
+
         for p in players.values_mut() {
             assert_game_msg(&mut p.connection, validate_set_start).await;
+        }
+
+        for p in players.values_mut() {
+            assert_eq!(get_players_mana(&mut p.connection).await.len(), player_count);
         }
 
         for p in players.values_mut() {
@@ -1891,6 +1906,10 @@ return {
         matches!(m, ServerMessage::SetStart { upcard: _ })
     }
 
+    fn validate_players_mana_changed(m: &ServerMessage) -> bool {
+        matches!(m, ServerMessage::PlayersManaChanged(_))
+    }
+
     fn validate_power_card_played(m: &ServerMessage) -> bool {
         matches!(m, ServerMessage::PowerCardPlayed { .. })
     }
@@ -1923,6 +1942,15 @@ return {
         match assert_game_msg(stream, |m| matches!(m, ServerMessage::PlayerPowerCards(_))).await {
             ServerMessage::PlayerPowerCards(c) => c,
             _ => panic!("Should be a PlayerPowerCards message"),
+        }
+    }
+
+    async fn get_players_mana(
+        stream: &mut WebSocket,
+    ) -> HashMap<PlayerId, crate::services::PlayerManaDto> {
+        match assert_game_msg(stream, validate_players_mana_changed).await {
+            ServerMessage::PlayersManaChanged(mana) => mana,
+            _ => panic!("Should be a PlayersManaChanged message"),
         }
     }
 
