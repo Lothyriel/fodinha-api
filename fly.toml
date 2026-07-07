@@ -18,6 +18,7 @@ kill_timeout = '30s'
   object_storage_bucket = "fodinha-bucket"
   object_storage_access_key_id = "tid_biVsgUMgEBzotVCayyVnLWSZCznEXejwJiUhrvSJvCMBRSbVGX"
   object_storage_endpoint = "https://t3.storage.dev"
+  object_storage_force_path_style = false
   object_storage_region = "auto"
   object_storage_public_base_url = "https://fodinha-bucket.t3.tigrisbucket.io"
 

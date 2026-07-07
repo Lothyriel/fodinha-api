@@ -31,7 +31,7 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use crate::models::game::GameType;
 
-const DEFAULT_FILTER: &str = "debug,hyper=off,rustls=error,tungstenite=error";
+const DEFAULT_FILTER: &str = "info,hyper=off,rustls=error,tungstenite=error";
 const LATENCY_HISTOGRAM_BUCKETS: &[f64] = &[
     0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0,
 ];

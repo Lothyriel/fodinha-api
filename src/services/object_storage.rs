@@ -15,8 +15,12 @@ pub struct ObjectStorage {
 
 #[derive(Debug, thiserror::Error)]
 pub enum ObjectStorageError {
-    #[error("object storage error: {0}")]
-    S3(String),
+    #[error("object storage {operation} failed for {bucket}/{key}")]
+    S3 {
+        bucket: String,
+        key: String,
+        operation: &'static str,
+    },
 }
 
 impl ObjectStorage {
@@ -61,7 +65,20 @@ impl ObjectStorage {
             .body(ByteStream::from(bytes))
             .send()
             .await
-            .map_err(|error| ObjectStorageError::S3(error.to_string()))?;
+            .map_err(|error| {
+                tracing::error!(
+                    bucket = %self.bucket,
+                    key,
+                    operation = "put_object",
+                    error = ?error,
+                    "object storage request failed"
+                );
+                ObjectStorageError::S3 {
+                    bucket: self.bucket.clone(),
+                    key: key.to_string(),
+                    operation: "put_object",
+                }
+            })?;
 
         Ok(())
     }
@@ -74,12 +91,38 @@ impl ObjectStorage {
             .key(key)
             .send()
             .await
-            .map_err(|error| ObjectStorageError::S3(error.to_string()))?;
+            .map_err(|error| {
+                tracing::error!(
+                    bucket = %self.bucket,
+                    key,
+                    operation = "get_object",
+                    error = ?error,
+                    "object storage request failed"
+                );
+                ObjectStorageError::S3 {
+                    bucket: self.bucket.clone(),
+                    key: key.to_string(),
+                    operation: "get_object",
+                }
+            })?;
         let bytes = object
             .body
             .collect()
             .await
-            .map_err(|error| ObjectStorageError::S3(error.to_string()))?
+            .map_err(|error| {
+                tracing::error!(
+                    bucket = %self.bucket,
+                    key,
+                    operation = "read_object_body",
+                    error = ?error,
+                    "object storage response body failed"
+                );
+                ObjectStorageError::S3 {
+                    bucket: self.bucket.clone(),
+                    key: key.to_string(),
+                    operation: "read_object_body",
+                }
+            })?
             .into_bytes();
 
         Ok(bytes.to_vec())
