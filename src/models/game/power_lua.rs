@@ -7,11 +7,24 @@ use std::{
 
 use mlua::{HookTriggers, Lua, LuaOptions, StdLib, Value, VmState};
 
-use crate::models::{Card, Rank, Suit, game::fodinha_power::PowerCardType, id::PlayerId};
+use crate::models::{
+    Card, Rank, Suit,
+    game::fodinha_power::PowerCardType,
+    id::{MercenaryId, PlayerId},
+};
 
 const LUA_MEMORY_LIMIT_BYTES: usize = 256 * 1024;
 const LUA_HOOK_INSTRUCTION_INTERVAL: u32 = 1_000;
 const LUA_MAX_HOOK_TICKS: u32 = 100;
+const PASSIVE_EVENT_HANDLERS: &[&str] = &[
+    "on_match_started",
+    "on_bid_placed",
+    "on_power_card_played",
+    "on_turn_played",
+    "on_round_ended",
+    "on_set_started",
+    "on_set_ended",
+];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScriptPlayerState {
@@ -48,6 +61,61 @@ pub struct PowerScriptInput {
     pub players: HashMap<PlayerId, ScriptPlayerState>,
 }
 
+#[derive(Debug, Clone)]
+pub struct PassiveScriptInput {
+    pub mercenary_id: MercenaryId,
+    pub owner_id: PlayerId,
+    pub event: PassiveGameEvent,
+    pub players: HashMap<PlayerId, ScriptPlayerState>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PassiveGameEvent {
+    MatchStarted,
+    BidPlaced {
+        player_id: PlayerId,
+        bid: usize,
+    },
+    PowerCardPlayed {
+        player_id: PlayerId,
+        card_id: String,
+        target_player_id: Option<PlayerId>,
+    },
+    TurnPlayed {
+        player_id: PlayerId,
+        card: Card,
+    },
+    RoundEnded,
+    SetStarted,
+    SetEnded,
+}
+
+impl PassiveGameEvent {
+    fn handler_name(&self) -> &'static str {
+        match self {
+            Self::MatchStarted => "on_match_started",
+            Self::BidPlaced { .. } => "on_bid_placed",
+            Self::PowerCardPlayed { .. } => "on_power_card_played",
+            Self::TurnPlayed { .. } => "on_turn_played",
+            Self::RoundEnded => "on_round_ended",
+            Self::SetStarted => "on_set_started",
+            Self::SetEnded => "on_set_ended",
+        }
+    }
+
+    fn event_type(&self) -> &'static str {
+        match self {
+            Self::MatchStarted => "match_started",
+            Self::BidPlaced { .. } => "bid_placed",
+            Self::PowerCardPlayed { .. } => "power_card_played",
+            Self::TurnPlayed { .. } => "turn_played",
+            Self::RoundEnded => "round_ended",
+            Self::SetStarted => "set_started",
+            Self::SetEnded => "set_ended",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PowerScriptOutput {
     pub lifes: HashMap<PlayerId, usize>,
@@ -64,6 +132,10 @@ pub enum PowerScriptError {
 
 pub fn validate_power_card_script(source: &str, path: &str) -> Result<(), mlua::Error> {
     with_power_card_table(source, path, |table| validate_power_card_table(&table))
+}
+
+pub fn validate_mercenary_passive_script(source: &str, path: &str) -> Result<(), mlua::Error> {
+    with_power_card_table(source, path, |table| validate_passive_table(&table))
 }
 
 fn with_power_card_table<T>(
@@ -108,6 +180,42 @@ fn validate_power_card_table(table: &mlua::Table) -> Result<(), mlua::Error> {
     Ok(())
 }
 
+fn validate_passive_table(table: &mlua::Table) -> Result<(), mlua::Error> {
+    let mut has_handler = false;
+
+    for pair in table.clone().pairs::<Value, Value>() {
+        let (key, value) = pair?;
+        let Value::String(key) = key else {
+            return Err(mlua::Error::external(
+                "passive script table can only contain event handler fields",
+            ));
+        };
+        let key = key.to_str()?;
+
+        if !PASSIVE_EVENT_HANDLERS.contains(&key.as_ref()) {
+            return Err(mlua::Error::external(format!(
+                "unsupported passive event handler: {key}"
+            )));
+        }
+
+        if !matches!(value, Value::Function(_)) {
+            return Err(mlua::Error::external(format!(
+                "passive event handler {key} must be a function"
+            )));
+        }
+
+        has_handler = true;
+    }
+
+    if !has_handler {
+        return Err(mlua::Error::external(
+            "passive script must define at least one event handler",
+        ));
+    }
+
+    Ok(())
+}
+
 pub fn run_power_card_script(
     script: &str,
     input: PowerScriptInput,
@@ -139,9 +247,53 @@ pub fn run_power_card_script(
         effect.call::<()>((game, card))?;
     }
 
-    let players = players.borrow();
-    let lifes = input
-        .players
+    Ok(output_from_players(&input.players, &players.borrow()))
+}
+
+pub fn run_passive_script(
+    script: &str,
+    input: PassiveScriptInput,
+) -> Result<PowerScriptOutput, PowerScriptError> {
+    let players = Rc::new(RefCell::new(
+        input
+            .players
+            .iter()
+            .map(|(player_id, state)| (player_id.as_str().to_string(), state.clone()))
+            .collect::<HashMap<_, _>>(),
+    ));
+
+    let lua = Lua::new_with(
+        StdLib::TABLE | StdLib::STRING | StdLib::MATH,
+        LuaOptions::new(),
+    )?;
+
+    set_limits(&lua)?;
+
+    let globals = lua.globals();
+    let game = build_game_api(&lua, Rc::clone(&players))?;
+    let event = build_event_table(&lua, &input.event)?;
+    let mercenary = build_mercenary_table(&lua, &input)?;
+
+    globals.set("game", game.clone())?;
+    globals.set("event", event.clone())?;
+    globals.set("mercenary", mercenary.clone())?;
+
+    if let Value::Table(table) = lua.load(script).set_name("mercenary_passive").eval()? {
+        let handler: Value = table.get(input.event.handler_name())?;
+
+        if let Value::Function(handler) = handler {
+            handler.call::<()>((game, event, mercenary))?;
+        }
+    }
+
+    Ok(output_from_players(&input.players, &players.borrow()))
+}
+
+fn output_from_players(
+    initial: &HashMap<PlayerId, ScriptPlayerState>,
+    players: &HashMap<String, ScriptPlayerState>,
+) -> PowerScriptOutput {
+    let lifes = initial
         .iter()
         .filter_map(|(player_id, initial_state)| {
             let next = players.get(player_id.as_str())?;
@@ -150,8 +302,7 @@ pub fn run_power_card_script(
         })
         .collect();
 
-    let mana = input
-        .players
+    let mana = initial
         .iter()
         .filter_map(|(player_id, initial_state)| {
             let next = players.get(player_id.as_str())?;
@@ -160,8 +311,7 @@ pub fn run_power_card_script(
         })
         .collect();
 
-    let cards = input
-        .players
+    let cards = initial
         .iter()
         .filter_map(|(player_id, initial_state)| {
             let next = players.get(player_id.as_str())?;
@@ -170,8 +320,7 @@ pub fn run_power_card_script(
         })
         .collect();
 
-    let power_cards = input
-        .players
+    let power_cards = initial
         .iter()
         .filter_map(|(player_id, initial_state)| {
             let next = players.get(player_id.as_str())?;
@@ -181,12 +330,12 @@ pub fn run_power_card_script(
         })
         .collect();
 
-    Ok(PowerScriptOutput {
+    PowerScriptOutput {
         lifes,
         mana,
         cards,
         power_cards,
-    })
+    }
 }
 
 fn set_limits(lua: &Lua) -> Result<(), mlua::Error> {
@@ -571,6 +720,50 @@ fn build_card_table(lua: &Lua, input: &PowerScriptInput) -> mlua::Result<mlua::T
     Ok(card)
 }
 
+fn build_mercenary_table(lua: &Lua, input: &PassiveScriptInput) -> mlua::Result<mlua::Table> {
+    let mercenary = lua.create_table()?;
+
+    mercenary.set("id", input.mercenary_id.as_str())?;
+    mercenary.set("owner_id", input.owner_id.as_str())?;
+
+    Ok(mercenary)
+}
+
+fn build_event_table(lua: &Lua, event: &PassiveGameEvent) -> mlua::Result<mlua::Table> {
+    let table = lua.create_table()?;
+
+    table.set("type", event.event_type())?;
+
+    match event {
+        PassiveGameEvent::MatchStarted
+        | PassiveGameEvent::RoundEnded
+        | PassiveGameEvent::SetStarted
+        | PassiveGameEvent::SetEnded => {}
+        PassiveGameEvent::BidPlaced { player_id, bid } => {
+            table.set("player_id", player_id.as_str())?;
+            table.set("bid", *bid)?;
+        }
+        PassiveGameEvent::PowerCardPlayed {
+            player_id,
+            card_id,
+            target_player_id,
+        } => {
+            table.set("player_id", player_id.as_str())?;
+            table.set("card_id", card_id.as_str())?;
+            table.set(
+                "target_player_id",
+                target_player_id.as_ref().map(PlayerId::as_str),
+            )?;
+        }
+        PassiveGameEvent::TurnPlayed { player_id, card } => {
+            table.set("player_id", player_id.as_str())?;
+            table.set("card", card_to_lua_table(lua, *card)?)?;
+        }
+    }
+
+    Ok(table)
+}
+
 fn cards_to_lua_table(lua: &Lua, cards: &[Card]) -> mlua::Result<mlua::Table> {
     let table = lua.create_table()?;
 
@@ -701,6 +894,64 @@ mod tests {
             target_player_id,
             players,
         }
+    }
+
+    fn passive_input(
+        owner_id: PlayerId,
+        event: PassiveGameEvent,
+        players: HashMap<PlayerId, ScriptPlayerState>,
+    ) -> PassiveScriptInput {
+        PassiveScriptInput {
+            mercenary_id: crate::models::id::MercenaryId(Arc::from("artemis")),
+            owner_id,
+            event,
+            players,
+        }
+    }
+
+    #[test]
+    fn passive_script_rejects_unknown_handlers() {
+        let source = r#"
+            return {
+                on_unknown = function(game, event, mercenary)
+                end,
+            }
+        "#;
+
+        let error = validate_mercenary_passive_script(source, "passive.lua").unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("unsupported passive event handler")
+        );
+    }
+
+    #[test]
+    fn passive_script_can_react_to_bid_events() {
+        let player = PlayerId(Arc::from("P1"));
+        let output = run_passive_script(
+            r#"
+            return {
+                on_bid_placed = function(game, event, mercenary)
+                    if event.player_id == mercenary.owner_id then
+                        game.add_lives(mercenary.owner_id, event.bid)
+                    end
+                end,
+            }
+            "#,
+            passive_input(
+                player.clone(),
+                PassiveGameEvent::BidPlaced {
+                    player_id: player.clone(),
+                    bid: 2,
+                },
+                HashMap::from([(player.clone(), script_player(50))]),
+            ),
+        )
+        .unwrap();
+
+        assert_eq!(output.lifes.get(&player), Some(&52));
     }
 
     #[test]

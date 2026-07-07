@@ -2,6 +2,7 @@ mod auth;
 mod card_definitions;
 mod game;
 mod lobby;
+mod mercenaries;
 pub mod models;
 mod stats;
 
@@ -18,6 +19,7 @@ use crate::{
     models::GameError,
     services::{
         LobbyError, ManagerError, card_definitions::CardDefinitionError, matches::ManagerHandle,
+        mercenaries::MercenaryError,
     },
 };
 
@@ -101,7 +103,11 @@ fn build_app(
             "/card-definitions",
             card_definitions::cards_router().layer(auth.clone()),
         )
-        .nest("/power-decks", card_definitions::decks_router().layer(auth))
+        .nest(
+            "/power-decks",
+            card_definitions::decks_router().layer(auth.clone()),
+        )
+        .nest("/mercenaries", mercenaries::router().layer(auth))
         .nest("/stats", stats::router(state.clone()))
         .nest("/auth", auth::router(state.clone()))
         .fallback(fallback_handler)
@@ -131,6 +137,7 @@ impl IntoResponse for LobbyError {
             LobbyError::GameNotStarted => StatusCode::PRECONDITION_FAILED,
             LobbyError::WrongLobby => StatusCode::FORBIDDEN,
             LobbyError::PlayerNotInLobby => StatusCode::FORBIDDEN,
+            LobbyError::MercenaryRequired => StatusCode::BAD_REQUEST,
             LobbyError::GameError(e) => match e {
                 GameError::NotEnoughPlayers => StatusCode::CONFLICT,
                 GameError::TooManyPlayers => StatusCode::CONFLICT,
@@ -180,6 +187,20 @@ impl IntoResponse for CardDefinitionError {
     }
 }
 
+impl IntoResponse for MercenaryError {
+    fn into_response(self) -> axum::response::Response {
+        let code = match &self {
+            MercenaryError::Invalid(_) | MercenaryError::Script(_) => StatusCode::BAD_REQUEST,
+            MercenaryError::Forbidden(_) => StatusCode::FORBIDDEN,
+            MercenaryError::Storage(_) | MercenaryError::Database(_) => {
+                StatusCode::INTERNAL_SERVER_ERROR
+            }
+        };
+
+        (code, Json(serde_json::json!({"error": self.to_string()}))).into_response()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::{collections::HashMap, net::Ipv4Addr};
@@ -211,13 +232,15 @@ mod tests {
                 ClientCommand, CreateLobbyResponse, LobbyInfo, MatchSnapshot, ServerMessage,
             },
             game::{GameCommand, GameType, fodinha_classic, fodinha_power},
-            id::{CardId, DeckId, LobbyId, PlayerId},
+            id::{CardId, DeckId, LobbyId, MercenaryId, PlayerId},
         },
         services::{
             manager::GameManager,
             matches::{ManagerHandle, WAITING_LOBBY_INACTIVITY_CLOSE_CODE},
             repositories::{
-                card_decks::{CardDeckDto, CardDeckKind, CardDecksRepository, NewCardDeck},
+                card_decks::{
+                    CardDeckDto, CardDeckKind, CardDeckStatus, CardDecksRepository, NewCardDeck,
+                },
                 get_mongo_client,
             },
             stats::PlayerStatsResponse,
@@ -516,7 +539,7 @@ return {
                     id: CardId("strike_10".into()),
                     name: "Strike 10".to_string(),
                     description: "Remove 10 lives from a target player.".to_string(),
-                    mana_cost: 3,
+                    mana_cost: 2,
                     card_type: fodinha_power::PowerCardType::Targetable,
                     image_url: None,
                     script: TEST_STRIKE_10_SCRIPT.to_string(),
@@ -547,6 +570,9 @@ return {
                 description: "Test Fodinha Power deck".to_string(),
                 creator_id: PlayerId("test".into()),
                 card_ids: vec![CardId("heal_10".into()), CardId("strike_10".into())],
+                generic_card_ids: Vec::new(),
+                mercenary_card_ids: Default::default(),
+                status: CardDeckStatus::Valid,
             }))
             .await
             .expect("expected to insert test power deck");
@@ -1427,6 +1453,7 @@ return {
         }
 
         let mut player_data = connect_players(&server, tokens).await;
+        select_test_mercenaries(&mut player_data).await;
         let snapshots = ready_with_snapshots(&mut player_data).await;
 
         for snapshot in snapshots.values() {
@@ -1472,6 +1499,7 @@ return {
         }
 
         let mut player_data = connect_players(&server, tokens).await;
+        select_test_mercenaries(&mut player_data).await;
         ready(&mut player_data).await;
 
         for p in player_data.values_mut() {
@@ -1543,6 +1571,38 @@ return {
     }
 
     #[tokio::test]
+    async fn test_fodinha_power_requires_mercenary_before_ready() {
+        let server = TestServer::start().await;
+
+        let client = http_client();
+        let tokens = get_players(&client, &server, 2).await;
+        let lobby_id = create_power_lobby(&client, &server, &tokens[0]).await;
+
+        for token in &tokens {
+            join_lobby_http(&client, &server, token, &lobby_id).await;
+        }
+
+        let mut player_data = connect_players(&server, tokens).await;
+        let player = player_data.values_mut().next().unwrap();
+
+        send_msg(
+            &mut player.connection,
+            ClientCommand::PlayerStatusChange { ready: true },
+        )
+        .await;
+
+        match assert_game_msg(&mut player.connection, validate_error).await {
+            ServerMessage::Error { msg } => {
+                assert!(msg.contains("Mercenary selection is required"));
+            }
+            msg => panic!("Expected error, got {msg:?}"),
+        }
+
+        drop(player_data);
+        server.shutdown().await;
+    }
+
+    #[tokio::test]
     async fn test_fodinha_power_full_set_loses_ten_lives() {
         let server = TestServer::start().await;
 
@@ -1555,6 +1615,7 @@ return {
         }
 
         let mut player_data = connect_players(&server, tokens).await;
+        select_test_mercenaries(&mut player_data).await;
         ready(&mut player_data).await;
         get_power_decks(&mut player_data).await;
         play_power_set(&mut player_data).await;
@@ -1767,6 +1828,37 @@ return {
         snapshots
     }
 
+    async fn select_test_mercenaries(players: &mut TestPlayersData) {
+        let selections = players
+            .keys()
+            .enumerate()
+            .map(|(idx, player_id)| {
+                (
+                    player_id.clone(),
+                    MercenaryId(format!("test_mercenary_{idx}").into()),
+                )
+            })
+            .collect::<Vec<_>>();
+
+        for (player_id, mercenary_id) in &selections {
+            let player = players.get_mut(player_id).unwrap();
+
+            send_msg(
+                &mut player.connection,
+                ClientCommand::SelectMercenary {
+                    mercenary_id: mercenary_id.clone(),
+                },
+            )
+            .await;
+        }
+
+        for _ in 0..players.len() {
+            for p in players.values_mut() {
+                assert_game_msg(&mut p.connection, validate_player_mercenary_selected).await;
+            }
+        }
+    }
+
     async fn get_power_decks(players: &mut TestPlayersData) {
         let player_count = players.len();
 
@@ -1775,7 +1867,10 @@ return {
         }
 
         for p in players.values_mut() {
-            assert_eq!(get_players_mana(&mut p.connection).await.len(), player_count);
+            assert_eq!(
+                get_players_mana(&mut p.connection).await.len(),
+                player_count
+            );
         }
 
         for p in players.values_mut() {
@@ -1902,6 +1997,10 @@ return {
         )
     }
 
+    fn validate_player_mercenary_selected(m: &ServerMessage) -> bool {
+        matches!(m, ServerMessage::PlayerMercenarySelected { .. })
+    }
+
     fn validate_set_start(m: &ServerMessage) -> bool {
         matches!(m, ServerMessage::SetStart { upcard: _ })
     }
@@ -1912,6 +2011,10 @@ return {
 
     fn validate_power_card_played(m: &ServerMessage) -> bool {
         matches!(m, ServerMessage::PowerCardPlayed { .. })
+    }
+
+    fn validate_error(m: &ServerMessage) -> bool {
+        matches!(m, ServerMessage::Error { .. })
     }
 
     async fn get_next_turn_player(stream: &mut WebSocket) -> PlayerId {

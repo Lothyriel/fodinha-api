@@ -5,11 +5,12 @@ use crate::{
     services::{
         card_definitions::CardDefinitionsService,
         matches::ManagerHandle,
+        mercenaries::MercenariesService,
         object_storage::ObjectStorage,
         repositories::{
             card_decks::CardDecksRepository, card_definitions::CardDefinitionsRepository,
-            get_mongo_client, matches::MatchesRepository, stats::StatsRepository,
-            users::UsersRepository,
+            get_mongo_client, matches::MatchesRepository, mercenaries::MercenariesRepository,
+            stats::StatsRepository, users::UsersRepository,
         },
         stats::StatsProjector,
     },
@@ -50,15 +51,19 @@ impl GameManager {
         let matches_repo = MatchesRepository::new(&db);
         let card_definitions_repo = CardDefinitionsRepository::new(&db);
         let card_decks_repo = CardDecksRepository::new(&db);
+        let mercenaries_repo = MercenariesRepository::new(&db);
         let stats_repo = StatsRepository::new(&db);
         let users_repo = UsersRepository::new(&db);
         let object_storage = ObjectStorage::new(settings);
         let card_definitions = CardDefinitionsService::new(
             card_definitions_repo.clone(),
             card_decks_repo.clone(),
-            object_storage,
+            mercenaries_repo.clone(),
+            object_storage.clone(),
             users_repo.clone(),
         );
+        let mercenaries =
+            MercenariesService::new(mercenaries_repo.clone(), object_storage, users_repo.clone());
 
         if let Err(e) = matches_repo.ensure_indexes().await {
             tracing::error!("Error creating match indexes: {e}");
@@ -80,6 +85,15 @@ impl GameManager {
             tracing::error!("Error creating power deck indexes: {e}");
         }
 
+        if let Err(e) = mercenaries_repo.ensure_indexes().await {
+            tracing::error!("Error creating mercenary indexes: {e}");
+        }
+
+        match mercenaries.load_mercenary_registry().await {
+            Ok(count) => tracing::info!("Loaded {count} FodinhaPower mercenary definitions"),
+            Err(e) => tracing::warn!("Could not load FodinhaPower mercenary definitions: {e}"),
+        }
+
         match card_definitions.load_power_card_registry().await {
             Ok(count) => tracing::info!("Loaded {count} FodinhaPower card definitions"),
             Err(e) => tracing::warn!("Could not load FodinhaPower card definitions: {e}"),
@@ -92,6 +106,7 @@ impl GameManager {
             stats_repo,
             users_repo,
             card_definitions,
+            mercenaries,
             stats_projector,
             waiting_lobby_timeout,
             empty_playing_timeout,

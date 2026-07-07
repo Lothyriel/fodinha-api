@@ -212,6 +212,47 @@ impl MatchesRepository {
         Ok(())
     }
 
+    pub async fn set_metadata_player_mercenary(
+        &self,
+        match_id: &MatchId,
+        player_id: &PlayerId,
+        mercenary_id: &MercenaryId,
+    ) -> mongodb::error::Result<()> {
+        let updated_at = current_timestamp();
+        let mut player_mercenaries =
+            telemetry::db_query("MatchMetadata", "find_one.before_set_mercenary", async {
+                self.metadata
+                    .find_one(doc! { "match_id": match_id.as_str() })
+                    .await
+            })
+            .await?
+            .map(|metadata| metadata.player_mercenaries)
+            .unwrap_or_default();
+
+        player_mercenaries.insert(
+            player_id.as_str().to_string(),
+            mercenary_id.as_str().to_string(),
+        );
+        let player_mercenaries = mongodb::bson::to_bson(&player_mercenaries)?;
+
+        telemetry::db_query("MatchMetadata", "update_one.set_mercenary", async {
+            self.metadata
+                .update_one(
+                    doc! { "match_id": match_id.as_str() },
+                    doc! {
+                        "$set": {
+                            "player_mercenaries": player_mercenaries,
+                            "updated_at": updated_at,
+                        },
+                    },
+                )
+                .await
+        })
+        .await?;
+
+        Ok(())
+    }
+
     pub async fn touch_metadata(&self, match_id: &MatchId) -> mongodb::error::Result<()> {
         let updated_at = current_timestamp();
 
@@ -388,6 +429,8 @@ pub struct MatchMetadataDto {
     #[serde(default)]
     pub ready_players: Vec<String>,
     #[serde(default)]
+    pub player_mercenaries: std::collections::HashMap<String, String>,
+    #[serde(default)]
     pub updated_at: i64,
 }
 
@@ -400,6 +443,7 @@ impl MatchMetadataDto {
             creator_id: creator_id.map(|id| id.as_str().to_string()),
             players: Vec::new(),
             ready_players: Vec::new(),
+            player_mercenaries: Default::default(),
             updated_at: current_timestamp(),
         }
     }

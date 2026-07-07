@@ -5,7 +5,7 @@ use crate::{
     models::{
         Card, Turn,
         game::{GameCommand, GameType},
-        id::{LobbyId, PlayerId},
+        id::{LobbyId, MercenaryId, PlayerId},
     },
     services::{GameInfoDto, PlayerManaDto, PowerCardDto},
 };
@@ -27,6 +27,8 @@ pub struct CreateLobbyResponse {
 pub struct PlayerStatus {
     pub ready: bool,
     pub player: UserClaims,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mercenary_id: Option<MercenaryId>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, Clone)]
@@ -56,6 +58,7 @@ type PlayerMana = HashMap<PlayerId, PlayerManaDto>;
 pub enum ClientCommand {
     GameCommand(GameCommand),
     PlayerStatusChange { ready: bool },
+    SelectMercenary { mercenary_id: MercenaryId },
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, Clone)]
@@ -79,6 +82,10 @@ pub enum ServerMessage {
     PlayerStatusChange {
         player_id: PlayerId,
         ready: bool,
+    },
+    PlayerMercenarySelected {
+        player_id: PlayerId,
+        mercenary_id: MercenaryId,
     },
     RoundEnded(PlayerPoints),
     PlayerDeck(Vec<Card>),

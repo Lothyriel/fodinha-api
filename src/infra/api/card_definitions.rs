@@ -4,16 +4,24 @@ use axum::{
     middleware, routing,
 };
 
+use std::collections::HashMap;
+
 use crate::{
     infra::{UserClaims, telemetry},
-    models::{game::fodinha_power::PowerCardType, id::CardId},
+    models::{
+        game::fodinha_power::PowerCardType,
+        id::{CardId, MercenaryId},
+    },
     services::{
         card_definitions::{
             CardDefinitionError, CreateCardDefinitionAssetInput,
             CreateCardDefinitionFromAssetInput, CreateCardDefinitionInput, CreatePowerDeckInput,
             UpdateCardDefinitionInput,
         },
-        repositories::{card_decks::CardDeckKind, card_definitions::CardDefinitionKind},
+        repositories::{
+            card_decks::{CardDeckKind, CardDeckStatus},
+            card_definitions::CardDefinitionKind,
+        },
     },
 };
 
@@ -111,8 +119,9 @@ async fn create_card_from_asset(
 
 async fn list_decks(
     State(state): State<ApiState>,
+    Extension(user_claims): Extension<UserClaims>,
 ) -> Result<Json<Vec<crate::services::card_definitions::PowerDeckResponse>>, CardDefinitionError> {
-    Ok(Json(state.manager.power_decks().await?))
+    Ok(Json(state.manager.power_decks(&user_claims.id()).await?))
 }
 
 async fn create_deck(
@@ -129,6 +138,9 @@ async fn create_deck(
                 name: body.name,
                 description: body.description.unwrap_or_default(),
                 card_ids: body.card_ids,
+                generic_card_ids: body.generic_card_ids.unwrap_or_default(),
+                mercenary_card_ids: body.mercenary_card_ids.unwrap_or_default(),
+                status: body.status,
             },
         )
         .await?;
@@ -139,9 +151,13 @@ async fn create_deck(
 #[derive(serde::Deserialize)]
 struct CreatePowerDeckRequest {
     kind: Option<CardDeckKind>,
+    status: Option<CardDeckStatus>,
     name: String,
     description: Option<String>,
+    #[serde(default)]
     card_ids: Vec<CardId>,
+    generic_card_ids: Option<Vec<CardId>>,
+    mercenary_card_ids: Option<HashMap<MercenaryId, Vec<CardId>>>,
 }
 
 #[derive(serde::Deserialize)]

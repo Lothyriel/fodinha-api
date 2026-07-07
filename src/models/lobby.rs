@@ -3,18 +3,27 @@ use std::collections::HashMap;
 use indexmap::{IndexMap, map::Entry};
 
 use crate::{
-    models::{GameError, LobbyState, game::GameSettings, game::GameType, id::PlayerId},
+    models::{
+        GameError, LobbyState,
+        game::GameSettings,
+        game::GameType,
+        id::{MercenaryId, PlayerId},
+    },
     services::{GameInfoDto, LobbyError},
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LobbyPlayerStatus {
     pub ready: bool,
+    pub mercenary_id: Option<MercenaryId>,
 }
 
 impl LobbyPlayerStatus {
     fn new() -> Self {
-        Self { ready: false }
+        Self {
+            ready: false,
+            mercenary_id: None,
+        }
     }
 }
 

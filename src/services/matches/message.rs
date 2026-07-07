@@ -7,7 +7,7 @@ use crate::{
         Card, Turn,
         commands::GetLobbyDto,
         game::{GameCommand, GameSettings},
-        id::PlayerId,
+        id::{MercenaryId, PlayerId},
         lobby::{LobbyInfoInternal, MatchSnapshotInternal},
     },
     services::{ManagerError, PlayerManaDto, PowerCardDto},
@@ -48,6 +48,10 @@ pub enum OutboundMessage {
     PlayerStatusChange {
         player_id: PlayerId,
         ready: bool,
+    },
+    PlayerMercenarySelected {
+        player_id: PlayerId,
+        mercenary_id: MercenaryId,
     },
     RoundEnded(PlayerPoints),
     PlayerDeck(Vec<Card>),
@@ -99,6 +103,11 @@ pub enum MatchActorMessage {
         ready: bool,
         respond: oneshot::Sender<Result<(), ManagerError>>,
     },
+    SelectMercenary {
+        player_id: PlayerId,
+        mercenary_id: MercenaryId,
+        respond: oneshot::Sender<Result<(), ManagerError>>,
+    },
     GameCommand {
         player_id: PlayerId,
         command: GameCommand,
@@ -117,6 +126,7 @@ impl MatchActorMessage {
             Self::CreateMatch { .. } => "create_match",
             Self::JoinLobby { .. } => "join_lobby",
             Self::StatusChange { .. } => "status_change",
+            Self::SelectMercenary { .. } => "select_mercenary",
             Self::GameCommand { command, .. } => command.kind(),
             Self::GetLobbySummary { .. } => "get_lobby_summary",
         }

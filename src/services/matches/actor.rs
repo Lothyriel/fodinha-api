@@ -14,7 +14,7 @@ use crate::{
             AppliedGameChange, AppliedTurn, BiddingState, GameEvent, GameSettings, GameType,
             MatchEvent, NewSet, fodinha_classic, fodinha_power,
         },
-        id::{MatchId, PlayerId},
+        id::{MatchId, MercenaryId, PlayerId},
         lobby::{Lobby, LobbyInfoInternal, LobbyPlayerStatus},
     },
     services::{
@@ -217,6 +217,16 @@ impl MatchActor {
                 respond_once(respond, result);
                 return should_continue;
             }
+            MatchActorMessage::SelectMercenary {
+                player_id,
+                mercenary_id,
+                respond,
+            } => {
+                let result = self.handle_select_mercenary(player_id, mercenary_id).await;
+                let should_continue = !matches!(&result, Err(ManagerError::Database(_)));
+                respond_once(respond, result);
+                return should_continue;
+            }
             MatchActorMessage::GameCommand {
                 player_id,
                 command,
@@ -413,6 +423,20 @@ impl MatchActor {
             if matches!(lobby.state, LobbyState::Playing(_)) {
                 return Err(LobbyError::GameAlreadyStarted.into());
             }
+
+            if ready
+                && matches!(
+                    lobby.state,
+                    LobbyState::NotStarted(GameSettings::FodinhaPower(_))
+                )
+                && lobby
+                    .players
+                    .get(&player_id)
+                    .and_then(|status| status.mercenary_id.as_ref())
+                    .is_none()
+            {
+                return Err(LobbyError::MercenaryRequired.into());
+            }
         }
 
         self.repo
@@ -450,10 +474,48 @@ impl MatchActor {
             {
                 self.refresh_empty_playing_activity();
                 self.broadcast_snapshots().await;
-                self.init_set(set.decks, power_decks, mana, set.upcard, next, possible_bids)
-                    .await;
+                self.init_set(
+                    set.decks,
+                    power_decks,
+                    mana,
+                    set.upcard,
+                    next,
+                    possible_bids,
+                )
+                .await;
             }
         }
+
+        Ok(())
+    }
+
+    async fn handle_select_mercenary(
+        &mut self,
+        player_id: PlayerId,
+        mercenary_id: MercenaryId,
+    ) -> Result<(), ManagerError> {
+        {
+            let lobby = self.lobby()?;
+
+            if !lobby.players.contains_key(&player_id) {
+                return Err(LobbyError::WrongLobby.into());
+            }
+
+            if matches!(lobby.state, LobbyState::Playing(_)) {
+                return Err(LobbyError::GameAlreadyStarted.into());
+            }
+        }
+
+        self.repo
+            .set_metadata_player_mercenary(&self.match_id, &player_id, &mercenary_id)
+            .await?;
+        self.apply_player_mercenary_selected(&player_id, mercenary_id.clone())?;
+        self.refresh_waiting_activity();
+        self.broadcast(OutboundMessage::PlayerMercenarySelected {
+            player_id,
+            mercenary_id,
+        })
+        .await;
 
         Ok(())
     }
@@ -542,11 +604,16 @@ impl MatchActor {
 
         for player_id in metadata.players {
             let id = PlayerId(player_id.into());
+            let mercenary_id = metadata
+                .player_mercenaries
+                .get(id.as_str())
+                .map(|mercenary_id| MercenaryId(mercenary_id.as_str().into()));
 
             lobby.players.insert(
                 id.clone(),
                 LobbyPlayerStatus {
                     ready: ready_players.contains(id.as_str()),
+                    mercenary_id,
                 },
             );
             self.player_routes.insert(id, self.match_id.clone());
@@ -602,22 +669,31 @@ impl MatchActor {
             }
             MatchEvent::Game(GameEvent::FodinhaPower(fodinha_power::MatchEvent::GameStarted {
                 settings,
-                set,
+                mut set,
                 power_set,
+                passive_effects,
             })) => {
                 let lobby = self.lobby_mut()?;
                 let players = lobby.get_players_id();
-                let game = Game::FodinhaPower(
-                    fodinha_power::Game::from_started(
-                        &players,
-                        settings,
-                        set.clone(),
-                        power_set.clone(),
-                    )
-                    .map_err(|e| ManagerError::Lobby(LobbyError::GameError(e)))?,
-                );
-                let power_decks = Some(power_decks_to_dto(&power_set.decks));
-                let mana = Some(power_mana_to_dto(&power_set.mana));
+                let mut power_game = fodinha_power::Game::from_started(
+                    &players,
+                    settings,
+                    set.clone(),
+                    power_set.clone(),
+                )
+                .map_err(|e| ManagerError::Lobby(LobbyError::GameError(e)))?;
+                let (passive_mana, passive_power_decks) =
+                    power_game.apply_start_effects(&passive_effects);
+                let game = Game::FodinhaPower(power_game);
+                let mut power_decks = power_decks_to_dto(&power_set.decks);
+                let mut mana = power_mana_to_dto(&power_set.mana);
+
+                for (player_id, deck) in passive_effects.decks {
+                    set.decks.insert(player_id, deck);
+                }
+
+                mana.extend(passive_mana);
+                power_decks.extend(passive_power_decks);
 
                 lobby.state = LobbyState::Playing(game);
 
@@ -628,8 +704,8 @@ impl MatchActor {
 
                 Ok(AppliedEvent::GameStarted {
                     set,
-                    power_decks,
-                    mana,
+                    power_decks: Some(power_decks),
+                    mana: Some(mana),
                     next: game.get_bidding_player(),
                     possible_bids: game.get_possible_bids(),
                 })
@@ -685,7 +761,8 @@ impl MatchActor {
         self.broadcast(msg).await;
 
         if !mana.is_empty() {
-            self.broadcast(OutboundMessage::PlayersManaChanged(mana)).await;
+            self.broadcast(OutboundMessage::PlayersManaChanged(mana))
+                .await;
         }
 
         let msg = match state {
@@ -795,7 +872,8 @@ impl MatchActor {
         if let Some(mana) = mana
             && !mana.is_empty()
         {
-            self.broadcast(OutboundMessage::PlayersManaChanged(mana)).await;
+            self.broadcast(OutboundMessage::PlayersManaChanged(mana))
+                .await;
         }
 
         for (player, deck) in decks {
@@ -983,7 +1061,30 @@ impl MatchActor {
             return Ok(None);
         }
 
-        Ok(Some((lobby.get_players_id(), settings.clone())))
+        let mut settings = settings.clone();
+
+        if let GameSettings::FodinhaPower(power_settings) = &mut settings {
+            if lobby
+                .players
+                .values()
+                .any(|status| status.mercenary_id.is_none())
+            {
+                return Err(LobbyError::MercenaryRequired.into());
+            }
+
+            power_settings.player_mercenaries = lobby
+                .players
+                .iter()
+                .filter_map(|(player_id, status)| {
+                    status
+                        .mercenary_id
+                        .clone()
+                        .map(|mercenary_id| (player_id.clone(), mercenary_id))
+                })
+                .collect();
+        }
+
+        Ok(Some((lobby.get_players_id(), settings)))
     }
 
     pub(crate) fn is_finished(&self) -> bool {
@@ -1014,9 +1115,13 @@ impl MatchActor {
             return Ok(());
         }
 
-        lobby
-            .players
-            .insert(player_id.clone(), LobbyPlayerStatus { ready: false });
+        lobby.players.insert(
+            player_id.clone(),
+            LobbyPlayerStatus {
+                ready: false,
+                mercenary_id: None,
+            },
+        );
 
         self.player_routes.insert(player_id, self.match_id.clone());
 
@@ -1035,6 +1140,22 @@ impl MatchActor {
             .ok_or(LobbyError::WrongLobby)?;
 
         player.ready = ready;
+
+        Ok(())
+    }
+
+    fn apply_player_mercenary_selected(
+        &mut self,
+        player_id: &PlayerId,
+        mercenary_id: MercenaryId,
+    ) -> Result<(), ManagerError> {
+        let lobby = self.lobby_mut()?;
+        let player = lobby
+            .players
+            .get_mut(player_id)
+            .ok_or(LobbyError::WrongLobby)?;
+
+        player.mercenary_id = Some(mercenary_id);
 
         Ok(())
     }

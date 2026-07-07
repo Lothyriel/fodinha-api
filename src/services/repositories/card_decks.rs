@@ -70,10 +70,36 @@ impl CardDecksRepository {
         .await
     }
 
+    pub async fn active_playable_decks(&self) -> mongodb::error::Result<Vec<CardDeckDto>> {
+        telemetry::db_query(COLLECTION_NAME, "find.active_playable", async {
+            let cursor = self
+                .decks
+                .find(doc! {
+                    "active": true,
+                    "$or": [
+                        { "status": CardDeckStatus::Valid.as_str() },
+                        { "status": { "$exists": false } },
+                    ],
+                })
+                .sort(doc! { "created_at": -1 })
+                .await?;
+
+            cursor.try_collect().await
+        })
+        .await
+    }
+
     pub async fn active_deck_exists(&self, deck_id: &DeckId) -> mongodb::error::Result<bool> {
         telemetry::db_query(COLLECTION_NAME, "find_one.active_exists", async {
             self.decks
-                .find_one(doc! { "deck_id": deck_id.as_str(), "active": true })
+                .find_one(doc! {
+                    "deck_id": deck_id.as_str(),
+                    "active": true,
+                    "$or": [
+                        { "status": CardDeckStatus::Valid.as_str() },
+                        { "status": { "$exists": false } },
+                    ],
+                })
                 .await
         })
         .await
@@ -90,6 +116,12 @@ pub struct CardDeckDto {
     pub description: String,
     pub creator_id: PlayerId,
     pub card_ids: Vec<CardId>,
+    #[serde(default)]
+    pub generic_card_ids: Vec<CardId>,
+    #[serde(default)]
+    pub mercenary_card_ids: std::collections::HashMap<crate::models::id::MercenaryId, Vec<CardId>>,
+    #[serde(default)]
+    pub status: CardDeckStatus,
     #[serde(default = "default_active")]
     pub active: bool,
     pub created_at: i64,
@@ -107,6 +139,9 @@ impl CardDeckDto {
             description: input.description,
             creator_id: input.creator_id,
             card_ids: input.card_ids,
+            generic_card_ids: input.generic_card_ids,
+            mercenary_card_ids: input.mercenary_card_ids,
+            status: input.status,
             active: true,
             created_at: now,
             updated_at: now,
@@ -125,6 +160,9 @@ pub struct NewCardDeck {
     pub description: String,
     pub creator_id: PlayerId,
     pub card_ids: Vec<CardId>,
+    pub generic_card_ids: Vec<CardId>,
+    pub mercenary_card_ids: std::collections::HashMap<crate::models::id::MercenaryId, Vec<CardId>>,
+    pub status: CardDeckStatus,
 }
 
 fn default_active() -> bool {
@@ -140,6 +178,23 @@ fn default_card_deck_kind() -> CardDeckKind {
 pub enum CardDeckKind {
     Official,
     Community,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CardDeckStatus {
+    Draft,
+    #[default]
+    Valid,
+}
+
+impl CardDeckStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Draft => "draft",
+            Self::Valid => "valid",
+        }
+    }
 }
 
 impl CardDeckKind {

@@ -21,7 +21,7 @@ use crate::{
             PlayingMatchSnapshot, ServerMessage,
         },
         game::{GameCommand, GameSettings, GameType, fodinha_classic},
-        id::{self, MatchId, PlayerId},
+        id::{self, MatchId, MercenaryId, PlayerId},
         lobby::{
             LobbyInfoInternal, LobbyPlayerStatus, MatchSnapshotInternal,
             PlayingMatchSnapshotInternal,
@@ -38,6 +38,9 @@ use crate::{
         matches::{
             MatchActor, MatchActorContext, MatchActorMessage, MatchReceiver, MatchRegistry,
             MatchSender, OutboundMessage, PlayerReceiver, PlayerSender, SenderLookup,
+        },
+        mercenaries::{
+            MercenariesService, MercenaryError, MercenaryResponse, UpsertMercenaryInput,
         },
         repositories::matches::{MatchMetadataDto, MatchMetadataStatus, MatchesRepository},
         repositories::stats::StatsRepository,
@@ -56,6 +59,7 @@ pub struct ManagerHandle {
     stats_repo: StatsRepository,
     users_repo: UsersRepository,
     card_definitions: CardDefinitionsService,
+    mercenaries: MercenariesService,
     user_cache: Arc<DashMap<PlayerId, UserClaims>>,
     stats_projector: StatsProjectorHandle,
     background: ManagerBackground,
@@ -91,6 +95,7 @@ impl ManagerHandle {
         stats_repo: StatsRepository,
         users_repo: UsersRepository,
         card_definitions: CardDefinitionsService,
+        mercenaries: MercenariesService,
         stats_projector: StatsProjectorHandle,
         waiting_lobby_timeout: Duration,
         empty_playing_timeout: Duration,
@@ -101,6 +106,7 @@ impl ManagerHandle {
             stats_repo,
             users_repo,
             card_definitions,
+            mercenaries,
             user_cache: Arc::new(DashMap::new()),
             stats_projector,
             background: ManagerBackground::default(),
@@ -370,8 +376,34 @@ impl ManagerHandle {
         self.card_definitions.create_deck(creator_id, input).await
     }
 
-    pub async fn power_decks(&self) -> Result<Vec<PowerDeckResponse>, CardDefinitionError> {
-        self.card_definitions.list_decks().await
+    pub async fn power_decks(
+        &self,
+        viewer_id: &PlayerId,
+    ) -> Result<Vec<PowerDeckResponse>, CardDefinitionError> {
+        self.card_definitions.list_decks(viewer_id).await
+    }
+
+    pub async fn mercenaries(&self) -> Result<Vec<MercenaryResponse>, MercenaryError> {
+        self.mercenaries.list_mercenaries().await
+    }
+
+    pub async fn create_mercenary(
+        &self,
+        creator_id: PlayerId,
+        input: UpsertMercenaryInput,
+    ) -> Result<MercenaryResponse, MercenaryError> {
+        self.mercenaries.create_mercenary(creator_id, input).await
+    }
+
+    pub async fn update_mercenary(
+        &self,
+        editor_id: PlayerId,
+        mercenary_id: crate::models::id::MercenaryId,
+        input: UpsertMercenaryInput,
+    ) -> Result<MercenaryResponse, MercenaryError> {
+        self.mercenaries
+            .update_mercenary(editor_id, mercenary_id, input)
+            .await
     }
 
     pub async fn upsert_user(&self, user: &UserClaims) -> Result<UserClaims, ManagerError> {
@@ -461,6 +493,23 @@ impl ManagerHandle {
         .await
     }
 
+    pub async fn select_mercenary(
+        &self,
+        player_id: PlayerId,
+        mercenary_id: MercenaryId,
+    ) -> Result<(), ManagerError> {
+        let context = self.sender_for_player(&player_id).await?;
+
+        Self::request(&context.sender, context.game_type, |respond| {
+            MatchActorMessage::SelectMercenary {
+                player_id,
+                mercenary_id,
+                respond,
+            }
+        })
+        .await
+    }
+
     pub async fn connect_player(
         &self,
         player_id: PlayerId,
@@ -512,6 +561,13 @@ impl ManagerHandle {
             OutboundMessage::PlayerStatusChange { player_id, ready } => {
                 Ok(ServerMessage::PlayerStatusChange { player_id, ready })
             }
+            OutboundMessage::PlayerMercenarySelected {
+                player_id,
+                mercenary_id,
+            } => Ok(ServerMessage::PlayerMercenarySelected {
+                player_id,
+                mercenary_id,
+            }),
             OutboundMessage::RoundEnded(rounds) => Ok(ServerMessage::RoundEnded(rounds)),
             OutboundMessage::PlayerDeck(deck) => Ok(ServerMessage::PlayerDeck(deck)),
             OutboundMessage::PlayerPowerCards(deck) => Ok(ServerMessage::PlayerPowerCards(deck)),
@@ -635,6 +691,7 @@ impl ManagerHandle {
                     PlayerStatus {
                         ready: status.ready,
                         player,
+                        mercenary_id: status.mercenary_id,
                     },
                 )
             })

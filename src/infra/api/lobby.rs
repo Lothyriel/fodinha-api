@@ -101,6 +101,7 @@ impl CreateLobbyRequest {
         Ok(GameSettings::FodinhaPower(fodinha_power::GameSettings {
             lifes,
             power_deck_id,
+            player_mercenaries: Default::default(),
         }))
     }
 }

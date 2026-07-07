@@ -245,5 +245,8 @@ async fn handle_client_command(
         ClientCommand::PlayerStatusChange { ready } => {
             manager.player_status_change(player_id, ready).await
         }
+        ClientCommand::SelectMercenary { mercenary_id } => {
+            manager.select_mercenary(player_id, mercenary_id).await
+        }
     }
 }

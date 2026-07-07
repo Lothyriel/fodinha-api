@@ -585,6 +585,7 @@ mod tests {
         let settings = GameSettings::FodinhaPower(fodinha_power::GameSettings {
             lifes: 50,
             power_deck_id: crate::models::id::DeckId(Arc::from("test_deck")),
+            player_mercenaries: HashMap::new(),
         });
 
         let document = mongodb::bson::to_document(&settings).unwrap();

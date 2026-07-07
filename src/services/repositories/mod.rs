@@ -3,6 +3,7 @@ use mongodb::{Client, error::Result, options::ClientOptions};
 pub mod card_decks;
 pub mod card_definitions;
 pub mod matches;
+pub mod mercenaries;
 pub mod stats;
 pub mod users;
 

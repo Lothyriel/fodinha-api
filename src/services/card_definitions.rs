@@ -16,10 +16,13 @@ use crate::{
     services::{
         object_storage::{ObjectStorage, ObjectStorageError},
         repositories::{
-            card_decks::{CardDeckDto, CardDeckKind, CardDecksRepository, NewCardDeck},
+            card_decks::{
+                CardDeckDto, CardDeckKind, CardDeckStatus, CardDecksRepository, NewCardDeck,
+            },
             card_definitions::{
                 CardDefinitionDto, CardDefinitionKind, CardDefinitionsRepository, NewCardDefinition,
             },
+            mercenaries::MercenariesRepository,
             users::UsersRepository,
         },
     },
@@ -33,6 +36,7 @@ const CARD_ASSET_ID_LEN: usize = 16;
 pub struct CardDefinitionsService {
     cards: CardDefinitionsRepository,
     decks: CardDecksRepository,
+    mercenaries: MercenariesRepository,
     storage: ObjectStorage,
     users: UsersRepository,
 }
@@ -81,6 +85,9 @@ pub struct CreatePowerDeckInput {
     pub name: String,
     pub description: String,
     pub card_ids: Vec<CardId>,
+    pub generic_card_ids: Vec<CardId>,
+    pub mercenary_card_ids: HashMap<crate::models::id::MercenaryId, Vec<CardId>>,
+    pub status: Option<CardDeckStatus>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -109,10 +116,14 @@ pub struct CardDefinitionAssetResponse {
 pub struct PowerDeckResponse {
     pub id: DeckId,
     pub kind: CardDeckKind,
+    pub status: CardDeckStatus,
     pub name: String,
     pub description: String,
     pub creator_id: PlayerId,
     pub card_ids: Vec<CardId>,
+    pub generic_card_ids: Vec<CardId>,
+    pub mercenary_card_ids: HashMap<crate::models::id::MercenaryId, Vec<CardId>>,
+    pub validation_errors: Vec<String>,
     pub card_count: usize,
     pub cards: Vec<CardDefinitionResponse>,
     pub created_at: i64,
@@ -138,12 +149,14 @@ impl CardDefinitionsService {
     pub fn new(
         cards: CardDefinitionsRepository,
         decks: CardDecksRepository,
+        mercenaries: MercenariesRepository,
         storage: ObjectStorage,
         users: UsersRepository,
     ) -> Self {
         Self {
             cards,
             decks,
+            mercenaries,
             storage,
             users,
         }
@@ -151,7 +164,7 @@ impl CardDefinitionsService {
 
     pub async fn load_power_card_registry(&self) -> Result<usize, CardDefinitionError> {
         let cards = self.cards.active_cards().await?;
-        let decks = self.decks.active_decks().await?;
+        let decks = self.decks.active_playable_decks().await?;
         let mut definitions = Vec::new();
 
         for card in cards {
@@ -163,23 +176,59 @@ impl CardDefinitionsService {
         }
 
         let count = definitions.len();
-        let decks = decks
-            .into_iter()
-            .map(|deck| PowerDeckDefinitionInput {
-                id: deck.deck_id,
-                card_ids: deck.card_ids,
-            })
-            .collect();
+        let mut deck_definitions = Vec::new();
+
+        for deck in decks {
+            let validation_errors =
+                if deck.generic_card_ids.is_empty() && deck.mercenary_card_ids.is_empty() {
+                    Vec::new()
+                } else {
+                    self.deck_validation_errors(&deck.generic_card_ids, &deck.mercenary_card_ids)
+                        .await?
+                };
+
+            if validation_errors.is_empty() {
+                deck_definitions.push(PowerDeckDefinitionInput {
+                    id: deck.deck_id,
+                    card_ids: deck.card_ids,
+                    generic_card_ids: deck.generic_card_ids,
+                    mercenary_card_ids: deck.mercenary_card_ids,
+                });
+            }
+        }
 
         if count > 0 {
-            fodinha_power::replace_power_card_registry(definitions, decks)?;
+            fodinha_power::replace_power_card_registry(definitions, deck_definitions)?;
         }
 
         Ok(count)
     }
 
     pub async fn power_deck_exists(&self, deck_id: &DeckId) -> mongodb::error::Result<bool> {
-        self.decks.active_deck_exists(deck_id).await
+        let decks = self.decks.active_playable_decks().await?;
+
+        for deck in decks {
+            if &deck.deck_id != deck_id {
+                continue;
+            }
+
+            if deck.generic_card_ids.is_empty() && deck.mercenary_card_ids.is_empty() {
+                return Ok(true);
+            }
+
+            let validation_errors = match self
+                .deck_validation_errors(&deck.generic_card_ids, &deck.mercenary_card_ids)
+                .await
+            {
+                Ok(validation_errors) => validation_errors,
+                Err(CardDefinitionError::Database(error)) => return Err(error),
+                Err(_) => return Ok(false),
+            };
+
+            return Ok(validation_errors.is_empty());
+        }
+
+        Ok(false)
     }
 
     pub async fn create_card(
@@ -253,7 +302,7 @@ impl CardDefinitionsService {
             life: None,
             mana_cost: input.mana_cost,
             card_type: input.card_type,
-            creator_id,
+            creator_id: creator_id.clone(),
             image_object_key: Some(image_object_key),
             script_object_key,
             image_content_type: Some(IMAGE_OBJECT_CONTENT_TYPE.to_string()),
@@ -362,7 +411,7 @@ impl CardDefinitionsService {
             life: None,
             mana_cost: input.mana_cost,
             card_type: input.card_type,
-            creator_id,
+            creator_id: creator_id.clone(),
             image_object_key: Some(image_object_key),
             script_object_key,
             image_content_type: Some(IMAGE_OBJECT_CONTENT_TYPE.to_string()),
@@ -487,12 +536,29 @@ impl CardDefinitionsService {
 
         let name = input.name.trim();
         let description = input.description.trim();
-        let card_ids = input
-            .card_ids
+        let generic_card_ids = unique_card_ids(input.generic_card_ids);
+        let mercenary_card_ids = input
+            .mercenary_card_ids
             .into_iter()
-            .collect::<HashSet<_>>()
-            .into_iter()
-            .collect::<Vec<_>>();
+            .map(|(mercenary_id, card_ids)| (mercenary_id, unique_card_ids(card_ids)))
+            .filter(|(_, card_ids)| !card_ids.is_empty())
+            .collect::<HashMap<_, _>>();
+        let is_partitioned = !generic_card_ids.is_empty() || !mercenary_card_ids.is_empty();
+        let card_ids = if is_partitioned {
+            generic_card_ids
+                .iter()
+                .cloned()
+                .chain(
+                    mercenary_card_ids
+                        .values()
+                        .flat_map(|card_ids| card_ids.iter().cloned()),
+                )
+                .collect::<HashSet<_>>()
+                .into_iter()
+                .collect::<Vec<_>>()
+        } else {
+            unique_card_ids(input.card_ids)
+        };
 
         if name.is_empty() {
             return Err(CardDefinitionError::Invalid("name is required".to_string()));
@@ -512,22 +578,43 @@ impl CardDefinitionsService {
             ));
         }
 
+        let validation_errors = if is_partitioned {
+            self.deck_validation_errors(&generic_card_ids, &mercenary_card_ids)
+                .await?
+        } else {
+            Vec::new()
+        };
+        let status = if input.status == Some(CardDeckStatus::Draft) || !validation_errors.is_empty()
+        {
+            CardDeckStatus::Draft
+        } else {
+            CardDeckStatus::Valid
+        };
+
         let deck = CardDeckDto::new(NewCardDeck {
             deck_id: gen_deckid(),
             kind: input.kind,
             name: name.to_string(),
             description: description.to_string(),
-            creator_id,
+            creator_id: creator_id.clone(),
             card_ids,
+            generic_card_ids,
+            mercenary_card_ids,
+            status,
         });
 
         self.decks.insert(deck.clone()).await?;
-        fodinha_power::upsert_power_deck_definition(PowerDeckDefinitionInput {
-            id: deck.deck_id.clone(),
-            card_ids: deck.card_ids.clone(),
-        });
 
-        let mut decks = self.hydrate_decks(vec![deck]).await?;
+        if deck.status == CardDeckStatus::Valid {
+            fodinha_power::upsert_power_deck_definition(PowerDeckDefinitionInput {
+                id: deck.deck_id.clone(),
+                card_ids: deck.card_ids.clone(),
+                generic_card_ids: deck.generic_card_ids.clone(),
+                mercenary_card_ids: deck.mercenary_card_ids.clone(),
+            });
+        }
+
+        let mut decks = self.hydrate_decks(vec![deck], Some(&creator_id)).await?;
 
         Ok(decks.remove(0))
     }
@@ -538,16 +625,27 @@ impl CardDefinitionsService {
         self.card_responses(cards).await
     }
 
-    pub async fn list_decks(&self) -> Result<Vec<PowerDeckResponse>, CardDefinitionError> {
+    pub async fn list_decks(
+        &self,
+        viewer_id: &PlayerId,
+    ) -> Result<Vec<PowerDeckResponse>, CardDefinitionError> {
         let decks = self.decks.active_decks().await?;
 
-        self.hydrate_decks(decks).await
+        self.hydrate_decks(decks, Some(viewer_id)).await
     }
 
     async fn hydrate_decks(
         &self,
         decks: Vec<CardDeckDto>,
+        viewer_id: Option<&PlayerId>,
     ) -> Result<Vec<PowerDeckResponse>, CardDefinitionError> {
+        let decks = decks
+            .into_iter()
+            .filter(|deck| {
+                deck.status == CardDeckStatus::Valid
+                    || viewer_id.is_some_and(|viewer_id| deck.creator_id == *viewer_id)
+            })
+            .collect::<Vec<_>>();
         let card_ids = decks
             .iter()
             .flat_map(|deck| deck.card_ids.iter().cloned())
@@ -577,14 +675,25 @@ impl CardDefinitionsService {
 
         for (deck, cards) in deck_cards {
             let card_responses = self.card_responses(cards).await?;
+            let validation_errors =
+                if deck.generic_card_ids.is_empty() && deck.mercenary_card_ids.is_empty() {
+                    Vec::new()
+                } else {
+                    self.deck_validation_errors(&deck.generic_card_ids, &deck.mercenary_card_ids)
+                        .await?
+                };
 
             responses.push(PowerDeckResponse {
                 id: deck.deck_id,
                 kind: deck.kind,
+                status: deck.status,
                 name: deck.name,
                 description: deck.description,
                 creator_id: deck.creator_id.clone(),
                 card_ids: deck.card_ids,
+                generic_card_ids: deck.generic_card_ids,
+                mercenary_card_ids: deck.mercenary_card_ids,
+                validation_errors,
                 card_count: card_responses.len(),
                 cards: card_responses,
                 created_at: deck.created_at,
@@ -634,6 +743,39 @@ impl CardDefinitionsService {
             script,
             created_at: card.created_at,
         })
+    }
+
+    async fn deck_validation_errors(
+        &self,
+        generic_card_ids: &[CardId],
+        mercenary_card_ids: &HashMap<crate::models::id::MercenaryId, Vec<CardId>>,
+    ) -> Result<Vec<String>, CardDefinitionError> {
+        let mercenaries = self.mercenaries.active_mercenaries().await?;
+        let mut errors = Vec::new();
+
+        if generic_card_ids.len() < 10 {
+            errors.push("select at least 10 generic cards".to_string());
+        }
+
+        if mercenaries.is_empty() {
+            errors.push("create at least one mercenary before validating a deck".to_string());
+        }
+
+        for mercenary in mercenaries {
+            let count = mercenary_card_ids
+                .get(&mercenary.mercenary_id)
+                .map(Vec::len)
+                .unwrap_or_default();
+
+            if count < 5 {
+                errors.push(format!(
+                    "select at least 5 cards for mercenary {}",
+                    mercenary.mercenary_id
+                ));
+            }
+        }
+
+        Ok(errors)
     }
 
     async fn ensure_can_create_card_kind(
@@ -695,6 +837,14 @@ impl CardDefinitionsService {
             source: card.script_object_key.clone(),
         }
     }
+}
+
+fn unique_card_ids(card_ids: Vec<CardId>) -> Vec<CardId> {
+    card_ids
+        .into_iter()
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect()
 }
 
 fn card_image_object_key(card_id: &CardId) -> String {

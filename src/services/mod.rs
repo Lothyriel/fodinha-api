@@ -10,6 +10,7 @@ use crate::{
 pub mod card_definitions;
 pub mod manager;
 pub mod matches;
+pub mod mercenaries;
 pub mod object_storage;
 pub mod repositories;
 pub mod stats;
@@ -99,6 +100,8 @@ pub enum LobbyError {
     GameNotStarted,
     #[error("This is not your lobby")]
     WrongLobby,
+    #[error("Mercenary selection is required before readying up")]
+    MercenaryRequired,
     #[error("Game error | {0}")]
     GameError(#[from] GameError),
 }
