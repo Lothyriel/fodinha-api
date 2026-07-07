@@ -5,13 +5,15 @@ pub mod power_lua;
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 
+use std::collections::HashMap;
+
 use crate::{
     infra::UserClaims,
     models::{
         Card, GameError, Turn,
         id::{CardId, PlayerId},
     },
-    services::{GameInfoDto, PowerCardDto},
+    services::{GameInfoDto, PlayerManaDto, PowerCardDto},
 };
 
 pub use fodinha_classic::{BiddingState, DealState, DealingMode, DeckShuffle, GameOutcome, NewSet};
@@ -20,6 +22,7 @@ pub use fodinha_classic::{BiddingState, DealState, DealingMode, DeckShuffle, Gam
 pub struct AppliedTurn {
     pub state: DealState,
     pub power_decks: Option<IndexMap<PlayerId, Vec<PowerCardDto>>>,
+    pub mana: Option<HashMap<PlayerId, PlayerManaDto>>,
 }
 
 #[derive(Debug, Clone)]
@@ -28,6 +31,7 @@ pub enum AppliedGameChange {
         player_id: PlayerId,
         bid: usize,
         state: BiddingState,
+        mana: HashMap<PlayerId, PlayerManaDto>,
     },
     TurnPlayed(AppliedTurn),
     PowerCardPlayed(fodinha_power::PowerCardOutcome),
@@ -44,11 +48,13 @@ impl From<fodinha_classic::AppliedGameChange> for AppliedGameChange {
                 player_id,
                 bid,
                 state,
+                mana: HashMap::new(),
             },
             fodinha_classic::AppliedGameChange::TurnPlayed(state) => {
                 Self::TurnPlayed(AppliedTurn {
                     state,
                     power_decks: None,
+                    mana: None,
                 })
             }
         }
@@ -62,14 +68,22 @@ impl From<fodinha_power::AppliedGameChange> for AppliedGameChange {
                 player_id,
                 bid,
                 state,
+                mana,
             } => Self::BidPlaced {
                 player_id,
                 bid,
                 state,
+                mana,
             },
-            fodinha_power::AppliedGameChange::TurnPlayed { state, power_decks } => {
-                Self::TurnPlayed(AppliedTurn { state, power_decks })
-            }
+            fodinha_power::AppliedGameChange::TurnPlayed {
+                state,
+                power_decks,
+                mana,
+            } => Self::TurnPlayed(AppliedTurn {
+                state,
+                power_decks,
+                mana,
+            }),
             fodinha_power::AppliedGameChange::PowerCardPlayed(outcome) => {
                 Self::PowerCardPlayed(outcome)
             }
@@ -167,6 +181,7 @@ impl GameEvent {
     }
 }
 
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", content = "data")]
 pub enum MatchEvent {
@@ -686,12 +701,16 @@ mod tests {
                     id: crate::models::id::CardId(Arc::from("heal_10")),
                     name: "Heal 10".to_string(),
                     description: "Restore 10 lives to yourself.".to_string(),
+                    mana_cost: 2,
                     card_type: fodinha_power::PowerCardType::Instant,
                     image_url: None,
                 },
                 target_player_id: None,
                 effects: fodinha_power::PowerCardEffects {
                     lifes: HashMap::from([(player_id.clone(), 60)]),
+                    mana: HashMap::new(),
+                    decks: HashMap::new(),
+                    power_decks: HashMap::new(),
                 },
             },
         ));

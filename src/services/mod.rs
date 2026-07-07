@@ -31,10 +31,17 @@ pub struct PowerCardDto {
     pub id: CardId,
     pub name: String,
     pub description: String,
+    pub mana_cost: usize,
     #[serde(rename = "type")]
     pub card_type: PowerCardType,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image_url: Option<String>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, Clone)]
+pub struct PlayerManaDto {
+    pub current: usize,
+    pub max: usize,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, Clone)]
@@ -50,6 +57,8 @@ pub struct PlayerInfoDto {
     pub lifes: usize,
     pub rounds: Option<usize>,
     pub bid: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mana: Option<PlayerManaDto>,
 }
 
 #[derive(thiserror::Error, Debug)]

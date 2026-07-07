@@ -60,6 +60,19 @@ impl CardDefinitionsRepository {
         Ok(())
     }
 
+    pub async fn replace(&self, card: CardDefinitionDto) -> mongodb::error::Result<()> {
+        let card_id = card.card_id.as_str().to_string();
+
+        telemetry::db_query(COLLECTION_NAME, "replace_one.card_id", async {
+            self.cards
+                .replace_one(doc! { "card_id": card_id }, card)
+                .await
+        })
+        .await?;
+
+        Ok(())
+    }
+
     pub async fn active_cards(&self) -> mongodb::error::Result<Vec<CardDefinitionDto>> {
         telemetry::db_query(COLLECTION_NAME, "find.active", async {
             let cursor = self
@@ -69,6 +82,18 @@ impl CardDefinitionsRepository {
                 .await?;
 
             cursor.try_collect().await
+        })
+        .await
+    }
+
+    pub async fn active_card_by_id(
+        &self,
+        card_id: &CardId,
+    ) -> mongodb::error::Result<Option<CardDefinitionDto>> {
+        telemetry::db_query(COLLECTION_NAME, "find_one.active_by_id", async {
+            self.cards
+                .find_one(doc! { "active": true, "card_id": card_id.as_str() })
+                .await
         })
         .await
     }
@@ -130,6 +155,8 @@ pub struct CardDefinitionDto {
     pub description: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub life: Option<i32>,
+    #[serde(default)]
+    pub mana_cost: usize,
     #[serde(rename = "type")]
     pub card_type: PowerCardType,
     pub creator_id: PlayerId,
@@ -153,6 +180,7 @@ impl CardDefinitionDto {
             name: input.name,
             description: input.description,
             life: input.life,
+            mana_cost: input.mana_cost,
             card_type: input.card_type,
             creator_id: input.creator_id,
             image_object_key: input.image_object_key,
@@ -175,6 +203,7 @@ pub struct NewCardDefinition {
     pub name: String,
     pub description: String,
     pub life: Option<i32>,
+    pub mana_cost: usize,
     pub card_type: PowerCardType,
     pub creator_id: PlayerId,
     pub image_object_key: Option<String>,

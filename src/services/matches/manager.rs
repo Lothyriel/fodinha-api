@@ -33,7 +33,7 @@ use crate::{
             CardDefinitionAssetResponse, CardDefinitionError, CardDefinitionResponse,
             CardDefinitionsService, CreateCardDefinitionAssetInput,
             CreateCardDefinitionFromAssetInput, CreateCardDefinitionInput, CreatePowerDeckInput,
-            PowerDeckResponse,
+            PowerDeckResponse, UpdateCardDefinitionInput,
         },
         matches::{
             MatchActor, MatchActorContext, MatchActorMessage, MatchReceiver, MatchRegistry,
@@ -345,6 +345,17 @@ impl ManagerHandle {
             .await
     }
 
+    pub async fn update_card_definition(
+        &self,
+        editor_id: PlayerId,
+        card_id: crate::models::id::CardId,
+        input: UpdateCardDefinitionInput,
+    ) -> Result<CardDefinitionResponse, CardDefinitionError> {
+        self.card_definitions
+            .update_card(editor_id, card_id, input)
+            .await
+    }
+
     pub async fn card_definitions(
         &self,
     ) -> Result<Vec<CardDefinitionResponse>, CardDefinitionError> {
@@ -487,6 +498,9 @@ impl ManagerHandle {
             OutboundMessage::TurnPlayed { pile } => Ok(ServerMessage::TurnPlayed { pile }),
             OutboundMessage::PlayerBidded { player_id, bid } => {
                 Ok(ServerMessage::PlayerBidded { player_id, bid })
+            }
+            OutboundMessage::PlayersManaChanged(mana) => {
+                Ok(ServerMessage::PlayersManaChanged(mana))
             }
             OutboundMessage::PlayerBiddingTurn {
                 player_id,

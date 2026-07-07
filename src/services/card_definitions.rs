@@ -1,5 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
+use chrono::Utc;
+
 use crate::{
     infra::UserClaims,
     models::{
@@ -40,7 +42,7 @@ pub struct CreateCardDefinitionInput {
     pub kind: CardDefinitionKind,
     pub name: String,
     pub description: String,
-    pub life: Option<i32>,
+    pub mana_cost: usize,
     pub card_type: PowerCardType,
     pub image: Vec<u8>,
     pub script: Vec<u8>,
@@ -58,8 +60,19 @@ pub struct CreateCardDefinitionFromAssetInput {
     pub kind: CardDefinitionKind,
     pub name: String,
     pub description: String,
-    pub life: Option<i32>,
+    pub mana_cost: usize,
     pub card_type: PowerCardType,
+}
+
+#[derive(Debug)]
+pub struct UpdateCardDefinitionInput {
+    pub kind: Option<CardDefinitionKind>,
+    pub name: String,
+    pub description: String,
+    pub mana_cost: usize,
+    pub card_type: PowerCardType,
+    pub image: Option<Vec<u8>>,
+    pub script: Option<Vec<u8>>,
 }
 
 #[derive(Debug)]
@@ -77,10 +90,12 @@ pub struct CardDefinitionResponse {
     pub name: String,
     pub description: String,
     pub life: Option<i32>,
+    pub mana_cost: usize,
     #[serde(rename = "type")]
     pub card_type: PowerCardType,
     pub creator_id: PlayerId,
     pub image_url: Option<String>,
+    pub script: String,
     pub created_at: i64,
 }
 
@@ -213,6 +228,7 @@ impl CardDefinitionsService {
             id: card_id.clone(),
             name: name.to_string(),
             description: description.to_string(),
+            mana_cost: input.mana_cost,
             card_type: input.card_type,
             image_url: self.storage.public_url(&image_object_key),
             script: script.clone(),
@@ -234,7 +250,8 @@ impl CardDefinitionsService {
             kind: input.kind,
             name: name.to_string(),
             description: description.to_string(),
-            life: input.life,
+            life: None,
+            mana_cost: input.mana_cost,
             card_type: input.card_type,
             creator_id,
             image_object_key: Some(image_object_key),
@@ -245,9 +262,7 @@ impl CardDefinitionsService {
         self.cards.insert(card.clone()).await?;
         fodinha_power::upsert_power_card_definition(definition)?;
 
-        let mut cards = self.card_responses(vec![card]);
-
-        Ok(cards.remove(0))
+        self.card_response(card, script)
     }
 
     pub async fn create_card_asset(
@@ -332,9 +347,10 @@ impl CardDefinitionsService {
             id: card_id.clone(),
             name: name.to_string(),
             description: description.to_string(),
+            mana_cost: input.mana_cost,
             card_type: input.card_type,
             image_url: self.storage.public_url(&image_object_key),
-            script,
+            script: script.clone(),
             source: script_object_key.clone(),
         };
 
@@ -343,7 +359,8 @@ impl CardDefinitionsService {
             kind: input.kind,
             name: name.to_string(),
             description: description.to_string(),
-            life: input.life,
+            life: None,
+            mana_cost: input.mana_cost,
             card_type: input.card_type,
             creator_id,
             image_object_key: Some(image_object_key),
@@ -354,9 +371,110 @@ impl CardDefinitionsService {
         self.cards.insert(card.clone()).await?;
         fodinha_power::upsert_power_card_definition(definition)?;
 
-        let mut cards = self.card_responses(vec![card]);
+        self.card_response(card, script)
+    }
 
-        Ok(cards.remove(0))
+    pub async fn update_card(
+        &self,
+        editor_id: PlayerId,
+        card_id: CardId,
+        input: UpdateCardDefinitionInput,
+    ) -> Result<CardDefinitionResponse, CardDefinitionError> {
+        let mut card = self
+            .cards
+            .active_card_by_id(&card_id)
+            .await?
+            .ok_or_else(|| CardDefinitionError::Invalid("card not found".to_string()))?;
+
+        if card.creator_id != editor_id {
+            return Err(CardDefinitionError::Forbidden(
+                "only the card creator can edit this card".to_string(),
+            ));
+        }
+
+        let kind = input.kind.unwrap_or(card.kind);
+
+        if card.kind == CardDefinitionKind::Official || kind == CardDefinitionKind::Official {
+            self.ensure_admin(&editor_id, "only admin users can edit official cards")
+                .await?;
+        }
+
+        let name = input.name.trim();
+        let description = input.description.trim();
+
+        if name.is_empty() {
+            return Err(CardDefinitionError::Invalid("name is required".to_string()));
+        }
+
+        if description.is_empty() {
+            return Err(CardDefinitionError::Invalid(
+                "description is required".to_string(),
+            ));
+        }
+
+        let image_object_key = card
+            .image_object_key
+            .clone()
+            .unwrap_or_else(|| card_image_object_key(&card_id));
+        let script_object_key = card.script_object_key.clone();
+        let script = match input.script {
+            Some(script) => {
+                if script.is_empty() {
+                    return Err(CardDefinitionError::Invalid(
+                        "lua script is required".to_string(),
+                    ));
+                }
+
+                String::from_utf8(script)
+                    .map_err(|error| CardDefinitionError::Script(error.to_string()))?
+            }
+            None => {
+                let script = self.storage.get_bytes(&script_object_key).await?;
+
+                String::from_utf8(script)
+                    .map_err(|error| CardDefinitionError::Script(error.to_string()))?
+            }
+        };
+
+        power_lua::validate_power_card_script(&script, &script_object_key)
+            .map_err(|error| CardDefinitionError::Script(error.to_string()))?;
+
+        if let Some(image) = input.image {
+            if image.is_empty() {
+                return Err(CardDefinitionError::Invalid(
+                    "image is required".to_string(),
+                ));
+            }
+
+            self.storage
+                .put(&image_object_key, image, IMAGE_OBJECT_CONTENT_TYPE)
+                .await?;
+        }
+
+        self.storage
+            .put(
+                &script_object_key,
+                script.clone().into_bytes(),
+                SCRIPT_OBJECT_CONTENT_TYPE,
+            )
+            .await?;
+
+        card.kind = kind;
+        card.name = name.to_string();
+        card.description = description.to_string();
+        card.life = None;
+        card.mana_cost = input.mana_cost;
+        card.card_type = input.card_type;
+        card.image_object_key = Some(image_object_key);
+        card.image_content_type = Some(IMAGE_OBJECT_CONTENT_TYPE.to_string());
+        card.updated_at = Utc::now().timestamp();
+
+        let definition = self.definition_input(&card, script.clone());
+
+        self.cards.replace(card.clone()).await?;
+        fodinha_power::upsert_power_card_definition(definition)?;
+
+        self.card_response(card, script)
     }
 
     pub async fn create_deck(
@@ -417,7 +535,7 @@ impl CardDefinitionsService {
     pub async fn list_cards(&self) -> Result<Vec<CardDefinitionResponse>, CardDefinitionError> {
         let cards = self.cards.active_cards().await?;
 
-        Ok(self.card_responses(cards))
+        self.card_responses(cards).await
     }
 
     pub async fn list_decks(&self) -> Result<Vec<PowerDeckResponse>, CardDefinitionError> {
@@ -442,7 +560,7 @@ impl CardDefinitionsService {
             .cloned()
             .map(|card| (card.card_id.clone(), card))
             .collect::<HashMap<_, _>>();
-        let mut responses = decks
+        let deck_cards = decks
             .into_iter()
             .map(|deck| {
                 let cards = deck
@@ -450,45 +568,72 @@ impl CardDefinitionsService {
                     .iter()
                     .filter_map(|card_id| cards_by_id.get(card_id).cloned())
                     .collect::<Vec<_>>();
-                let card_responses = self.card_responses(cards);
 
-                PowerDeckResponse {
-                    id: deck.deck_id,
-                    kind: deck.kind,
-                    name: deck.name,
-                    description: deck.description,
-                    creator_id: deck.creator_id.clone(),
-                    card_ids: deck.card_ids,
-                    card_count: card_responses.len(),
-                    cards: card_responses,
-                    created_at: deck.created_at,
-                }
+                (deck, cards)
             })
             .collect::<Vec<_>>();
+
+        let mut responses = Vec::with_capacity(deck_cards.len());
+
+        for (deck, cards) in deck_cards {
+            let card_responses = self.card_responses(cards).await?;
+
+            responses.push(PowerDeckResponse {
+                id: deck.deck_id,
+                kind: deck.kind,
+                name: deck.name,
+                description: deck.description,
+                creator_id: deck.creator_id.clone(),
+                card_ids: deck.card_ids,
+                card_count: card_responses.len(),
+                cards: card_responses,
+                created_at: deck.created_at,
+            });
+        }
 
         responses.sort_by_key(|deck| std::cmp::Reverse(deck.created_at));
 
         Ok(responses)
     }
 
-    fn card_responses(&self, cards: Vec<CardDefinitionDto>) -> Vec<CardDefinitionResponse> {
-        cards
-            .into_iter()
-            .map(|card| CardDefinitionResponse {
-                id: card.card_id,
-                kind: card.kind,
-                name: card.name,
-                description: card.description,
-                life: card.life,
-                card_type: card.card_type,
-                creator_id: card.creator_id.clone(),
-                image_url: card
-                    .image_object_key
-                    .as_deref()
-                    .and_then(|key| self.storage.public_url(key)),
-                created_at: card.created_at,
-            })
-            .collect()
+    async fn card_responses(
+        &self,
+        cards: Vec<CardDefinitionDto>,
+    ) -> Result<Vec<CardDefinitionResponse>, CardDefinitionError> {
+        let mut responses = Vec::with_capacity(cards.len());
+
+        for card in cards {
+            let script = self.storage.get_bytes(&card.script_object_key).await?;
+            let script = String::from_utf8(script)
+                .map_err(|error| CardDefinitionError::Script(error.to_string()))?;
+
+            responses.push(self.card_response(card, script)?);
+        }
+
+        Ok(responses)
+    }
+
+    fn card_response(
+        &self,
+        card: CardDefinitionDto,
+        script: String,
+    ) -> Result<CardDefinitionResponse, CardDefinitionError> {
+        Ok(CardDefinitionResponse {
+            id: card.card_id,
+            kind: card.kind,
+            name: card.name,
+            description: card.description,
+            life: card.life,
+            mana_cost: card.mana_cost,
+            card_type: card.card_type,
+            creator_id: card.creator_id.clone(),
+            image_url: card
+                .image_object_key
+                .as_deref()
+                .and_then(|key| self.storage.public_url(key)),
+            script,
+            created_at: card.created_at,
+        })
     }
 
     async fn ensure_can_create_card_kind(
@@ -540,6 +685,7 @@ impl CardDefinitionsService {
             id: card.card_id.clone(),
             name: card.name.clone(),
             description: card.description.clone(),
+            mana_cost: card.mana_cost,
             card_type: card.card_type,
             image_url: card
                 .image_object_key

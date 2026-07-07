@@ -10,16 +10,22 @@ use crate::{
         BiddingError, Card, DealError, GameError, Turn,
         game::{
             BiddingState, DealState, DeckShuffle, NewSet, fodinha_classic,
-            power_lua::{PowerScriptError, PowerScriptInput, PowerScriptOutput, ScriptPlayerState},
+            power_lua::{
+                PowerScriptError, PowerScriptInput, PowerScriptOutput, ScriptManaState,
+                ScriptPlayerState, ScriptPowerCardState,
+            },
         },
         id::{CardId, DeckId, PlayerId},
         util::DeterministicRng,
     },
-    services::{GameInfoDto, PowerCardDto},
+    services::{GameInfoDto, PlayerManaDto, PowerCardDto},
 };
 
 const LIFE_LOSS_PER_BID_DIFFERENCE: usize = 10;
 const POWER_CARDS_PER_PLAYER: usize = 1;
+const INITIAL_MANA_POOL: usize = 2;
+const MANA_POOL_GAIN_PER_SET: usize = 1;
+const MANA_REGEN_PER_BIDDING_TURN: usize = 1;
 
 pub const DEFAULT_INITIAL_LIFES: usize = 50;
 pub const MIN_INITIAL_LIFES: usize = 10;
@@ -30,6 +36,7 @@ pub const MAX_PLAYER_COUNT: usize = fodinha_classic::MAX_PLAYER_COUNT;
 pub struct Game {
     core: fodinha_classic::Game,
     power_decks: IndexMap<PlayerId, Vec<PowerCard>>,
+    mana: IndexMap<PlayerId, PlayerMana>,
     power_deck_id: DeckId,
     power_seed: i64,
     next_power_shuffle_sequence: i64,
@@ -45,6 +52,60 @@ pub struct GameSettings {
 pub struct PowerSet {
     pub shuffle: DeckShuffle,
     pub decks: IndexMap<PlayerId, Vec<PowerCard>>,
+    #[serde(default)]
+    pub mana: IndexMap<PlayerId, PlayerMana>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct PlayerMana {
+    pub current: usize,
+    pub max: usize,
+}
+
+impl PlayerMana {
+    fn initial() -> Self {
+        Self {
+            current: INITIAL_MANA_POOL,
+            max: INITIAL_MANA_POOL,
+        }
+    }
+
+    fn regenerate(&mut self) {
+        self.current = self
+            .current
+            .saturating_add(MANA_REGEN_PER_BIDDING_TURN)
+            .min(self.max);
+    }
+
+    fn increase_pool_for_set(&mut self) {
+        self.max = self.max.saturating_add(MANA_POOL_GAIN_PER_SET);
+        self.current = self.max;
+    }
+
+    fn to_dto(&self) -> PlayerManaDto {
+        PlayerManaDto {
+            current: self.current,
+            max: self.max,
+        }
+    }
+}
+
+impl From<&PlayerMana> for ScriptManaState {
+    fn from(mana: &PlayerMana) -> Self {
+        Self {
+            current: mana.current,
+            max: mana.max,
+        }
+    }
+}
+
+impl From<ScriptManaState> for PlayerMana {
+    fn from(mana: ScriptManaState) -> Self {
+        Self {
+            current: mana.current.min(mana.max),
+            max: mana.max,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -93,6 +154,7 @@ pub struct PowerCard {
     pub id: CardId,
     pub name: String,
     pub description: String,
+    pub mana_cost: usize,
     #[serde(rename = "type")]
     pub card_type: PowerCardType,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -105,6 +167,7 @@ impl PowerCard {
             id: self.id.clone(),
             name: self.name.clone(),
             description: self.description.clone(),
+            mana_cost: self.mana_cost,
             card_type: self.card_type,
             image_url: self.image_url.clone(),
         }
@@ -147,6 +210,8 @@ pub enum MatchEvent {
     BidPlaced {
         player_id: PlayerId,
         bid: usize,
+        #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+        mana: HashMap<PlayerId, PlayerMana>,
     },
     TurnPlayed {
         turn: Turn,
@@ -163,7 +228,14 @@ pub enum MatchEvent {
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PowerCardEffects {
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub lifes: HashMap<PlayerId, usize>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub mana: HashMap<PlayerId, PlayerMana>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub decks: HashMap<PlayerId, Vec<Card>>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub power_decks: HashMap<PlayerId, Vec<PowerCard>>,
 }
 
 #[derive(Debug, Clone)]
@@ -172,10 +244,12 @@ pub enum AppliedGameChange {
         player_id: PlayerId,
         bid: usize,
         state: BiddingState,
+        mana: HashMap<PlayerId, PlayerManaDto>,
     },
     TurnPlayed {
         state: DealState,
         power_decks: Option<IndexMap<PlayerId, Vec<PowerCardDto>>>,
+        mana: Option<HashMap<PlayerId, PlayerManaDto>>,
     },
     PowerCardPlayed(PowerCardOutcome),
 }
@@ -186,6 +260,9 @@ pub struct PowerCardOutcome {
     pub card: PowerCardDto,
     pub target_player_id: Option<PlayerId>,
     pub lifes: HashMap<PlayerId, usize>,
+    pub mana: HashMap<PlayerId, PlayerManaDto>,
+    pub decks: HashMap<PlayerId, Vec<Card>>,
+    pub power_decks: HashMap<PlayerId, Vec<PowerCardDto>>,
     pub ended: bool,
 }
 
@@ -203,6 +280,8 @@ pub enum PowerCardError {
     TargetRequired,
     #[error("invalid power card")]
     InvalidPowerCard,
+    #[error("not enough mana")]
+    NotEnoughMana,
     #[error("power card script failed: {0}")]
     Script(#[from] PowerScriptError),
     #[error("power card definitions failed: {0}")]
@@ -224,6 +303,7 @@ pub struct PowerCardDefinitionInput {
     pub id: CardId,
     pub name: String,
     pub description: String,
+    pub mana_cost: usize,
     pub card_type: PowerCardType,
     pub image_url: Option<String>,
     pub script: String,
@@ -241,6 +321,7 @@ struct PowerCardDefinition {
     id: CardId,
     name: String,
     description: String,
+    mana_cost: usize,
     card_type: PowerCardType,
     image_url: Option<String>,
     script: String,
@@ -260,6 +341,7 @@ impl PowerCardDefinition {
             id: input.id,
             name: input.name,
             description: input.description,
+            mana_cost: input.mana_cost,
             card_type: input.card_type,
             image_url: input.image_url,
             script: input.script,
@@ -272,8 +354,35 @@ impl PowerCardDefinition {
             id: self.id.clone(),
             name: self.name.clone(),
             description: self.description.clone(),
+            mana_cost: self.mana_cost,
             card_type: self.card_type,
             image_url: self.image_url.clone(),
+        }
+    }
+}
+
+impl From<ScriptPowerCardState> for PowerCard {
+    fn from(card: ScriptPowerCardState) -> Self {
+        Self {
+            id: CardId(card.id.into()),
+            name: card.name,
+            description: card.description,
+            mana_cost: card.mana_cost,
+            card_type: card.card_type,
+            image_url: card.image_url,
+        }
+    }
+}
+
+impl From<&PowerCard> for ScriptPowerCardState {
+    fn from(card: &PowerCard) -> Self {
+        Self {
+            id: card.id.as_str().to_string(),
+            name: card.name.clone(),
+            description: card.description.clone(),
+            mana_cost: card.mana_cost,
+            card_type: card.card_type,
+            image_url: card.image_url.clone(),
         }
     }
 }
@@ -385,7 +494,13 @@ impl Game {
         let fodinha_classic::MatchEvent::GameStarted { set, .. } = classic_event else {
             unreachable!("classic start_match_event only emits GameStarted")
         };
-        let power_set = Self::new_power_set(players, seed, 0, &settings.power_deck_id)?;
+        let power_set = Self::new_power_set(
+            players,
+            seed,
+            0,
+            &settings.power_deck_id,
+            Self::initial_mana(players),
+        )?;
 
         Ok(MatchEvent::GameStarted {
             settings,
@@ -409,9 +524,16 @@ impl Game {
             },
         )?;
 
+        let mana = if power_set.mana.is_empty() {
+            Self::initial_mana(players)
+        } else {
+            power_set.mana
+        };
+
         Ok(Self {
             core: classic,
             power_decks: power_set.decks,
+            mana,
             power_deck_id: settings.power_deck_id,
             power_seed: power_set.shuffle.seed,
             next_power_shuffle_sequence: power_set.shuffle.sequence.wrapping_add(1),
@@ -423,9 +545,13 @@ impl Game {
         player_id: &PlayerId,
         bid: usize,
     ) -> Result<MatchEvent, BiddingError> {
-        self.core
-            .validate_bid(player_id, bid)
-            .map(Self::from_classic_event)
+        self.core.validate_bid(player_id, bid)?;
+
+        Ok(MatchEvent::BidPlaced {
+            player_id: player_id.clone(),
+            bid,
+            mana: self.mana_after_bid(player_id, bid),
+        })
     }
 
     pub fn validate_turn(&self, turn: Turn) -> Result<MatchEvent, DealError> {
@@ -474,6 +600,16 @@ impl Game {
         let definition = power_card_definition(&self.power_deck_id, &card.id)?
             .ok_or(PowerCardError::InvalidPowerCard)?;
 
+        if self
+            .mana
+            .get(player_id)
+            .map(|mana| mana.current)
+            .unwrap_or_default()
+            < definition.mana_cost
+        {
+            return Err(PowerCardError::NotEnoughMana);
+        }
+
         if definition.card_type.needs_target() && target_player_id.is_none() {
             return Err(PowerCardError::TargetRequired);
         }
@@ -485,20 +621,23 @@ impl Game {
         }
 
         let output = self.run_power_script(&definition, player_id, target_player_id.clone())?;
+        let effects = self.power_card_effects(player_id, &definition, output);
 
         Ok(MatchEvent::PowerCardPlayed {
             player_id: player_id.clone(),
             card,
             target_player_id,
-            effects: PowerCardEffects {
-                lifes: output.lifes,
-            },
+            effects,
         })
     }
 
     pub fn apply_match_event(&mut self, event: MatchEvent) -> AppliedGameChange {
         match event {
-            MatchEvent::BidPlaced { player_id, bid } => {
+            MatchEvent::BidPlaced {
+                player_id,
+                bid,
+                mana,
+            } => {
                 match self
                     .core
                     .apply_match_event(fodinha_classic::MatchEvent::BidPlaced { player_id, bid })
@@ -511,6 +650,7 @@ impl Game {
                         player_id,
                         bid,
                         state,
+                        mana: self.apply_mana_totals(&mana),
                     },
                     _ => unreachable!("bid event applies as bid change"),
                 }
@@ -531,8 +671,13 @@ impl Game {
                     self.apply_power_set(set);
                     dto_decks(&set.decks)
                 });
+                let mana = next_power_set.as_ref().map(|set| mana_to_dto(&set.mana));
 
-                AppliedGameChange::TurnPlayed { state, power_decks }
+                AppliedGameChange::TurnPlayed {
+                    state,
+                    power_decks,
+                    mana,
+                }
             }
             MatchEvent::PowerCardPlayed {
                 player_id,
@@ -547,12 +692,28 @@ impl Game {
                 }
 
                 self.core.apply_life_totals(&effects.lifes);
+                self.core.apply_decks(&effects.decks);
+                let mana = self.apply_mana_totals(&effects.mana);
+                self.apply_power_decks(&effects.power_decks);
+                let power_decks = effects
+                    .power_decks
+                    .iter()
+                    .map(|(player_id, deck)| {
+                        (
+                            player_id.clone(),
+                            deck.iter().map(PowerCard::to_dto).collect(),
+                        )
+                    })
+                    .collect();
 
                 AppliedGameChange::PowerCardPlayed(PowerCardOutcome {
                     player_id,
                     card: card.to_dto(),
                     target_player_id,
                     lifes: self.core.get_lifes(),
+                    mana,
+                    decks: effects.decks,
+                    power_decks,
                     ended: self.core.is_finished(),
                 })
             }
@@ -566,6 +727,9 @@ impl Game {
 
     pub fn get_game_info(&self, player_id: &PlayerId) -> GameInfoDto {
         let mut info = self.core.get_game_info(player_id);
+        for player in &mut info.info {
+            player.mana = self.mana.get(&player.id).map(PlayerMana::to_dto);
+        }
         info.power_cards = Some(
             self.power_decks
                 .get(player_id)
@@ -596,12 +760,32 @@ impl Game {
             .into_iter()
             .filter(|(_, player)| player.lifes > 0)
             .map(|(player_id, player)| {
+                let power_cards = self
+                    .power_decks
+                    .get(&player_id)
+                    .map(|deck| {
+                        deck.iter()
+                            .filter(|card| {
+                                &player_id != owner_id || card.id.as_str() != definition.id.as_str()
+                            })
+                            .map(ScriptPowerCardState::from)
+                            .collect()
+                    })
+                    .unwrap_or_default();
+
                 (
-                    player_id,
+                    player_id.clone(),
                     ScriptPlayerState {
                         lifes: player.lifes,
                         bid: player.bid,
                         rounds: player.rounds,
+                        mana: self
+                            .mana
+                            .get(&player_id)
+                            .map(ScriptManaState::from)
+                            .unwrap_or(ScriptManaState { current: 0, max: 0 }),
+                        cards: player.deck,
+                        power_cards,
                     },
                 )
             })
@@ -610,11 +794,54 @@ impl Game {
         Ok(super::power_lua::run_power_card_script(
             &definition.script,
             PowerScriptInput {
+                card_id: definition.id.as_str().to_string(),
+                mana_cost: definition.mana_cost,
                 owner_id: owner_id.clone(),
                 target_player_id,
                 players,
             },
         )?)
+    }
+
+    fn power_card_effects(
+        &self,
+        owner_id: &PlayerId,
+        definition: &PowerCardDefinition,
+        output: PowerScriptOutput,
+    ) -> PowerCardEffects {
+        let mut mana = output
+            .mana
+            .into_iter()
+            .map(|(player_id, mana)| (player_id, PlayerMana::from(mana)))
+            .collect::<HashMap<_, _>>();
+        let mut owner_mana = mana
+            .remove(owner_id)
+            .or_else(|| self.mana.get(owner_id).cloned())
+            .unwrap_or_else(PlayerMana::initial);
+
+        owner_mana.current = owner_mana.current.saturating_sub(definition.mana_cost);
+
+        if self.mana.get(owner_id) != Some(&owner_mana) {
+            mana.insert(owner_id.clone(), owner_mana);
+        }
+
+        let power_decks = output
+            .power_cards
+            .into_iter()
+            .map(|(player_id, deck)| {
+                (
+                    player_id,
+                    deck.into_iter().map(PowerCard::from).collect::<Vec<_>>(),
+                )
+            })
+            .collect();
+
+        PowerCardEffects {
+            lifes: output.lifes,
+            mana,
+            decks: output.cards,
+            power_decks,
+        }
     }
 
     fn classic_settings(settings: &GameSettings) -> fodinha_classic::GameSettings {
@@ -625,8 +852,34 @@ impl Game {
 
     fn apply_power_set(&mut self, set: &PowerSet) {
         self.power_decks = set.decks.clone();
+        if !set.mana.is_empty() {
+            self.mana = set.mana.clone();
+        }
         self.power_seed = set.shuffle.seed;
         self.next_power_shuffle_sequence = set.shuffle.sequence.wrapping_add(1);
+    }
+
+    fn apply_mana_totals(
+        &mut self,
+        mana: &HashMap<PlayerId, PlayerMana>,
+    ) -> HashMap<PlayerId, PlayerManaDto> {
+        for (player_id, player_mana) in mana {
+            if self.core.is_player_alive(player_id) {
+                self.mana.insert(player_id.clone(), player_mana.clone());
+            }
+        }
+
+        mana.iter()
+            .map(|(player_id, mana)| (player_id.clone(), mana.to_dto()))
+            .collect()
+    }
+
+    fn apply_power_decks(&mut self, power_decks: &HashMap<PlayerId, Vec<PowerCard>>) {
+        for (player_id, deck) in power_decks {
+            if self.core.is_player_alive(player_id) {
+                self.power_decks.insert(player_id.clone(), deck.clone());
+            }
+        }
     }
 
     fn new_power_set_for_game(&self, players: &[PlayerId]) -> PowerSet {
@@ -635,6 +888,7 @@ impl Game {
             self.power_seed,
             self.next_power_shuffle_sequence,
             &self.power_deck_id,
+            self.next_set_mana(players),
         )
         .expect("FodinhaPower card definitions are loaded before the game starts")
     }
@@ -644,6 +898,7 @@ impl Game {
         seed: i64,
         sequence: i64,
         power_deck_id: &DeckId,
+        mana: IndexMap<PlayerId, PlayerMana>,
     ) -> Result<PowerSet, PowerCardDefinitionError> {
         let definitions = power_card_definitions(power_deck_id)?;
         let needed_cards = players.len().saturating_mul(POWER_CARDS_PER_PLAYER);
@@ -667,15 +922,60 @@ impl Game {
         Ok(PowerSet {
             shuffle: DeckShuffle { seed, sequence },
             decks,
+            mana,
         })
     }
 
-    fn from_classic_event(event: fodinha_classic::MatchEvent) -> MatchEvent {
-        match event {
-            fodinha_classic::MatchEvent::BidPlaced { player_id, bid } => {
-                MatchEvent::BidPlaced { player_id, bid }
-            }
-            _ => unreachable!("only bid events are converted here"),
+    fn initial_mana(players: &[PlayerId]) -> IndexMap<PlayerId, PlayerMana> {
+        players
+            .iter()
+            .map(|player_id| (player_id.clone(), PlayerMana::initial()))
+            .collect()
+    }
+
+    fn next_set_mana(&self, players: &[PlayerId]) -> IndexMap<PlayerId, PlayerMana> {
+        players
+            .iter()
+            .map(|player_id| {
+                let mut mana = self
+                    .mana
+                    .get(player_id)
+                    .cloned()
+                    .unwrap_or_else(PlayerMana::initial);
+                mana.increase_pool_for_set();
+
+                (player_id.clone(), mana)
+            })
+            .collect()
+    }
+
+    fn mana_after_bid(&self, player_id: &PlayerId, bid: usize) -> HashMap<PlayerId, PlayerMana> {
+        let mut core = self.core.clone();
+        let change = core.apply_match_event(fodinha_classic::MatchEvent::BidPlaced {
+            player_id: player_id.clone(),
+            bid,
+        });
+
+        let fodinha_classic::AppliedGameChange::BidPlaced { state, .. } = change else {
+            return HashMap::new();
+        };
+
+        let BiddingState::Active { next, .. } = state else {
+            return HashMap::new();
+        };
+
+        let mut mana = self
+            .mana
+            .get(&next)
+            .cloned()
+            .unwrap_or_else(PlayerMana::initial);
+        let previous = mana.clone();
+        mana.regenerate();
+
+        if mana == previous {
+            HashMap::new()
+        } else {
+            HashMap::from([(next, mana)])
         }
     }
 }
@@ -689,6 +989,12 @@ fn dto_decks(decks: &IndexMap<PlayerId, Vec<PowerCard>>) -> IndexMap<PlayerId, V
                 deck.iter().map(PowerCard::to_dto).collect(),
             )
         })
+        .collect()
+}
+
+fn mana_to_dto(mana: &IndexMap<PlayerId, PlayerMana>) -> HashMap<PlayerId, PlayerManaDto> {
+    mana.iter()
+        .map(|(player_id, mana)| (player_id.clone(), mana.to_dto()))
         .collect()
 }
 
@@ -806,6 +1112,7 @@ return {
                 id: card_id("heal_10"),
                 name: "Heal 10".to_string(),
                 description: "Restore 10 lives to yourself.".to_string(),
+                mana_cost: 2,
                 card_type: PowerCardType::Instant,
                 image_url: None,
                 script: HEAL_10_SCRIPT.to_string(),
@@ -815,6 +1122,7 @@ return {
                 id: card_id("strike_10"),
                 name: "Strike 10".to_string(),
                 description: "Remove 10 lives from a target player.".to_string(),
+                mana_cost: 3,
                 card_type: PowerCardType::Targetable,
                 image_url: None,
                 script: STRIKE_10_SCRIPT.to_string(),
@@ -843,6 +1151,10 @@ return {
         }
     }
 
+    fn test_players() -> [PlayerId; 2] {
+        [PlayerId(Arc::from("P1")), PlayerId(Arc::from("P2"))]
+    }
+
     #[test]
     fn loads_power_cards_from_runtime_registry() {
         let _lock = power_card_test_lock();
@@ -864,6 +1176,30 @@ return {
                 .iter()
                 .all(|definition| !definition.script.is_empty())
         );
+    }
+
+    #[test]
+    fn game_starts_with_initial_mana_pool() {
+        let _lock = power_card_test_lock();
+        install_test_power_card_definitions();
+        let players = test_players();
+
+        let MatchEvent::GameStarted { power_set, .. } =
+            Game::start_match_event_with_seed(&players, test_settings(), 42).unwrap()
+        else {
+            panic!("expected game started event");
+        };
+
+        assert_eq!(power_set.mana.len(), players.len());
+        for player in players {
+            assert_eq!(
+                power_set.mana.get(&player),
+                Some(&PlayerMana {
+                    current: INITIAL_MANA_POOL,
+                    max: INITIAL_MANA_POOL,
+                })
+            );
+        }
     }
 
     #[test]
@@ -929,6 +1265,67 @@ return {
 
         assert_eq!(outcome.lifes.get(&player2), Some(&40));
         assert!(game.power_decks[&player1].is_empty());
+    }
+
+    #[test]
+    fn power_card_cost_is_deducted_from_mana() {
+        let _lock = power_card_test_lock();
+        let [player1, player2] = test_players();
+        let players = [player1.clone(), player2.clone()];
+        let mut game = new_test_game(&players);
+
+        game.power_decks.insert(
+            player1.clone(),
+            vec![
+                power_card_definition(&test_deck_id(), &card_id("strike_10"))
+                    .unwrap()
+                    .unwrap()
+                    .to_card(),
+            ],
+        );
+
+        let event = game
+            .validate_power_card(&player1, &card_id("strike_10"), Some(player2))
+            .unwrap();
+        let AppliedGameChange::PowerCardPlayed(outcome) = game.apply_match_event(event) else {
+            panic!("expected power card outcome");
+        };
+
+        assert_eq!(
+            outcome.mana.get(&player1),
+            Some(&PlayerManaDto { current: 2, max: 5 })
+        );
+        assert_eq!(game.mana[&player1].current, 2);
+    }
+
+    #[test]
+    fn power_card_requires_enough_mana() {
+        let _lock = power_card_test_lock();
+        let [player1, player2] = test_players();
+        let players = [player1.clone(), player2.clone()];
+        let mut game = new_test_game(&players);
+
+        game.power_decks.insert(
+            player1.clone(),
+            vec![
+                power_card_definition(&test_deck_id(), &card_id("strike_10"))
+                    .unwrap()
+                    .unwrap()
+                    .to_card(),
+            ],
+        );
+        game.mana.insert(
+            player1.clone(),
+            PlayerMana {
+                current: 2,
+                max: INITIAL_MANA_POOL,
+            },
+        );
+
+        assert!(matches!(
+            game.validate_power_card(&player1, &card_id("strike_10"), Some(player2)),
+            Err(PowerCardError::NotEnoughMana)
+        ));
     }
 
     #[test]
@@ -1033,6 +1430,9 @@ return {
                 target_player_id: Some(player2.clone()),
                 effects: PowerCardEffects {
                     lifes: HashMap::from([(player2.clone(), 0)]),
+                    mana: HashMap::new(),
+                    decks: HashMap::new(),
+                    power_decks: HashMap::new(),
                 },
             })
         else {
@@ -1094,6 +1494,129 @@ return {
         assert_eq!(power_decks[&player2].len(), POWER_CARDS_PER_PLAYER);
         assert_eq!(game.power_decks[&player1].len(), POWER_CARDS_PER_PLAYER);
         assert_eq!(game.power_decks[&player2].len(), POWER_CARDS_PER_PLAYER);
+    }
+
+    #[test]
+    fn bidding_turn_regenerates_next_players_mana() {
+        let _lock = power_card_test_lock();
+        let [player1, player2] = test_players();
+        let players = [player1.clone(), player2.clone()];
+        let mut game = new_test_game(&players);
+
+        game.mana.insert(
+            player2.clone(),
+            PlayerMana {
+                current: 4,
+                max: INITIAL_MANA_POOL,
+            },
+        );
+
+        let event = game.validate_bid(&player1, 1).unwrap();
+        let MatchEvent::BidPlaced { mana, .. } = &event else {
+            panic!("expected bid event");
+        };
+
+        assert_eq!(mana.get(&player2), Some(&PlayerMana { current: 5, max: 5 }));
+
+        let AppliedGameChange::BidPlaced { mana, .. } = game.apply_match_event(event) else {
+            panic!("expected bid change");
+        };
+
+        assert_eq!(
+            mana.get(&player2),
+            Some(&PlayerManaDto { current: 5, max: 5 })
+        );
+        assert_eq!(game.mana[&player2].current, 5);
+    }
+
+    #[test]
+    fn next_set_increases_and_refills_mana_pool() {
+        let _lock = power_card_test_lock();
+        let [player1, player2] = test_players();
+        let players = [player1.clone(), player2.clone()];
+        let mut game = new_test_game(&players);
+
+        game.mana.insert(
+            player1.clone(),
+            PlayerMana {
+                current: 1,
+                max: INITIAL_MANA_POOL,
+            },
+        );
+        game.mana.insert(
+            player2.clone(),
+            PlayerMana {
+                current: 2,
+                max: INITIAL_MANA_POOL,
+            },
+        );
+
+        game.apply_match_event(game.validate_bid(&player1, 1).unwrap());
+        game.apply_match_event(game.validate_bid(&player2, 1).unwrap());
+
+        let first_card = game.core.get_player_snapshots()[&player1].deck[0];
+        let second_card = game.core.get_player_snapshots()[&player2].deck[0];
+
+        game.apply_match_event(
+            game.validate_turn(Turn {
+                player_id: player1.clone(),
+                card: first_card,
+            })
+            .unwrap(),
+        );
+
+        let event = game
+            .validate_turn(Turn {
+                player_id: player2.clone(),
+                card: second_card,
+            })
+            .unwrap();
+
+        let AppliedGameChange::TurnPlayed {
+            mana: Some(mana), ..
+        } = game.apply_match_event(event)
+        else {
+            panic!("expected next-set mana update");
+        };
+
+        assert_eq!(
+            mana.get(&player1),
+            Some(&PlayerManaDto { current: 6, max: 6 })
+        );
+        assert_eq!(
+            mana.get(&player2),
+            Some(&PlayerManaDto { current: 6, max: 6 })
+        );
+        assert_eq!(game.mana[&player1].current, 6);
+        assert_eq!(game.mana[&player1].max, 6);
+        assert_eq!(game.mana[&player2].current, 6);
+        assert_eq!(game.mana[&player2].max, 6);
+    }
+
+    #[test]
+    fn next_set_mana_pool_has_no_global_cap() {
+        let _lock = power_card_test_lock();
+        let [player1, player2] = test_players();
+        let players = [player1.clone(), player2.clone()];
+        let mut game = new_test_game(&players);
+
+        game.mana.insert(
+            player1.clone(),
+            PlayerMana {
+                current: 4,
+                max: 10,
+            },
+        );
+
+        let mana = game.next_set_mana(&players);
+
+        assert_eq!(
+            mana.get(&player1),
+            Some(&PlayerMana {
+                current: 11,
+                max: 11,
+            })
+        );
     }
 
     #[test]

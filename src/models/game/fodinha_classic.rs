@@ -416,6 +416,7 @@ impl Game {
                 lifes: p.lifes,
                 bid: p.bid,
                 rounds: Some(p.rounds),
+                mana: None,
             })
             .collect();
 
@@ -489,6 +490,16 @@ impl Game {
 
             self.round_iter.remove(idx);
             self.bidding_iter.remove(idx);
+        }
+    }
+
+    pub fn apply_decks(&mut self, decks: &HashMap<PlayerId, Vec<Card>>) {
+        for (id, deck) in decks {
+            if let Some(player) = self.players.get_mut(id)
+                && player.is_alive()
+            {
+                player.deck = deck.clone();
+            }
         }
     }
 

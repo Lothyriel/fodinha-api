@@ -7,7 +7,7 @@ use crate::{
         game::{GameCommand, GameType},
         id::{LobbyId, PlayerId},
     },
-    services::{GameInfoDto, PowerCardDto},
+    services::{GameInfoDto, PlayerManaDto, PowerCardDto},
 };
 
 #[derive(serde::Serialize)]
@@ -49,6 +49,7 @@ pub struct PlayingMatchSnapshot {
 }
 
 type PlayerPoints = HashMap<PlayerId, usize>;
+type PlayerMana = HashMap<PlayerId, PlayerManaDto>;
 
 #[derive(serde::Deserialize, serde::Serialize, Clone, Debug)]
 #[serde(tag = "type", content = "data")]
@@ -70,6 +71,7 @@ pub enum ServerMessage {
         player_id: PlayerId,
         bid: usize,
     },
+    PlayersManaChanged(PlayerMana),
     PlayerBiddingTurn {
         player_id: PlayerId,
         possible_bids: Vec<usize>,

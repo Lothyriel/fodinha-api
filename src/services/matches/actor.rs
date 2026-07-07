@@ -18,7 +18,7 @@ use crate::{
         lobby::{Lobby, LobbyInfoInternal, LobbyPlayerStatus},
     },
     services::{
-        LobbyError, ManagerError, PowerCardDto,
+        LobbyError, ManagerError, PlayerManaDto, PowerCardDto,
         matches::{
             MatchActorMessage, MatchEntries, MatchReceiver, MatchRegistry, OutboundMessage,
             PlayerRoutes, PlayerSender, WAITING_LOBBY_INACTIVITY_CLOSE_CODE,
@@ -55,6 +55,7 @@ enum AppliedEvent {
     GameStarted {
         set: NewSet,
         power_decks: Option<IndexMap<PlayerId, Vec<PowerCardDto>>>,
+        mana: Option<HashMap<PlayerId, PlayerManaDto>>,
         next: PlayerId,
         possible_bids: Vec<usize>,
     },
@@ -442,13 +443,14 @@ impl MatchActor {
             if let AppliedEvent::GameStarted {
                 set,
                 power_decks,
+                mana,
                 next,
                 possible_bids,
             } = applied
             {
                 self.refresh_empty_playing_activity();
                 self.broadcast_snapshots().await;
-                self.init_set(set.decks, power_decks, set.upcard, next, possible_bids)
+                self.init_set(set.decks, power_decks, mana, set.upcard, next, possible_bids)
                     .await;
             }
         }
@@ -483,8 +485,9 @@ impl MatchActor {
                 player_id,
                 bid,
                 state,
+                mana,
             }) => {
-                self.broadcast_bid(player_id, bid, state).await;
+                self.broadcast_bid(player_id, bid, state, mana).await;
                 Ok(ActorResult::Continue)
             }
             AppliedEvent::Game(AppliedGameChange::TurnPlayed(turn)) => {
@@ -592,6 +595,7 @@ impl MatchActor {
                 Ok(AppliedEvent::GameStarted {
                     set,
                     power_decks: None,
+                    mana: None,
                     next: game.get_bidding_player(),
                     possible_bids: game.get_possible_bids(),
                 })
@@ -613,6 +617,7 @@ impl MatchActor {
                     .map_err(|e| ManagerError::Lobby(LobbyError::GameError(e)))?,
                 );
                 let power_decks = Some(power_decks_to_dto(&power_set.decks));
+                let mana = Some(power_mana_to_dto(&power_set.mana));
 
                 lobby.state = LobbyState::Playing(game);
 
@@ -624,6 +629,7 @@ impl MatchActor {
                 Ok(AppliedEvent::GameStarted {
                     set,
                     power_decks,
+                    mana,
                     next: game.get_bidding_player(),
                     possible_bids: game.get_possible_bids(),
                 })
@@ -665,12 +671,22 @@ impl MatchActor {
         Ok(applied)
     }
 
-    async fn broadcast_bid(&self, player_id: PlayerId, bid: usize, state: BiddingState) {
+    async fn broadcast_bid(
+        &self,
+        player_id: PlayerId,
+        bid: usize,
+        state: BiddingState,
+        mana: HashMap<PlayerId, PlayerManaDto>,
+    ) {
         let msg = OutboundMessage::PlayerBidded {
             player_id: player_id.clone(),
             bid,
         };
         self.broadcast(msg).await;
+
+        if !mana.is_empty() {
+            self.broadcast(OutboundMessage::PlayersManaChanged(mana)).await;
+        }
 
         let msg = match state {
             BiddingState::Active {
@@ -702,7 +718,7 @@ impl MatchActor {
                 let msg = OutboundMessage::SetEnded { lifes };
                 self.broadcast(msg).await;
 
-                self.init_set(decks, turn.power_decks, upcard, next, possible)
+                self.init_set(decks, turn.power_decks, turn.mana, upcard, next, possible)
                     .await;
 
                 false
@@ -743,6 +759,21 @@ impl MatchActor {
         })
         .await;
 
+        if !outcome.mana.is_empty() {
+            self.broadcast(OutboundMessage::PlayersManaChanged(outcome.mana))
+                .await;
+        }
+
+        for (player_id, deck) in outcome.decks {
+            self.send_to_player(&player_id, OutboundMessage::PlayerDeck(deck))
+                .await;
+        }
+
+        for (player_id, deck) in outcome.power_decks {
+            self.send_to_player(&player_id, OutboundMessage::PlayerPowerCards(deck))
+                .await;
+        }
+
         if ended {
             self.broadcast(OutboundMessage::GameEnded { lifes }).await;
         }
@@ -754,11 +785,18 @@ impl MatchActor {
         &self,
         decks: IndexMap<PlayerId, Vec<Card>>,
         power_decks: Option<IndexMap<PlayerId, Vec<PowerCardDto>>>,
+        mana: Option<HashMap<PlayerId, PlayerManaDto>>,
         upcard: Card,
         next: PlayerId,
         possible_bids: Vec<usize>,
     ) {
         self.broadcast(OutboundMessage::SetStart { upcard }).await;
+
+        if let Some(mana) = mana
+            && !mana.is_empty()
+        {
+            self.broadcast(OutboundMessage::PlayersManaChanged(mana)).await;
+        }
 
         for (player, deck) in decks {
             self.send_to_player(&player, OutboundMessage::PlayerDeck(deck))
@@ -1049,6 +1087,22 @@ fn power_decks_to_dto(
             (
                 player_id.clone(),
                 deck.iter().map(fodinha_power::PowerCard::to_dto).collect(),
+            )
+        })
+        .collect()
+}
+
+fn power_mana_to_dto(
+    mana: &IndexMap<PlayerId, fodinha_power::PlayerMana>,
+) -> HashMap<PlayerId, PlayerManaDto> {
+    mana.iter()
+        .map(|(player_id, mana)| {
+            (
+                player_id.clone(),
+                PlayerManaDto {
+                    current: mana.current,
+                    max: mana.max,
+                },
             )
         })
         .collect()

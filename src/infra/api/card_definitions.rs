@@ -1,6 +1,6 @@
 use axum::{
     Extension, Json, Router,
-    extract::{Multipart, State},
+    extract::{Multipart, Path, State},
     middleware, routing,
 };
 
@@ -11,6 +11,7 @@ use crate::{
         card_definitions::{
             CardDefinitionError, CreateCardDefinitionAssetInput,
             CreateCardDefinitionFromAssetInput, CreateCardDefinitionInput, CreatePowerDeckInput,
+            UpdateCardDefinitionInput,
         },
         repositories::{card_decks::CardDeckKind, card_definitions::CardDefinitionKind},
     },
@@ -25,6 +26,7 @@ pub fn cards_router() -> Router<ApiState> {
     Router::new()
         .route("/", routing::get(list_cards))
         .route("/", routing::post(create_card))
+        .route("/{card_id}", routing::put(update_card))
         .route("/assets", routing::post(create_card_asset))
         .route("/from-asset", routing::post(create_card_from_asset))
         .layer(middleware::from_fn(telemetry::http_middleware))
@@ -58,6 +60,21 @@ async fn create_card(
     Ok(Json(card))
 }
 
+async fn update_card(
+    State(state): State<ApiState>,
+    Extension(user_claims): Extension<UserClaims>,
+    Path(card_id): Path<CardId>,
+    multipart: Multipart,
+) -> Result<Json<crate::services::card_definitions::CardDefinitionResponse>, CardDefinitionError> {
+    let input = read_update_card_input(multipart).await?;
+    let card = state
+        .manager
+        .update_card_definition(user_claims.id(), card_id, input)
+        .await?;
+
+    Ok(Json(card))
+}
+
 async fn create_card_asset(
     State(state): State<ApiState>,
     multipart: Multipart,
@@ -83,7 +100,7 @@ async fn create_card_from_asset(
                 kind: body.kind.unwrap_or(CardDefinitionKind::Community),
                 name: body.name,
                 description: body.description.unwrap_or_default(),
-                life: body.life,
+                mana_cost: body.mana_cost.unwrap_or_default(),
                 card_type: body.card_type,
             },
         )
@@ -133,7 +150,7 @@ struct CreateCardFromAssetRequest {
     kind: Option<CardDefinitionKind>,
     name: String,
     description: Option<String>,
-    life: Option<i32>,
+    mana_cost: Option<usize>,
     #[serde(rename = "type")]
     card_type: PowerCardType,
 }
@@ -179,7 +196,7 @@ async fn read_create_card_input(
     let mut name = String::new();
     let mut description = String::new();
     let mut kind = CardDefinitionKind::Community;
-    let mut life = None;
+    let mut mana_cost = 0;
     let mut card_type = None;
     let mut image = Vec::new();
     let mut script = Vec::new();
@@ -213,7 +230,7 @@ async fn read_create_card_input(
                     .parse::<CardDefinitionKind>()
                     .map_err(CardDefinitionError::Invalid)?;
             }
-            "life" => {
+            "mana_cost" => {
                 let value = field
                     .text()
                     .await
@@ -221,9 +238,9 @@ async fn read_create_card_input(
                 let trimmed = value.trim();
 
                 if !trimmed.is_empty() {
-                    life = Some(trimmed.parse::<i32>().map_err(|_| {
-                        CardDefinitionError::Invalid("life must be a number".to_string())
-                    })?);
+                    mana_cost = trimmed.parse::<usize>().map_err(|_| {
+                        CardDefinitionError::Invalid("mana_cost must be a number".to_string())
+                    })?;
                 }
             }
             "type" => {
@@ -259,7 +276,103 @@ async fn read_create_card_input(
         kind,
         name,
         description,
-        life,
+        mana_cost,
+        card_type: card_type
+            .ok_or_else(|| CardDefinitionError::Invalid("type is required".to_string()))?,
+        image,
+        script,
+    })
+}
+
+async fn read_update_card_input(
+    mut multipart: Multipart,
+) -> Result<UpdateCardDefinitionInput, CardDefinitionError> {
+    let mut name = String::new();
+    let mut description = String::new();
+    let mut kind = None;
+    let mut mana_cost = 0;
+    let mut card_type = None;
+    let mut image = None;
+    let mut script = None;
+
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|error| CardDefinitionError::Invalid(error.to_string()))?
+    {
+        let field_name = field.name().unwrap_or_default().to_string();
+
+        match field_name.as_str() {
+            "name" => {
+                name = field
+                    .text()
+                    .await
+                    .map_err(|error| CardDefinitionError::Invalid(error.to_string()))?;
+            }
+            "description" => {
+                description = field
+                    .text()
+                    .await
+                    .map_err(|error| CardDefinitionError::Invalid(error.to_string()))?;
+            }
+            "kind" => {
+                let value = field
+                    .text()
+                    .await
+                    .map_err(|error| CardDefinitionError::Invalid(error.to_string()))?;
+                kind = Some(
+                    value
+                        .parse::<CardDefinitionKind>()
+                        .map_err(CardDefinitionError::Invalid)?,
+                );
+            }
+            "mana_cost" => {
+                let value = field
+                    .text()
+                    .await
+                    .map_err(|error| CardDefinitionError::Invalid(error.to_string()))?;
+                let trimmed = value.trim();
+
+                if !trimmed.is_empty() {
+                    mana_cost = trimmed.parse::<usize>().map_err(|_| {
+                        CardDefinitionError::Invalid("mana_cost must be a number".to_string())
+                    })?;
+                }
+            }
+            "type" => {
+                let value = field
+                    .text()
+                    .await
+                    .map_err(|error| CardDefinitionError::Invalid(error.to_string()))?;
+                card_type = Some(
+                    value
+                        .parse::<PowerCardType>()
+                        .map_err(CardDefinitionError::Invalid)?,
+                );
+            }
+            "image" => {
+                image = Some(field_bytes(field, MAX_IMAGE_BYTES, "image").await?);
+            }
+            "script" => {
+                if let Some(file_name) = field.file_name()
+                    && !file_name.ends_with(".lua")
+                {
+                    return Err(CardDefinitionError::Invalid(
+                        "script must be a .lua file".to_string(),
+                    ));
+                }
+
+                script = Some(field_bytes(field, MAX_SCRIPT_BYTES, "script").await?);
+            }
+            _ => {}
+        }
+    }
+
+    Ok(UpdateCardDefinitionInput {
+        kind,
+        name,
+        description,
+        mana_cost,
         card_type: card_type
             .ok_or_else(|| CardDefinitionError::Invalid("type is required".to_string()))?,
         image,

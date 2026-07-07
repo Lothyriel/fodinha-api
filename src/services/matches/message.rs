@@ -10,7 +10,7 @@ use crate::{
         id::PlayerId,
         lobby::{LobbyInfoInternal, MatchSnapshotInternal},
     },
-    services::{ManagerError, PowerCardDto},
+    services::{ManagerError, PlayerManaDto, PowerCardDto},
 };
 
 pub type MatchSender = flume::Sender<MatchActorMessage>;
@@ -22,6 +22,7 @@ pub const WAITING_LOBBY_INACTIVITY_CLOSE_CODE: u16 = 4001;
 pub const WAITING_LOBBY_INACTIVITY_CLOSE_REASON: &str = "waiting_lobby_inactive";
 
 type PlayerPoints = HashMap<PlayerId, usize>;
+type PlayerMana = HashMap<PlayerId, PlayerManaDto>;
 
 #[derive(Clone, Debug)]
 pub enum OutboundMessage {
@@ -39,6 +40,7 @@ pub enum OutboundMessage {
         player_id: PlayerId,
         bid: usize,
     },
+    PlayersManaChanged(PlayerMana),
     PlayerBiddingTurn {
         player_id: PlayerId,
         possible_bids: Vec<usize>,
