@@ -7,7 +7,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     infra::UserClaims,
-    models::{GameError, Turn, id::PlayerId},
+    models::{
+        Card, GameError, Turn,
+        id::{CardId, PlayerId},
+    },
     services::{GameInfoDto, PowerCardDto},
 };
 
@@ -210,17 +213,92 @@ impl<'de> Deserialize<'de> for MatchEvent {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "game_type", content = "command", rename_all = "snake_case")]
+#[serde(tag = "type", content = "data")]
+pub enum InferredGameCommand {
+    PlayTurn {
+        card: Card,
+    },
+    PutBid {
+        bid: usize,
+    },
+    UsePowerCard {
+        card_id: CardId,
+        target_player_id: Option<PlayerId>,
+    },
+}
+
+impl InferredGameCommand {
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::PlayTurn { .. } => "game.inferred.play_turn",
+            Self::PutBid { .. } => "game.inferred.put_bid",
+            Self::UsePowerCard { .. } => "game.inferred.use_power_card",
+        }
+    }
+
+    fn wire_type(&self) -> &'static str {
+        match self {
+            Self::PlayTurn { .. } => "PlayTurn",
+            Self::PutBid { .. } => "PutBid",
+            Self::UsePowerCard { .. } => "UsePowerCard",
+        }
+    }
+
+    fn into_game_command(self, game_type: GameType) -> Result<GameCommand, GameCommandError> {
+        match game_type {
+            GameType::FodinhaClassic => match self {
+                Self::PlayTurn { card } => Ok(GameCommand::FodinhaClassic(
+                    fodinha_classic::GameCommand::PlayTurn { card },
+                )),
+                Self::PutBid { bid } => Ok(GameCommand::FodinhaClassic(
+                    fodinha_classic::GameCommand::PutBid { bid },
+                )),
+                command @ Self::UsePowerCard { .. } => Err(GameCommandError::UnsupportedCommand {
+                    game_type,
+                    command: command.wire_type(),
+                }),
+            },
+            GameType::FodinhaPower => match self {
+                Self::PlayTurn { card } => Ok(GameCommand::FodinhaPower(
+                    fodinha_power::GameCommand::PlayTurn { card },
+                )),
+                Self::PutBid { bid } => Ok(GameCommand::FodinhaPower(
+                    fodinha_power::GameCommand::PutBid { bid },
+                )),
+                Self::UsePowerCard {
+                    card_id,
+                    target_player_id,
+                } => Ok(GameCommand::FodinhaPower(
+                    fodinha_power::GameCommand::UsePowerCard {
+                        card_id,
+                        target_player_id,
+                    },
+                )),
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub enum GameCommand {
     FodinhaClassic(fodinha_classic::GameCommand),
     FodinhaPower(fodinha_power::GameCommand),
+    Inferred(InferredGameCommand),
 }
 
 impl GameCommand {
-    pub fn game_type(&self) -> GameType {
+    pub fn game_type(&self) -> Option<GameType> {
         match self {
-            Self::FodinhaClassic(_) => GameType::FodinhaClassic,
-            Self::FodinhaPower(_) => GameType::FodinhaPower,
+            Self::FodinhaClassic(_) => Some(GameType::FodinhaClassic),
+            Self::FodinhaPower(_) => Some(GameType::FodinhaPower),
+            Self::Inferred(_) => None,
+        }
+    }
+
+    pub fn into_typed(self, game_type: GameType) -> Result<Self, GameCommandError> {
+        match self {
+            Self::Inferred(command) => command.into_game_command(game_type),
+            command => Ok(command),
         }
     }
 
@@ -228,7 +306,73 @@ impl GameCommand {
         match self {
             Self::FodinhaClassic(command) => command.kind(),
             Self::FodinhaPower(command) => command.kind(),
+            Self::Inferred(command) => command.kind(),
         }
+    }
+}
+
+impl Serialize for GameCommand {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        #[derive(Serialize)]
+        #[serde(tag = "game_type", content = "command", rename_all = "snake_case")]
+        enum TaggedGameCommand<'a> {
+            FodinhaClassic(&'a fodinha_classic::GameCommand),
+            FodinhaPower(&'a fodinha_power::GameCommand),
+        }
+
+        #[derive(Serialize)]
+        struct InferredGameCommandEnvelope<'a> {
+            command: &'a InferredGameCommand,
+        }
+
+        match self {
+            Self::FodinhaClassic(command) => {
+                TaggedGameCommand::FodinhaClassic(command).serialize(serializer)
+            }
+            Self::FodinhaPower(command) => {
+                TaggedGameCommand::FodinhaPower(command).serialize(serializer)
+            }
+            Self::Inferred(command) => {
+                InferredGameCommandEnvelope { command }.serialize(serializer)
+            }
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for GameCommand {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = serde_json::Value::deserialize(deserializer)?;
+
+        #[derive(Deserialize)]
+        #[serde(tag = "game_type", content = "command", rename_all = "snake_case")]
+        enum TaggedGameCommand {
+            FodinhaClassic(fodinha_classic::GameCommand),
+            FodinhaPower(fodinha_power::GameCommand),
+        }
+
+        #[derive(Deserialize)]
+        struct InferredGameCommandEnvelope {
+            command: InferredGameCommand,
+        }
+
+        if value.get("game_type").is_some() {
+            return match serde_json::from_value::<TaggedGameCommand>(value)
+                .map_err(serde::de::Error::custom)?
+            {
+                TaggedGameCommand::FodinhaClassic(command) => Ok(Self::FodinhaClassic(command)),
+                TaggedGameCommand::FodinhaPower(command) => Ok(Self::FodinhaPower(command)),
+            };
+        }
+
+        serde_json::from_value::<InferredGameCommandEnvelope>(value)
+            .map(|envelope| Self::Inferred(envelope.command))
+            .map_err(serde::de::Error::custom)
     }
 }
 
@@ -319,6 +463,13 @@ pub enum GameCommandError {
         expected: GameType,
         actual: GameType,
     },
+    #[error("missing game type for unresolved command")]
+    UnresolvedGameType,
+    #[error("command {command} is not valid for {game_type}")]
+    UnsupportedCommand {
+        game_type: GameType,
+        command: &'static str,
+    },
     #[error("invalid deal: {0}")]
     Deal(#[from] crate::models::DealError),
     #[error("invalid bid: {0}")]
@@ -334,7 +485,9 @@ impl Game {
         command: GameCommand,
     ) -> Result<MatchEvent, GameCommandError> {
         let expected = self.game_type();
-        let actual = command.game_type();
+        let actual = command
+            .game_type()
+            .ok_or(GameCommandError::UnresolvedGameType)?;
 
         if expected != actual {
             return Err(GameCommandError::WrongGameType { expected, actual });
@@ -425,6 +578,75 @@ mod tests {
         assert_eq!(inner.len(), 2);
         assert_eq!(inner.get_i64("lifes"), Ok(50));
         assert_eq!(inner.get_str("power_deck_id"), Ok("test_deck"));
+    }
+
+    #[test]
+    fn client_game_command_deserializes_without_game_type() {
+        let message = serde_json::json!({
+            "type": "GameCommand",
+            "data": {
+                "command": {
+                    "type": "PutBid",
+                    "data": { "bid": 2 }
+                }
+            }
+        });
+
+        let command = match serde_json::from_value::<crate::models::commands::ClientCommand>(
+            message,
+        )
+        .unwrap()
+        {
+            crate::models::commands::ClientCommand::GameCommand(command) => command,
+            command => panic!("unexpected command: {command:?}"),
+        };
+
+        let command = command.into_typed(GameType::FodinhaPower).unwrap();
+
+        match command {
+            GameCommand::FodinhaPower(fodinha_power::GameCommand::PutBid { bid }) => {
+                assert_eq!(bid, 2);
+            }
+            command => panic!("unexpected command: {command:?}"),
+        }
+    }
+
+    #[test]
+    fn typed_game_command_deserializes_existing_envelope() {
+        let command = serde_json::json!({
+            "game_type": "fodinha_classic",
+            "command": {
+                "type": "PutBid",
+                "data": { "bid": 1 }
+            }
+        });
+
+        let command = serde_json::from_value::<GameCommand>(command).unwrap();
+
+        match command {
+            GameCommand::FodinhaClassic(fodinha_classic::GameCommand::PutBid { bid }) => {
+                assert_eq!(bid, 1);
+            }
+            command => panic!("unexpected command: {command:?}"),
+        }
+    }
+
+    #[test]
+    fn inferred_power_card_command_is_rejected_for_classic() {
+        let command = GameCommand::Inferred(InferredGameCommand::UsePowerCard {
+            card_id: crate::models::id::CardId(Arc::from("heal_10")),
+            target_player_id: None,
+        });
+
+        let error = command.into_typed(GameType::FodinhaClassic).unwrap_err();
+
+        assert!(matches!(
+            error,
+            GameCommandError::UnsupportedCommand {
+                game_type: GameType::FodinhaClassic,
+                command: "UsePowerCard"
+            }
+        ));
     }
 
     #[test]

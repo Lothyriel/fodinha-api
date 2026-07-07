@@ -421,6 +421,7 @@ impl ManagerHandle {
         player_id: PlayerId,
     ) -> Result<(), ManagerError> {
         let context = self.sender_for_player(&player_id).await?;
+        let command = command.into_typed(context.game_type)?;
 
         Self::request(&context.sender, context.game_type, |respond| {
             MatchActorMessage::GameCommand {
