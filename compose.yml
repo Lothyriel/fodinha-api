@@ -40,7 +40,7 @@ services:
     ports:
       - 9090:9090
     volumes:
-      - ./monitoring/local/prometheus.yml:/etc/prometheus/prometheus.yml:ro,Z
+      - ./docs/monitoring/local/prometheus.yml:/etc/prometheus/prometheus.yml:ro,Z
     command:
       - --config.file=/etc/prometheus/prometheus.yml
       - --storage.tsdb.path=/prometheus
@@ -56,9 +56,9 @@ services:
       GF_AUTH_ANONYMOUS_ORG_ROLE: "Admin"
       GF_AUTH_DISABLE_LOGIN_FORM: "true"
     volumes:
-      - ./monitoring/local/grafana-datasource.yml:/etc/grafana/provisioning/datasources/local.yml:ro,Z
-      - ./monitoring/local/grafana-dashboards.yml:/etc/grafana/provisioning/dashboards/local.yml:ro,Z
-      - ./monitoring/fly-grafana-dashboard.json:/etc/grafana/provisioning/dashboards/fly-grafana-dashboard.json:ro,Z
+      - ./docs/monitoring/local/grafana-datasource.yml:/etc/grafana/provisioning/datasources/local.yml:ro,Z
+      - ./docs/monitoring/local/grafana-dashboards.yml:/etc/grafana/provisioning/dashboards/local.yml:ro,Z
+      - ./docs/monitoring/fly-grafana-dashboard.json:/etc/grafana/provisioning/dashboards/fly-grafana-dashboard.json:ro,Z
 
 volumes:
   mongo_data:
