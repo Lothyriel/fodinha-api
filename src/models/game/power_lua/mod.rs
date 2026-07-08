@@ -3,7 +3,7 @@ mod definitions;
 pub mod lua_codegen;
 mod runtime;
 
-use std::collections::HashMap;
+use std::{collections::HashMap, rc::Rc};
 
 pub use definitions::{FODINHA_LUA_DEFINITIONS, MERCENARY_PASSIVE_TEMPLATE, POWER_CARD_TEMPLATE};
 use power_lua_api::metadata;
@@ -48,21 +48,52 @@ pub struct ScriptPowerCardState {
     pub image_url: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct PowerScriptInput {
     pub card_id: String,
     pub mana_cost: usize,
     pub owner_id: PlayerId,
     pub target_player_id: Option<PlayerId>,
     pub players: HashMap<PlayerId, ScriptPlayerState>,
+    pub draw_power_cards: DrawPowerCardsFn,
 }
 
-#[derive(Debug, Clone)]
+impl std::fmt::Debug for PowerScriptInput {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PowerScriptInput")
+            .field("card_id", &self.card_id)
+            .field("mana_cost", &self.mana_cost)
+            .field("owner_id", &self.owner_id)
+            .field("target_player_id", &self.target_player_id)
+            .field("players", &self.players)
+            .finish_non_exhaustive()
+    }
+}
+
+#[derive(Clone)]
 pub struct PassiveScriptInput {
     pub mercenary_id: MercenaryId,
     pub owner_id: PlayerId,
     pub event: PassiveGameEvent,
     pub players: HashMap<PlayerId, ScriptPlayerState>,
+    pub draw_power_cards: DrawPowerCardsFn,
+}
+
+pub type DrawPowerCardsFn = Rc<dyn Fn(&str, usize) -> Result<Vec<ScriptPowerCardState>, String>>;
+
+impl std::fmt::Debug for PassiveScriptInput {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PassiveScriptInput")
+            .field("mercenary_id", &self.mercenary_id)
+            .field("owner_id", &self.owner_id)
+            .field("event", &self.event)
+            .field("players", &self.players)
+            .finish_non_exhaustive()
+    }
+}
+
+pub(crate) fn no_power_card_draws() -> DrawPowerCardsFn {
+    Rc::new(|_, _| Err("power card drawing is not available".to_string()))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -118,6 +149,7 @@ pub struct PowerScriptOutput {
     pub mana: HashMap<PlayerId, ScriptManaState>,
     pub cards: HashMap<PlayerId, Vec<Card>>,
     pub power_cards: HashMap<PlayerId, Vec<ScriptPowerCardState>>,
+    pub mana_cost: Option<i64>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -159,6 +191,7 @@ mod tests {
             owner_id,
             target_player_id,
             players,
+            draw_power_cards: no_power_card_draws(),
         }
     }
 
@@ -172,6 +205,7 @@ mod tests {
             owner_id,
             event,
             players,
+            draw_power_cards: no_power_card_draws(),
         }
     }
 
@@ -192,7 +226,7 @@ mod tests {
         ));
         let lua = runtime::create_lua().unwrap();
         let globals = lua.globals();
-        let game = api::build_game_api(players);
+        let game = api::build_game_api(players, input.draw_power_cards.clone());
         let card = api::build_power_card(&input);
         let mercenary = api::build_mercenary(&passive_input(
             player,
@@ -213,6 +247,12 @@ mod tests {
         for field in metadata::POWER_CARD_TYPE.fields {
             let source = format!("return card.{} ~= nil", field.name);
             let _: bool = lua.load(source).eval().unwrap();
+        }
+
+        for method in metadata::POWER_CARD_TYPE.methods {
+            let source = format!("return type(card.{})", method.name);
+            let lua_type: String = lua.load(source).eval().unwrap();
+            assert_eq!(lua_type, "function", "{} should be callable", method.name);
         }
 
         for field in metadata::MERCENARY_TYPE.fields {
@@ -441,6 +481,94 @@ mod tests {
                 max: 10
             })
         );
+    }
+
+    #[test]
+    fn script_can_adjust_current_card_mana_cost() {
+        let player = PlayerId(Arc::from("P1"));
+        let output = run_power_card_script(
+            r#"
+            return {
+                effect = function(game, card)
+                    card:add_mana_cost(3)
+                    card.add_mana_cost(-1)
+                end,
+            }
+            "#,
+            script_input(
+                player.clone(),
+                None,
+                HashMap::from([(player.clone(), script_player(50))]),
+            ),
+        )
+        .unwrap();
+
+        assert_eq!(output.mana_cost, Some(4));
+    }
+
+    #[test]
+    fn current_card_mana_cost_can_be_negative() {
+        let player = PlayerId(Arc::from("P1"));
+        let output = run_power_card_script(
+            r#"
+            return {
+                effect = function(game, card)
+                    card:add_mana_cost(-5)
+                    if card.mana_cost ~= -3 then
+                        error("expected negative mana cost")
+                    end
+                end,
+            }
+            "#,
+            script_input(
+                player.clone(),
+                None,
+                HashMap::from([(player.clone(), script_player(50))]),
+            ),
+        )
+        .unwrap();
+
+        assert_eq!(output.mana_cost, Some(-3));
+    }
+
+    #[test]
+    fn script_can_draw_power_cards() {
+        let player = PlayerId(Arc::from("P1"));
+        let mut input = script_input(
+            player.clone(),
+            None,
+            HashMap::from([(player.clone(), script_player(50))]),
+        );
+        input.draw_power_cards = Rc::new(|player_id, count| {
+            Ok((0..count)
+                .map(|idx| ScriptPowerCardState {
+                    id: format!("{player_id}_drawn_{idx}"),
+                    name: format!("Drawn {idx}"),
+                    description: "Drawn by test".to_string(),
+                    mana_cost: idx,
+                    card_type: PowerCardType::Instant,
+                    image_url: None,
+                })
+                .collect())
+        });
+
+        let output = run_power_card_script(
+            r#"
+            return {
+                effect = function(game, card)
+                    local drawn = game.draw_power_cards(card.owner_id, 2)
+                    game.add_mana(card.owner_id, #drawn)
+                end,
+            }
+            "#,
+            input,
+        )
+        .unwrap();
+
+        let power_cards = output.power_cards.get(&player).unwrap();
+        assert_eq!(power_cards.len(), 2);
+        assert_eq!(power_cards[0].id, "P1_drawn_0");
+        assert_eq!(output.mana.get(&player).unwrap().current, 7);
     }
 
     #[test]

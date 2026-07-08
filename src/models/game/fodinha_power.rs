@@ -1,5 +1,7 @@
 use std::{
+    cell::RefCell,
     collections::HashMap,
+    rc::Rc,
     sync::{LazyLock, RwLock},
 };
 
@@ -11,8 +13,9 @@ use crate::{
         game::{
             BiddingState, DealState, DeckShuffle, NewSet, fodinha_classic,
             power_lua::{
-                PassiveGameEvent, PassiveScriptInput, PowerScriptError, PowerScriptInput,
-                PowerScriptOutput, ScriptManaState, ScriptPlayerState, ScriptPowerCardState,
+                DrawPowerCardsFn, PassiveGameEvent, PassiveScriptInput, PowerScriptError,
+                PowerScriptInput, PowerScriptOutput, ScriptManaState, ScriptPlayerState,
+                ScriptPowerCardState,
             },
         },
         id::{CardId, DeckId, MercenaryId, PlayerId},
@@ -28,6 +31,7 @@ const MERCENARY_POWER_CARDS_PER_PLAYER: usize = 1;
 const INITIAL_MANA_POOL: usize = 2;
 const MANA_POOL_GAIN_PER_SET: usize = 1;
 const MANA_REGEN_PER_BIDDING_TURN: usize = 1;
+const DRAW_POWER_CARD_SEQUENCE_SALT: i64 = 10_000;
 
 pub const DEFAULT_INITIAL_LIFES: usize = 50;
 pub const MIN_INITIAL_LIFES: usize = 10;
@@ -809,16 +813,6 @@ impl Game {
             return Err(PowerCardError::TargetRequired);
         }
 
-        if self
-            .mana
-            .get(player_id)
-            .map(|mana| mana.current)
-            .unwrap_or_default()
-            < definition.mana_cost
-        {
-            return Err(PowerCardError::NotEnoughMana);
-        }
-
         if let Some(target_player_id) = target_player_id.as_ref()
             && !self.core.is_player_alive(target_player_id)
         {
@@ -826,7 +820,24 @@ impl Game {
         }
 
         let output = self.run_power_script(&definition, player_id, target_player_id.clone())?;
-        let mut effects = self.power_card_effects(player_id, &definition, output);
+        let mana_cost = output
+            .mana_cost
+            .unwrap_or_else(|| i64::try_from(definition.mana_cost).unwrap_or(i64::MAX));
+        let owner_current_mana = output
+            .mana
+            .get(player_id)
+            .map(|mana| mana.current)
+            .or_else(|| self.mana.get(player_id).map(|mana| mana.current))
+            .unwrap_or_default();
+
+        if mana_cost > 0 && owner_current_mana < usize::try_from(mana_cost).unwrap_or(usize::MAX) {
+            return Err(PowerCardError::NotEnoughMana);
+        }
+
+        let mut card = card;
+        card.mana_cost = usize::try_from(mana_cost).unwrap_or(0);
+
+        let mut effects = self.power_card_effects(player_id, mana_cost, output);
         effects.merge(
             self.passive_effects(PassiveGameEvent::PowerCardPlayed {
                 player_id: player_id.clone(),
@@ -987,6 +998,7 @@ impl Game {
         target_player_id: Option<PlayerId>,
     ) -> Result<PowerScriptOutput, PowerCardError> {
         let players = self.script_players(Some((owner_id, &definition.id)));
+        let draw_power_cards = self.power_card_drawer();
 
         Ok(super::power_lua::run_power_card_script(
             &definition.script,
@@ -996,6 +1008,7 @@ impl Game {
                 owner_id: owner_id.clone(),
                 target_player_id,
                 players,
+                draw_power_cards,
             },
         )?)
     }
@@ -1021,6 +1034,7 @@ impl Game {
                     owner_id: player_id.clone(),
                     event: event.clone(),
                     players: self.script_players(None),
+                    draw_power_cards: self.power_card_drawer(),
                 },
             )?;
 
@@ -1073,10 +1087,70 @@ impl Game {
             .collect()
     }
 
+    fn power_card_drawer(&self) -> DrawPowerCardsFn {
+        let power_deck_id = self.power_deck_id.clone();
+        let player_mercenaries = self.player_mercenaries.clone();
+        let power_seed = self.power_seed;
+        let next_power_shuffle_sequence = self.next_power_shuffle_sequence;
+        let mut player_order = self.power_decks.keys().cloned().collect::<Vec<_>>();
+        let mut missing_players = self
+            .core
+            .get_player_snapshots()
+            .keys()
+            .filter(|player_id| !player_order.contains(player_id))
+            .cloned()
+            .collect::<Vec<_>>();
+        missing_players.sort_by(|left, right| left.as_str().cmp(right.as_str()));
+        player_order.extend(missing_players);
+
+        let draw_offsets = Rc::new(RefCell::new(
+            self.power_decks
+                .iter()
+                .map(|(player_id, deck)| (player_id.clone(), deck.len()))
+                .collect::<HashMap<_, _>>(),
+        ));
+
+        Rc::new(move |player_id, count| {
+            let Some((player_idx, player_id)) = player_order
+                .iter()
+                .enumerate()
+                .find(|(_, known_player_id)| known_player_id.as_str() == player_id)
+            else {
+                return Err(format!("unknown player_id: {player_id}"));
+            };
+
+            let offset = draw_offsets
+                .borrow()
+                .get(player_id)
+                .copied()
+                .unwrap_or_default();
+            let cards = draw_power_cards_for_player(
+                &power_deck_id,
+                &player_mercenaries,
+                player_id,
+                count,
+                power_seed,
+                next_power_shuffle_sequence,
+                player_idx,
+                offset,
+            )
+            .map_err(|error| error.to_string())?;
+
+            draw_offsets
+                .borrow_mut()
+                .insert(player_id.clone(), offset.saturating_add(count));
+
+            Ok(cards
+                .into_iter()
+                .map(|card| ScriptPowerCardState::from(&card))
+                .collect())
+        })
+    }
+
     fn power_card_effects(
         &self,
         owner_id: &PlayerId,
-        definition: &PowerCardDefinition,
+        mana_cost: i64,
         output: PowerScriptOutput,
     ) -> PowerCardEffects {
         let mut mana = output
@@ -1089,7 +1163,16 @@ impl Game {
             .or_else(|| self.mana.get(owner_id).cloned())
             .unwrap_or_else(PlayerMana::initial);
 
-        owner_mana.current = owner_mana.current.saturating_sub(definition.mana_cost);
+        if mana_cost < 0 {
+            owner_mana.current = owner_mana
+                .current
+                .saturating_add(usize::try_from(mana_cost.unsigned_abs()).unwrap_or(usize::MAX))
+                .min(owner_mana.max);
+        } else {
+            owner_mana.current = owner_mana
+                .current
+                .saturating_sub(usize::try_from(mana_cost).unwrap_or(usize::MAX));
+        }
 
         if self.mana.get(owner_id) != Some(&owner_mana) {
             mana.insert(owner_id.clone(), owner_mana);
@@ -1382,6 +1465,54 @@ fn mana_to_dto(mana: &IndexMap<PlayerId, PlayerMana>) -> HashMap<PlayerId, Playe
     mana.iter()
         .map(|(player_id, mana)| (player_id.clone(), mana.to_dto()))
         .collect()
+}
+
+fn draw_power_cards_for_player(
+    deck_id: &DeckId,
+    player_mercenaries: &HashMap<PlayerId, MercenaryId>,
+    player_id: &PlayerId,
+    count: usize,
+    seed: i64,
+    sequence: i64,
+    player_idx: usize,
+    offset: usize,
+) -> Result<Vec<PowerCard>, PowerCardDefinitionError> {
+    let deck_definition = power_deck_definition(deck_id)?;
+    let definitions = draw_power_card_definitions(&deck_definition, player_mercenaries, player_id)?;
+    let needed_cards = offset.saturating_add(count);
+    let mut deck = (0..needed_cards)
+        .map(|idx| definitions[idx % definitions.len()].to_card())
+        .collect::<Vec<_>>();
+
+    shuffle_power_cards(
+        &mut deck,
+        seed,
+        sequence
+            .wrapping_add(DRAW_POWER_CARD_SEQUENCE_SALT)
+            .wrapping_mul(31)
+            .wrapping_add(player_idx as i64),
+    );
+
+    Ok(deck.into_iter().skip(offset).take(count).collect())
+}
+
+fn draw_power_card_definitions(
+    deck_definition: &PowerDeckDefinition,
+    player_mercenaries: &HashMap<PlayerId, MercenaryId>,
+    player_id: &PlayerId,
+) -> Result<Vec<PowerCardDefinition>, PowerCardDefinitionError> {
+    if !deck_definition.is_partitioned() {
+        return power_card_definitions_from_ids(&deck_definition.card_ids);
+    }
+
+    let mut card_ids = deck_definition.generic_card_ids.clone();
+    if let Some(mercenary_id) = player_mercenaries.get(player_id)
+        && let Some(mercenary_card_ids) = deck_definition.mercenary_card_ids.get(mercenary_id)
+    {
+        card_ids.extend(mercenary_card_ids.iter().cloned());
+    }
+
+    power_card_definitions_from_ids(&card_ids)
 }
 
 fn power_card_definition(
@@ -1952,6 +2083,280 @@ return {
             Some(&PlayerManaDto { current: 2, max: 5 })
         );
         assert_eq!(game.mana[&player1].current, 2);
+    }
+
+    #[test]
+    fn power_card_script_can_reduce_mana_cost_before_deduction() {
+        let _lock = power_card_test_lock();
+        let [player1, player2] = test_players();
+        let players = [player1.clone(), player2];
+        let discounted_id = card_id("discounted");
+
+        replace_power_card_definitions(
+            test_deck_id(),
+            vec![PowerCardDefinitionInput {
+                id: discounted_id.clone(),
+                name: "Discounted".to_string(),
+                description: "Costs less while resolving.".to_string(),
+                mana_cost: 3,
+                card_type: PowerCardType::Instant,
+                image_url: None,
+                script: r#"
+                    return {
+                        effect = function(game, card)
+                            card:add_mana_cost(-2)
+                        end,
+                    }
+                "#
+                .to_string(),
+                source: "test/discounted.lua".to_string(),
+            }],
+        )
+        .expect("valid discounted card definition");
+        let mut game = Game::new_with_seed(&players, test_settings(), 42).unwrap();
+        game.power_decks.insert(
+            player1.clone(),
+            vec![
+                power_card_definition(&test_deck_id(), &discounted_id)
+                    .unwrap()
+                    .unwrap()
+                    .to_card(),
+            ],
+        );
+        game.mana
+            .insert(player1.clone(), PlayerMana { current: 1, max: 3 });
+
+        let event = game
+            .validate_power_card(&player1, &discounted_id, None)
+            .unwrap();
+        let AppliedGameChange::PowerCardPlayed(outcome) = game.apply_match_event(event) else {
+            panic!("expected power card outcome");
+        };
+
+        assert_eq!(outcome.card.mana_cost, 1);
+        assert_eq!(game.mana[&player1].current, 0);
+    }
+
+    #[test]
+    fn negative_power_card_cost_regenerates_mana() {
+        let _lock = power_card_test_lock();
+        let [player1, player2] = test_players();
+        let players = [player1.clone(), player2];
+        let refund_id = card_id("refund");
+
+        replace_power_card_definitions(
+            test_deck_id(),
+            vec![PowerCardDefinitionInput {
+                id: refund_id.clone(),
+                name: "Refund".to_string(),
+                description: "Regenerates mana while resolving.".to_string(),
+                mana_cost: 2,
+                card_type: PowerCardType::Instant,
+                image_url: None,
+                script: r#"
+                    return {
+                        effect = function(game, card)
+                            card:add_mana_cost(-4)
+                        end,
+                    }
+                "#
+                .to_string(),
+                source: "test/refund.lua".to_string(),
+            }],
+        )
+        .expect("valid refund card definition");
+        let mut game = Game::new_with_seed(&players, test_settings(), 42).unwrap();
+        game.power_decks.insert(
+            player1.clone(),
+            vec![
+                power_card_definition(&test_deck_id(), &refund_id)
+                    .unwrap()
+                    .unwrap()
+                    .to_card(),
+            ],
+        );
+        game.mana
+            .insert(player1.clone(), PlayerMana { current: 1, max: 5 });
+
+        let event = game
+            .validate_power_card(&player1, &refund_id, None)
+            .unwrap();
+        let AppliedGameChange::PowerCardPlayed(outcome) = game.apply_match_event(event) else {
+            panic!("expected power card outcome");
+        };
+
+        assert_eq!(outcome.mana.get(&player1).unwrap().current, 3);
+        assert_eq!(game.mana[&player1].current, 3);
+    }
+
+    #[test]
+    fn power_card_script_can_increase_mana_cost_before_deduction() {
+        let _lock = power_card_test_lock();
+        let [player1, player2] = test_players();
+        let players = [player1.clone(), player2];
+        let surcharge_id = card_id("surcharge");
+
+        replace_power_card_definitions(
+            test_deck_id(),
+            vec![PowerCardDefinitionInput {
+                id: surcharge_id.clone(),
+                name: "Surcharge".to_string(),
+                description: "Costs more while resolving.".to_string(),
+                mana_cost: 2,
+                card_type: PowerCardType::Instant,
+                image_url: None,
+                script: r#"
+                    return {
+                        effect = function(game, card)
+                            card:add_mana_cost(2)
+                        end,
+                    }
+                "#
+                .to_string(),
+                source: "test/surcharge.lua".to_string(),
+            }],
+        )
+        .expect("valid surcharge card definition");
+        let mut game = Game::new_with_seed(&players, test_settings(), 42).unwrap();
+        game.power_decks.insert(
+            player1.clone(),
+            vec![
+                power_card_definition(&test_deck_id(), &surcharge_id)
+                    .unwrap()
+                    .unwrap()
+                    .to_card(),
+            ],
+        );
+        game.mana
+            .insert(player1.clone(), PlayerMana { current: 4, max: 4 });
+
+        let event = game
+            .validate_power_card(&player1, &surcharge_id, None)
+            .unwrap();
+        let AppliedGameChange::PowerCardPlayed(outcome) = game.apply_match_event(event) else {
+            panic!("expected power card outcome");
+        };
+
+        assert_eq!(outcome.card.mana_cost, 4);
+        assert_eq!(game.mana[&player1].current, 0);
+    }
+
+    #[test]
+    fn power_card_script_cannot_raise_mana_cost_past_available_mana() {
+        let _lock = power_card_test_lock();
+        let [player1, player2] = test_players();
+        let players = [player1.clone(), player2];
+        let expensive_id = card_id("too_expensive");
+
+        replace_power_card_definitions(
+            test_deck_id(),
+            vec![PowerCardDefinitionInput {
+                id: expensive_id.clone(),
+                name: "Too Expensive".to_string(),
+                description: "Costs too much while resolving.".to_string(),
+                mana_cost: 2,
+                card_type: PowerCardType::Instant,
+                image_url: None,
+                script: r#"
+                    return {
+                        effect = function(game, card)
+                            card:add_mana_cost(3)
+                        end,
+                    }
+                "#
+                .to_string(),
+                source: "test/too_expensive.lua".to_string(),
+            }],
+        )
+        .expect("valid expensive card definition");
+        let mut game = Game::new_with_seed(&players, test_settings(), 42).unwrap();
+        game.power_decks.insert(
+            player1.clone(),
+            vec![
+                power_card_definition(&test_deck_id(), &expensive_id)
+                    .unwrap()
+                    .unwrap()
+                    .to_card(),
+            ],
+        );
+        game.mana
+            .insert(player1.clone(), PlayerMana { current: 4, max: 4 });
+
+        assert!(matches!(
+            game.validate_power_card(&player1, &expensive_id, None),
+            Err(PowerCardError::NotEnoughMana)
+        ));
+        assert_eq!(game.mana[&player1].current, 4);
+    }
+
+    #[test]
+    fn power_card_script_can_draw_power_cards() {
+        let _lock = power_card_test_lock();
+        let [player1, player2] = test_players();
+        let players = [player1.clone(), player2];
+        let draw_id = card_id("draw_two");
+
+        replace_power_card_definitions(
+            test_deck_id(),
+            vec![
+                PowerCardDefinitionInput {
+                    id: draw_id.clone(),
+                    name: "Draw Two".to_string(),
+                    description: "Draws two power cards.".to_string(),
+                    mana_cost: 0,
+                    card_type: PowerCardType::Instant,
+                    image_url: None,
+                    script: r#"
+                        return {
+                            effect = function(game, card)
+                                game:draw_power_cards(card.owner_id, 2)
+                            end,
+                        }
+                    "#
+                    .to_string(),
+                    source: "test/draw_two.lua".to_string(),
+                },
+                PowerCardDefinitionInput {
+                    id: card_id("drawn_one"),
+                    name: "Drawn One".to_string(),
+                    description: "Can be drawn.".to_string(),
+                    mana_cost: 0,
+                    card_type: PowerCardType::Instant,
+                    image_url: None,
+                    script: NOOP_POWER_SCRIPT.to_string(),
+                    source: "test/drawn_one.lua".to_string(),
+                },
+                PowerCardDefinitionInput {
+                    id: card_id("drawn_two"),
+                    name: "Drawn Two".to_string(),
+                    description: "Can be drawn.".to_string(),
+                    mana_cost: 0,
+                    card_type: PowerCardType::Instant,
+                    image_url: None,
+                    script: NOOP_POWER_SCRIPT.to_string(),
+                    source: "test/drawn_two.lua".to_string(),
+                },
+            ],
+        )
+        .expect("valid draw card definitions");
+        let mut game = Game::new_with_seed(&players, test_settings(), 42).unwrap();
+        game.power_decks.insert(
+            player1.clone(),
+            vec![
+                power_card_definition(&test_deck_id(), &draw_id)
+                    .unwrap()
+                    .unwrap()
+                    .to_card(),
+            ],
+        );
+
+        let event = game.validate_power_card(&player1, &draw_id, None).unwrap();
+        let AppliedGameChange::PowerCardPlayed(outcome) = game.apply_match_event(event) else {
+            panic!("expected power card outcome");
+        };
+
+        assert_eq!(outcome.power_decks.get(&player1).unwrap().len(), 2);
+        assert_eq!(game.power_decks[&player1].len(), 2);
     }
 
     #[test]

@@ -105,7 +105,7 @@ pub fn run_power_card_script(
     let players = shared_players(&input.players);
     let lua = create_lua()?;
     let globals = lua.globals();
-    let game = api::build_game_api(Rc::clone(&players));
+    let game = api::build_game_api(Rc::clone(&players), input.draw_power_cards.clone());
     let card = api::build_power_card(&input);
 
     globals.set("game", game.clone())?;
@@ -113,10 +113,14 @@ pub fn run_power_card_script(
 
     if let Value::Table(table) = lua.load(script).set_name("power_card").eval()? {
         let effect: mlua::Function = table.get("effect")?;
-        effect.call::<()>((game, card))?;
+        effect.call::<()>((game, card.clone()))?;
     }
 
-    Ok(output_from_players(&input.players, &players.borrow()))
+    Ok(output_from_players(
+        &input.players,
+        &players.borrow(),
+        Some(card.mana_cost()),
+    ))
 }
 
 pub fn run_passive_script(
@@ -126,7 +130,7 @@ pub fn run_passive_script(
     let players = shared_players(&input.players);
     let lua = create_lua()?;
     let globals = lua.globals();
-    let game = api::build_game_api(Rc::clone(&players));
+    let game = api::build_game_api(Rc::clone(&players), input.draw_power_cards.clone());
     let event = api::build_event_table(&lua, &input.event)?;
     let mercenary = api::build_mercenary(&input);
 
@@ -142,7 +146,7 @@ pub fn run_passive_script(
         }
     }
 
-    Ok(output_from_players(&input.players, &players.borrow()))
+    Ok(output_from_players(&input.players, &players.borrow(), None))
 }
 
 pub(crate) fn create_lua() -> Result<Lua, mlua::Error> {
@@ -170,6 +174,7 @@ fn shared_players(
 fn output_from_players(
     initial: &HashMap<PlayerId, ScriptPlayerState>,
     players: &HashMap<String, ScriptPlayerState>,
+    mana_cost: Option<i64>,
 ) -> PowerScriptOutput {
     let lifes = initial
         .iter()
@@ -213,6 +218,7 @@ fn output_from_players(
         mana,
         cards,
         power_cards,
+        mana_cost,
     }
 }
 

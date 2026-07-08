@@ -82,6 +82,15 @@ fn write_class(out: &mut String, definition: &LuaTypeDefinition) {
         write_field(out, field);
     }
     writeln!(out).unwrap();
+
+    if !definition.methods.is_empty() {
+        writeln!(out, "local {} = {{}}", definition.name).unwrap();
+        writeln!(out).unwrap();
+
+        for method in definition.methods {
+            write_method(out, definition.name, method);
+        }
+    }
 }
 
 fn write_field(out: &mut String, field: &LuaFieldDefinition) {
@@ -104,23 +113,27 @@ fn write_game_class(out: &mut String) {
     writeln!(out).unwrap();
 
     for method in GAME_TYPE.methods {
-        writeln!(out, "---{}", method.description).unwrap();
-        for param in method.params {
-            writeln!(out, "---@param {} {}", param.name, param.lua_type).unwrap();
-        }
-        for lua_return in method.returns {
-            writeln!(out, "---@return {lua_return}").unwrap();
-        }
-
-        let params = method
-            .params
-            .iter()
-            .map(|param| param.name)
-            .collect::<Vec<_>>()
-            .join(", ");
-        writeln!(out, "function Game:{}({params}) end", method.name).unwrap();
-        writeln!(out).unwrap();
+        write_method(out, GAME_TYPE.name, method);
     }
+}
+
+fn write_method(out: &mut String, class_name: &str, method: &crate::metadata::LuaMethodDefinition) {
+    writeln!(out, "---{}", method.description).unwrap();
+    for param in method.params {
+        writeln!(out, "---@param {} {}", param.name, param.lua_type).unwrap();
+    }
+    for lua_return in method.returns {
+        writeln!(out, "---@return {lua_return}").unwrap();
+    }
+
+    let params = method
+        .params
+        .iter()
+        .map(|param| param.name)
+        .collect::<Vec<_>>()
+        .join(", ");
+    writeln!(out, "function {class_name}:{}({params}) end", method.name).unwrap();
+    writeln!(out).unwrap();
 }
 
 fn write_script_shapes(out: &mut String) {

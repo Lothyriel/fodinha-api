@@ -1,4 +1,9 @@
-use std::{cell::RefCell, cmp::Ordering, collections::HashMap, rc::Rc};
+use std::{
+    cell::{Cell, RefCell},
+    cmp::Ordering,
+    collections::HashMap,
+    rc::Rc,
+};
 
 use mlua::{IntoLuaMulti, Lua, Table, UserData, UserDataFields, UserDataMethods, Value};
 use power_lua_api::{LuaTypeDefinition, metadata};
@@ -6,7 +11,8 @@ use power_lua_api::{LuaTypeDefinition, metadata};
 use crate::models::{Card, Rank, Suit, game::fodinha_power::PowerCardType, id::PlayerId};
 
 use super::{
-    PassiveGameEvent, PassiveScriptInput, PowerScriptInput, ScriptPlayerState, ScriptPowerCardState,
+    DrawPowerCardsFn, PassiveGameEvent, PassiveScriptInput, PowerScriptInput, ScriptPlayerState,
+    ScriptPowerCardState,
 };
 
 pub trait LuaApiType {
@@ -16,11 +22,18 @@ pub trait LuaApiType {
 #[derive(Clone)]
 pub struct LuaGame {
     players: Rc<RefCell<HashMap<String, ScriptPlayerState>>>,
+    draw_power_cards: DrawPowerCardsFn,
 }
 
 impl LuaGame {
-    pub(crate) fn new(players: Rc<RefCell<HashMap<String, ScriptPlayerState>>>) -> Self {
-        Self { players }
+    pub(crate) fn new(
+        players: Rc<RefCell<HashMap<String, ScriptPlayerState>>>,
+        draw_power_cards: DrawPowerCardsFn,
+    ) -> Self {
+        Self {
+            players,
+            draw_power_cards,
+        }
     }
 
     fn get_lives(&self, player_id: &str) -> mlua::Result<usize> {
@@ -253,6 +266,29 @@ impl LuaGame {
         Ok(true)
     }
 
+    fn draw_power_cards(&self, lua: &Lua, player_id: &str, count: i64) -> mlua::Result<Table> {
+        let count = usize_count(count, "count")?;
+        if !self.players.borrow().contains_key(player_id) {
+            return Err(unknown_player(player_id));
+        }
+
+        if count == 0 {
+            return power_cards_to_lua_table(lua, &[]);
+        }
+
+        let drawn = (self.draw_power_cards)(player_id, count).map_err(mlua::Error::external)?;
+        let table = power_cards_to_lua_table(lua, &drawn)?;
+
+        self.players
+            .borrow_mut()
+            .get_mut(player_id)
+            .expect("player was validated above")
+            .power_cards
+            .extend(drawn);
+
+        Ok(table)
+    }
+
     fn player_ids(&self, lua: &Lua) -> mlua::Result<Table> {
         let ids = lua.create_table()?;
 
@@ -338,6 +374,12 @@ impl UserData for LuaGame {
                 this.steal_power_card(&from_player_id, &card_id, &to_player_id)
             },
         );
+        methods.add_method(
+            metadata::DRAW_POWER_CARDS,
+            |lua, this, (player_id, count): (String, i64)| {
+                this.draw_power_cards(lua, &player_id, count)
+            },
+        );
         methods.add_method(metadata::PLAYER_IDS, |lua, this, ()| this.player_ids(lua));
     }
 
@@ -417,6 +459,13 @@ impl UserData for LuaGame {
                 &string_arg(&args, 2, "to_player_id")?,
             )
         });
+        add_game_function_field(fields, metadata::DRAW_POWER_CARDS, 2, |lua, this, args| {
+            this.draw_power_cards(
+                lua,
+                &string_arg(&args, 0, "player_id")?,
+                i64_arg(&args, 1, "count")?,
+            )
+        });
         add_game_function_field(fields, metadata::PLAYER_IDS, 0, |lua, this, _| {
             this.player_ids(lua)
         });
@@ -430,18 +479,41 @@ impl LuaApiType for LuaGame {
 #[derive(Clone)]
 pub struct LuaPowerCard {
     pub id: String,
-    pub mana_cost: usize,
+    pub base_mana_cost: usize,
+    mana_cost_delta: Rc<Cell<i64>>,
     pub owner_id: String,
     pub target_player_id: Option<String>,
 }
 
+impl LuaPowerCard {
+    pub(crate) fn mana_cost(&self) -> i64 {
+        adjusted_mana_cost(self.base_mana_cost, self.mana_cost_delta.get())
+    }
+
+    fn add_mana_cost(&self, delta: i64) -> i64 {
+        self.mana_cost_delta
+            .set(self.mana_cost_delta.get().saturating_add(delta));
+
+        self.mana_cost()
+    }
+}
+
 impl UserData for LuaPowerCard {
+    fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
+        methods.add_method(metadata::ADD_MANA_COST, |_, this, delta: i64| {
+            Ok(this.add_mana_cost(delta))
+        });
+    }
+
     fn add_fields<F: UserDataFields<Self>>(fields: &mut F) {
         fields.add_field_method_get("id", |_, this| Ok(this.id.clone()));
-        fields.add_field_method_get("mana_cost", |_, this| Ok(this.mana_cost));
+        fields.add_field_method_get("mana_cost", |_, this| Ok(this.mana_cost()));
         fields.add_field_method_get("owner_id", |_, this| Ok(this.owner_id.clone()));
         fields.add_field_method_get("target_player_id", |_, this| {
             Ok(this.target_player_id.clone())
+        });
+        add_power_card_function_field(fields, metadata::ADD_MANA_COST, 1, |_, this, args| {
+            Ok(this.add_mana_cost(i64_arg(&args, 0, "delta")?))
         });
     }
 }
@@ -548,14 +620,18 @@ pub(crate) fn userdata_type_definitions() -> [LuaTypeDefinition; 5] {
     ]
 }
 
-pub(crate) fn build_game_api(players: Rc<RefCell<HashMap<String, ScriptPlayerState>>>) -> LuaGame {
-    LuaGame::new(players)
+pub(crate) fn build_game_api(
+    players: Rc<RefCell<HashMap<String, ScriptPlayerState>>>,
+    draw_power_cards: DrawPowerCardsFn,
+) -> LuaGame {
+    LuaGame::new(players, draw_power_cards)
 }
 
 pub(crate) fn build_power_card(input: &PowerScriptInput) -> LuaPowerCard {
     LuaPowerCard {
         id: input.card_id.clone(),
-        mana_cost: input.mana_cost,
+        base_mana_cost: input.mana_cost,
+        mana_cost_delta: Rc::new(Cell::new(0)),
         owner_id: input.owner_id.as_str().to_string(),
         target_player_id: input
             .target_player_id
@@ -628,6 +704,27 @@ fn add_game_function_field<F, R>(
     });
 }
 
+fn add_power_card_function_field<F, R>(
+    fields: &mut F,
+    name: &'static str,
+    expected_args: usize,
+    callback: impl Fn(&Lua, &LuaPowerCard, Vec<Value>) -> mlua::Result<R> + 'static,
+) where
+    F: UserDataFields<LuaPowerCard>,
+    R: IntoLuaMulti + 'static,
+{
+    let callback = Rc::new(callback);
+
+    fields.add_field_method_get(name, move |lua, this| {
+        let this = this.clone();
+        let callback = Rc::clone(&callback);
+
+        lua.create_function(move |lua, args: mlua::Variadic<Value>| {
+            callback(lua, &this, args_for_count(args, expected_args)?)
+        })
+    });
+}
+
 fn args_for_count(args: mlua::Variadic<Value>, expected_args: usize) -> mlua::Result<Vec<Value>> {
     let mut args = args.into_iter().collect::<Vec<_>>();
 
@@ -666,6 +763,17 @@ fn i64_arg(args: &[Value], index: usize, name: &str) -> mlua::Result<i64> {
         ))),
         None => Err(mlua::Error::external(format!("missing argument: {name}"))),
     }
+}
+
+fn usize_count(value: i64, name: &str) -> mlua::Result<usize> {
+    usize::try_from(value)
+        .map_err(|_| mlua::Error::external(format!("{name} must be a non-negative integer")))
+}
+
+fn adjusted_mana_cost(base: usize, delta: i64) -> i64 {
+    i64::try_from(base)
+        .unwrap_or(i64::MAX)
+        .saturating_add(delta)
 }
 
 fn cards_to_lua_table(lua: &Lua, cards: &[Card]) -> mlua::Result<Table> {

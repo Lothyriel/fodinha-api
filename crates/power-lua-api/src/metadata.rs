@@ -58,7 +58,9 @@ pub const GET_CARDS: &str = "get_cards";
 pub const SWITCH_CARDS: &str = "switch_cards";
 pub const GET_POWER_CARDS: &str = "get_power_cards";
 pub const STEAL_POWER_CARD: &str = "steal_power_card";
+pub const DRAW_POWER_CARDS: &str = "draw_power_cards";
 pub const PLAYER_IDS: &str = "player_ids";
+pub const ADD_MANA_COST: &str = "add_mana_cost";
 
 pub const ON_MATCH_STARTED: &str = "on_match_started";
 pub const ON_BID_PLACED: &str = "on_bid_placed";
@@ -374,12 +376,37 @@ pub const GAME_METHODS: &[LuaMethodDefinition] = &[
         description: "Moves a power card from one player to another.",
     },
     LuaMethodDefinition {
+        name: DRAW_POWER_CARDS,
+        params: &[
+            LuaParameterDefinition {
+                name: "player_id",
+                lua_type: "PlayerId",
+            },
+            LuaParameterDefinition {
+                name: "count",
+                lua_type: "integer",
+            },
+        ],
+        returns: &["PowerCardState[]"],
+        description: "Draws power cards into a player's visible power card hand and returns them.",
+    },
+    LuaMethodDefinition {
         name: PLAYER_IDS,
         params: &[],
         returns: &["PlayerId[]"],
         description: "Returns all player IDs known to the script.",
     },
 ];
+
+pub const POWER_CARD_METHODS: &[LuaMethodDefinition] = &[LuaMethodDefinition {
+    name: ADD_MANA_COST,
+    params: &[LuaParameterDefinition {
+        name: "delta",
+        lua_type: "integer",
+    }],
+    returns: &["integer"],
+    description: "Adds to the executing card's mana cost and returns the new effective cost. Negative effective costs regenerate mana.",
+}];
 
 pub const CARD_TYPE: LuaTypeDefinition = LuaTypeDefinition {
     name: "Card",
@@ -392,7 +419,7 @@ pub const POWER_CARD_TYPE: LuaTypeDefinition = LuaTypeDefinition {
     name: "PowerCard",
     description: "The power card currently being executed.",
     fields: POWER_CARD_FIELDS,
-    methods: &[],
+    methods: POWER_CARD_METHODS,
 };
 
 pub const MERCENARY_TYPE: LuaTypeDefinition = LuaTypeDefinition {
