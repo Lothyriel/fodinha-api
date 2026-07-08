@@ -898,12 +898,34 @@ impl Game {
         bid: usize,
     ) -> Result<MatchEvent, BiddingError> {
         self.core.validate_bid(player_id, bid)?;
-        let passive_effects = self
+        let mut passive_effects = self
             .passive_effects(PassiveGameEvent::BidPlaced {
                 player_id: player_id.clone(),
                 bid,
             })
             .unwrap_or_default();
+
+        let mut preview = self.clone();
+        let round_started = matches!(
+            preview
+                .core
+                .apply_match_event(fodinha_classic::MatchEvent::BidPlaced {
+                    player_id: player_id.clone(),
+                    bid,
+                }),
+            fodinha_classic::AppliedGameChange::BidPlaced {
+                state: BiddingState::Ended { .. },
+                ..
+            }
+        );
+
+        if round_started {
+            passive_effects.merge(
+                preview
+                    .passive_effects(PassiveGameEvent::RoundStart)
+                    .unwrap_or_default(),
+            );
+        }
 
         Ok(MatchEvent::BidPlaced {
             player_id: player_id.clone(),
@@ -1745,6 +1767,14 @@ return {
 }
 "#;
 
+    const ROUND_START_HEAL_PASSIVE_SCRIPT: &str = r#"
+return {
+    on_round_start = function(game, event, mercenary)
+        game.add_lives(mercenary.owner_id, 1)
+    end,
+}
+"#;
+
     const ROUND_ENDED_HEAL_PASSIVE_SCRIPT: &str = r#"
 return {
     on_round_ended = function(game, event, mercenary)
@@ -2136,6 +2166,36 @@ return {
         let game = Game::new_with_seed(&players, settings, 42, registry).unwrap();
 
         assert_eq!(game.core.get_lifes().get(&player1), Some(&52));
+    }
+
+    #[test]
+    fn mercenary_passive_effect_is_persisted_on_round_start_event() {
+        let registry = test_registry_with_mercenary_passive(ROUND_START_HEAL_PASSIVE_SCRIPT);
+        let [player1, player2] = test_players();
+        let players = [player1.clone(), player2.clone()];
+        let settings = GameSettings {
+            lifes: DEFAULT_INITIAL_LIFES,
+            power_deck_id: test_deck_id(),
+            player_mercenaries: HashMap::from([(player1.clone(), mercenary_id("artemis"))]),
+        };
+        let mut game = Game::new_with_seed(&players, settings, 42, registry).unwrap();
+
+        bid_current_player(&mut game, 0);
+        let before = game.core.get_lifes()[&player1];
+        let player_id = game.core.current_player().expect("expected bidding player");
+        let event = game.validate_bid(&player_id, 0).unwrap();
+        let MatchEvent::BidPlaced {
+            passive_effects, ..
+        } = &event
+        else {
+            panic!("expected bid event");
+        };
+
+        assert_eq!(passive_effects.lifes.get(&player1), Some(&(before + 1)));
+
+        game.apply_match_event(event);
+
+        assert_eq!(game.core.get_lifes().get(&player1), Some(&(before + 1)));
     }
 
     #[test]

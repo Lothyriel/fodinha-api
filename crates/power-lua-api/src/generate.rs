@@ -63,6 +63,8 @@ pub fn render_mercenary_passive_template() -> &'static str {
 return {
     on_match_started = function(game, event, mercenary)
     end,
+    on_round_start = function(game, event, mercenary)
+    end,
 }
 "#
 }

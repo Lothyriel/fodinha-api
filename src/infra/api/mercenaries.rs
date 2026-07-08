@@ -6,7 +6,7 @@ use axum::{
 
 use crate::{
     infra::{UserClaims, telemetry},
-    models::id::MercenaryId,
+    models::id::{MercenaryId, gen_mercenaryid},
     services::mercenaries::{MercenaryError, MercenaryResponse, UpsertMercenaryInput},
 };
 
@@ -63,7 +63,8 @@ async fn read_upsert_mercenary_input(
     mut multipart: Multipart,
 ) -> Result<UpsertMercenaryInput, MercenaryError> {
     let has_path_mercenary_id = path_mercenary_id.is_some();
-    let mut mercenary_id = path_mercenary_id;
+    let mut mercenary_id =
+        path_mercenary_id.or_else(|| (!has_path_mercenary_id).then(gen_mercenaryid));
     let mut name = String::new();
     let mut subtitle = String::new();
     let mut description = String::new();
@@ -82,16 +83,10 @@ async fn read_upsert_mercenary_input(
 
         match field_name.as_str() {
             "id" | "mercenary_id" => {
-                if has_path_mercenary_id {
-                    let _ = field.text().await;
-                    continue;
-                }
-
-                let value = field
+                let _ = field
                     .text()
                     .await
                     .map_err(|error| MercenaryError::Invalid(error.to_string()))?;
-                mercenary_id = Some(MercenaryId(value.trim().to_string().into()));
             }
             "name" => {
                 name = field

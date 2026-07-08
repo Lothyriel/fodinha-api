@@ -655,6 +655,7 @@ pub(crate) fn build_event_table(lua: &Lua, event: &PassiveGameEvent) -> mlua::Re
 
     match event {
         PassiveGameEvent::MatchStarted
+        | PassiveGameEvent::RoundStart
         | PassiveGameEvent::RoundEnded
         | PassiveGameEvent::SetStarted
         | PassiveGameEvent::SetEnded => {}

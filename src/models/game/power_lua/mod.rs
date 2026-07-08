@@ -104,6 +104,7 @@ pub enum PassiveGameEvent {
         card_id: String,
         target_player_id: Option<PlayerId>,
     },
+    RoundStart,
     TurnPlayed {
         player_id: PlayerId,
         card: Card,
@@ -119,6 +120,7 @@ impl PassiveGameEvent {
             Self::MatchStarted => metadata::ON_MATCH_STARTED,
             Self::BidPlaced { .. } => metadata::ON_BID_PLACED,
             Self::PowerCardPlayed { .. } => metadata::ON_POWER_CARD_PLAYED,
+            Self::RoundStart => metadata::ON_ROUND_START,
             Self::TurnPlayed { .. } => metadata::ON_TURN_PLAYED,
             Self::RoundEnded => metadata::ON_ROUND_ENDED,
             Self::SetStarted => metadata::ON_SET_STARTED,
@@ -131,6 +133,7 @@ impl PassiveGameEvent {
             Self::MatchStarted => "match_started",
             Self::BidPlaced { .. } => "bid_placed",
             Self::PowerCardPlayed { .. } => "power_card_played",
+            Self::RoundStart => "round_start",
             Self::TurnPlayed { .. } => "turn_played",
             Self::RoundEnded => "round_ended",
             Self::SetStarted => "set_started",
@@ -346,6 +349,28 @@ mod tests {
         .unwrap();
 
         assert_eq!(output.lifes.get(&player), Some(&52));
+    }
+
+    #[test]
+    fn passive_script_can_react_to_round_start_events() {
+        let player = PlayerId(Arc::from("P1"));
+        let output = run_passive_script(
+            r#"
+            return {
+                on_round_start = function(game, event, mercenary)
+                    game.add_lives(mercenary.owner_id, 3)
+                end,
+            }
+            "#,
+            passive_input(
+                player.clone(),
+                PassiveGameEvent::RoundStart,
+                HashMap::from([(player.clone(), script_player(50))]),
+            ),
+        )
+        .unwrap();
+
+        assert_eq!(output.lifes.get(&player), Some(&53));
     }
 
     #[test]

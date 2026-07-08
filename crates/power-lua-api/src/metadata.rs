@@ -65,6 +65,7 @@ pub const ADD_MANA_COST: &str = "add_mana_cost";
 pub const ON_MATCH_STARTED: &str = "on_match_started";
 pub const ON_BID_PLACED: &str = "on_bid_placed";
 pub const ON_POWER_CARD_PLAYED: &str = "on_power_card_played";
+pub const ON_ROUND_START: &str = "on_round_start";
 pub const ON_TURN_PLAYED: &str = "on_turn_played";
 pub const ON_ROUND_ENDED: &str = "on_round_ended";
 pub const ON_SET_STARTED: &str = "on_set_started";
@@ -74,6 +75,7 @@ pub const PASSIVE_EVENT_HANDLERS: &[&str] = &[
     ON_MATCH_STARTED,
     ON_BID_PLACED,
     ON_POWER_CARD_PLAYED,
+    ON_ROUND_START,
     ON_TURN_PLAYED,
     ON_ROUND_ENDED,
     ON_SET_STARTED,
@@ -516,6 +518,12 @@ pub const TURN_PLAYED_EVENT_FIELDS: &[LuaFieldDefinition] = &[
     },
 ];
 
+pub const ROUND_START_EVENT_FIELDS: &[LuaFieldDefinition] = &[LuaFieldDefinition {
+    name: "type",
+    lua_type: "\"round_start\"",
+    description: "Event discriminator.",
+}];
+
 pub const ROUND_ENDED_EVENT_FIELDS: &[LuaFieldDefinition] = &[LuaFieldDefinition {
     name: "type",
     lua_type: "\"round_ended\"",
@@ -556,6 +564,11 @@ pub const EVENT_DEFINITIONS: &[LuaEventDefinition] = &[
         fields: TURN_PLAYED_EVENT_FIELDS,
     },
     LuaEventDefinition {
+        name: "RoundStartEvent",
+        description: "Passive event emitted when a round starts.",
+        fields: ROUND_START_EVENT_FIELDS,
+    },
+    LuaEventDefinition {
         name: "RoundEndedEvent",
         description: "Passive event emitted when a round ends.",
         fields: ROUND_ENDED_EVENT_FIELDS,
@@ -590,6 +603,12 @@ pub const PASSIVE_HANDLERS: &[LuaPassiveHandlerDefinition] = &[
         event_type: "power_card_played",
         event_class: "PowerCardPlayedEvent",
         description: "Runs after a power card is played.",
+    },
+    LuaPassiveHandlerDefinition {
+        name: ON_ROUND_START,
+        event_type: "round_start",
+        event_class: "RoundStartEvent",
+        description: "Runs when a round starts.",
     },
     LuaPassiveHandlerDefinition {
         name: ON_TURN_PLAYED,
