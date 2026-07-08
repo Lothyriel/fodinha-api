@@ -59,6 +59,7 @@ impl UserRole {
 pub struct AnonymousUserClaims {
     pub id: PlayerId,
     pub data: serde_json::Value,
+    #[serde(default)]
     pub role: UserRole,
 }
 
@@ -69,6 +70,7 @@ pub struct GoogleUserClaims {
     pub picture: String,
     pub nickname: Option<String>,
     pub picture_override: Option<String>,
+    #[serde(default)]
     pub role: UserRole,
 }
 
@@ -86,4 +88,37 @@ pub enum AuthError {
     IO(#[from] reqwest::Error),
     #[error("Google audience is not configured in this api")]
     MissingGoogleClientId,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AnonymousUserClaims, GoogleUserClaims, UserRole};
+    use crate::models::id::PlayerId;
+
+    #[test]
+    fn anonymous_user_claims_role_defaults_to_player_when_missing() {
+        let claims: AnonymousUserClaims = serde_json::from_value(serde_json::json!({
+            "id": "guest-id",
+            "data": {
+                "nickname": "Guest"
+            }
+        }))
+        .expect("anonymous claims without role should deserialize");
+
+        assert_eq!(claims.id, PlayerId("guest-id".into()));
+        assert_eq!(claims.role, UserRole::Player);
+    }
+
+    #[test]
+    fn google_user_claims_role_defaults_to_player_when_missing() {
+        let claims: GoogleUserClaims = serde_json::from_value(serde_json::json!({
+            "email": "player@example.com",
+            "name": "Google Name",
+            "picture": "google-picture"
+        }))
+        .expect("google claims without role should deserialize");
+
+        assert_eq!(claims.email, PlayerId("player@example.com".into()));
+        assert_eq!(claims.role, UserRole::Player);
+    }
 }

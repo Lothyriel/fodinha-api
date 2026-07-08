@@ -18,7 +18,7 @@ use serde_json::{Value, json};
 
 use crate::{
     infra::{AnonymousUserClaims, AuthError, GoogleUserClaims, UserClaims},
-    models::id::gen_playerid,
+    models::id::{PlayerId, gen_playerid},
 };
 
 use super::{ApiState, models::*};
@@ -84,6 +84,15 @@ struct GoogleExchangeRequest {
 #[derive(serde::Deserialize)]
 struct RefreshRequest {
     refresh_token: String,
+}
+
+#[derive(serde::Deserialize)]
+struct GoogleIdentityClaims {
+    email: PlayerId,
+    name: String,
+    picture: String,
+    nickname: Option<String>,
+    picture_override: Option<String>,
 }
 
 async fn update(
@@ -278,6 +287,7 @@ fn merge_guest_profile(mut google: UserClaims, guest: &AnonymousUserClaims) -> U
         .and_then(Value::as_str)
         .filter(|picture| !picture.is_empty())
         .map(ToOwned::to_owned);
+    claims.role = guest.role;
 
     google
 }
@@ -314,7 +324,14 @@ async fn get_google_claims(
     let jwks = get_google_jwks().await?;
     let jwk = jwks.find(&kid).ok_or(AuthError::InvalidKid)?;
     let token_data = decode_google_claims(token, jwk, google_client_id)?;
-    let claims = UserClaims::Google(token_data.claims);
+    let claims = UserClaims::Google(GoogleUserClaims {
+        email: token_data.claims.email,
+        name: token_data.claims.name,
+        picture: token_data.claims.picture,
+        nickname: token_data.claims.nickname,
+        picture_override: token_data.claims.picture_override,
+        role: Default::default(),
+    });
 
     Ok(claims)
 }
@@ -323,13 +340,13 @@ fn decode_google_claims(
     token: &str,
     jwk: &Jwk,
     google_client_id: &str,
-) -> Result<TokenData<GoogleUserClaims>, Error> {
+) -> Result<TokenData<GoogleIdentityClaims>, Error> {
     let mut validation = jsonwebtoken::Validation::new(jsonwebtoken::Algorithm::RS256);
 
     validation.set_issuer(&["https://accounts.google.com"]);
     validation.set_audience(&[google_client_id]);
 
-    jsonwebtoken::decode::<GoogleUserClaims>(token, &DecodingKey::from_jwk(jwk)?, &validation)
+    jsonwebtoken::decode::<GoogleIdentityClaims>(token, &DecodingKey::from_jwk(jwk)?, &validation)
 }
 
 async fn get_google_jwks() -> Result<JwkSet, reqwest::Error> {
@@ -348,7 +365,7 @@ impl IntoResponse for AuthError {
 
 #[cfg(test)]
 mod tests {
-    use super::merge_guest_profile;
+    use super::{GoogleIdentityClaims, merge_guest_profile};
     use crate::{
         infra::{AnonymousUserClaims, GoogleUserClaims, UserClaims},
         models::id::PlayerId,
@@ -383,5 +400,22 @@ mod tests {
         assert_eq!(merged.picture_override.as_deref(), Some("guest-picture"));
         assert_eq!(merged.name, "Google Name");
         assert_eq!(merged.picture, "google-picture");
+        assert_eq!(merged.role, guest.role);
+    }
+
+    #[test]
+    fn google_identity_claims_deserialize_without_role() {
+        let claims: GoogleIdentityClaims = serde_json::from_value(serde_json::json!({
+            "email": "player@example.com",
+            "name": "Google Name",
+            "picture": "google-picture"
+        }))
+        .expect("google identity claims should not require role");
+
+        assert_eq!(claims.email, PlayerId("player@example.com".into()));
+        assert_eq!(claims.name, "Google Name");
+        assert_eq!(claims.picture, "google-picture");
+        assert_eq!(claims.nickname, None);
+        assert_eq!(claims.picture_override, None);
     }
 }
