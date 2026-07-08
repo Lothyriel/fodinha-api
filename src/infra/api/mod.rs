@@ -2,6 +2,7 @@ mod auth;
 mod card_definitions;
 mod game;
 mod lobby;
+mod lua_resources;
 mod mercenaries;
 pub mod models;
 mod stats;
@@ -107,6 +108,7 @@ fn build_app(
             "/power-decks",
             card_definitions::decks_router().layer(auth.clone()),
         )
+        .nest("/lua", lua_resources::router())
         .nest("/mercenaries", mercenaries::router().layer(auth))
         .nest("/stats", stats::router(state.clone()))
         .nest("/auth", auth::router(state.clone()))
