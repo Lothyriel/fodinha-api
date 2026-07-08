@@ -788,20 +788,12 @@ fn cards_to_lua_table(lua: &Lua, cards: &[Card]) -> mlua::Result<Table> {
 
 fn card_from_lua_value(value: &Value) -> mlua::Result<Card> {
     match value {
-        Value::Table(table) => card_from_lua_table(table),
         Value::UserData(userdata) => Ok(userdata.borrow::<LuaCard>()?.to_card()),
         value => Err(mlua::Error::external(format!(
-            "card must be a Card userdata or table, got {}",
+            "card must be a Card userdata, got {}",
             value.type_name()
         ))),
     }
-}
-
-fn card_from_lua_table(table: &Table) -> mlua::Result<Card> {
-    let rank = parse_rank(&table.get::<String>("rank")?)?;
-    let suit = parse_suit(&table.get::<String>("suit")?)?;
-
-    Ok(Card { rank, suit })
 }
 
 fn power_cards_to_lua_table(lua: &Lua, cards: &[ScriptPowerCardState]) -> mlua::Result<Table> {
@@ -829,38 +821,12 @@ fn rank_to_str(rank: Rank) -> &'static str {
     }
 }
 
-fn parse_rank(value: &str) -> mlua::Result<Rank> {
-    match value {
-        "Four" => Ok(Rank::Four),
-        "Five" => Ok(Rank::Five),
-        "Six" => Ok(Rank::Six),
-        "Seven" => Ok(Rank::Seven),
-        "Ten" => Ok(Rank::Ten),
-        "Eleven" => Ok(Rank::Eleven),
-        "Twelve" => Ok(Rank::Twelve),
-        "One" => Ok(Rank::One),
-        "Two" => Ok(Rank::Two),
-        "Three" => Ok(Rank::Three),
-        _ => Err(mlua::Error::external(format!("invalid rank: {value}"))),
-    }
-}
-
 fn suit_to_str(suit: Suit) -> &'static str {
     match suit {
         Suit::Golds => "Golds",
         Suit::Swords => "Swords",
         Suit::Cups => "Cups",
         Suit::Clubs => "Clubs",
-    }
-}
-
-fn parse_suit(value: &str) -> mlua::Result<Suit> {
-    match value {
-        "Golds" => Ok(Suit::Golds),
-        "Swords" => Ok(Suit::Swords),
-        "Cups" => Ok(Suit::Cups),
-        "Clubs" => Ok(Suit::Clubs),
-        _ => Err(mlua::Error::external(format!("invalid suit: {value}"))),
     }
 }
 

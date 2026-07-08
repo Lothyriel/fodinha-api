@@ -106,12 +106,11 @@ pub struct MercenaryDto {
     pub style: String,
     pub temper: String,
     pub creator_id: PlayerId,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub banner_object_key: Option<String>,
     pub passive_script_object_key: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub banner_content_type: Option<String>,
-    #[serde(default = "default_active")]
     pub active: bool,
     pub created_at: i64,
     pub updated_at: i64,
@@ -152,8 +151,4 @@ pub struct NewMercenary {
     pub banner_object_key: Option<String>,
     pub passive_script_object_key: String,
     pub banner_content_type: Option<String>,
-}
-
-fn default_active() -> bool {
-    true
 }

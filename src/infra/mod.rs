@@ -59,7 +59,6 @@ impl UserRole {
 pub struct AnonymousUserClaims {
     pub id: PlayerId,
     pub data: serde_json::Value,
-    #[serde(default)]
     pub role: UserRole,
 }
 
@@ -68,11 +67,8 @@ pub struct GoogleUserClaims {
     pub email: PlayerId,
     pub name: String,
     pub picture: String,
-    #[serde(default)]
     pub nickname: Option<String>,
-    #[serde(default)]
     pub picture_override: Option<String>,
-    #[serde(default)]
     pub role: UserRole,
 }
 

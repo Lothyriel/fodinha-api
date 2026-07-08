@@ -153,17 +153,16 @@ pub struct CardDefinitionDto {
     pub kind: CardDefinitionKind,
     pub name: String,
     pub description: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub life: Option<i32>,
-    #[serde(default)]
     pub mana_cost: usize,
     #[serde(rename = "type")]
     pub card_type: PowerCardType,
     pub creator_id: PlayerId,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub image_object_key: Option<String>,
     pub script_object_key: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub image_content_type: Option<String>,
     pub active: bool,
     pub created_at: i64,

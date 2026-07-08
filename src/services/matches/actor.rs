@@ -600,7 +600,7 @@ impl MatchActor {
 
         let ready_players: std::collections::HashSet<_> =
             metadata.ready_players.into_iter().collect();
-        let mut lobby = Lobby::new(metadata.settings.unwrap_or_default());
+        let mut lobby = Lobby::new(metadata.settings);
 
         for player_id in metadata.players {
             let id = PlayerId(player_id.into());
@@ -671,6 +671,7 @@ impl MatchActor {
                 settings,
                 mut set,
                 power_set,
+                draw_seed,
                 passive_effects,
             })) => {
                 let lobby = self.lobby_mut()?;
@@ -680,6 +681,7 @@ impl MatchActor {
                     settings,
                     set.clone(),
                     power_set.clone(),
+                    draw_seed,
                 )
                 .map_err(|e| ManagerError::Lobby(LobbyError::GameError(e)))?;
                 let (passive_mana, passive_power_decks) =

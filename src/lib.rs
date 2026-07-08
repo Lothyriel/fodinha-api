@@ -11,12 +11,10 @@ pub struct AppSettings {
     pub google_client_id: Option<String>,
     pub mongo_conn_string: String,
     pub mongo_database: String,
-    #[serde(default)]
     pub mongo_max_pool_size: u32,
     pub object_storage_access_key_id: String,
     pub object_storage_bucket: String,
     pub object_storage_endpoint: String,
-    #[serde(default)]
     pub object_storage_force_path_style: bool,
     pub object_storage_public_base_url: Option<String>,
     pub object_storage_region: String,

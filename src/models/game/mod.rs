@@ -182,50 +182,13 @@ impl GameEvent {
 }
 
 #[allow(clippy::large_enum_variant)]
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data")]
 pub enum MatchEvent {
     MatchCreated { settings: GameSettings },
     PlayerJoined { user_claims: UserClaims },
     PlayerStatusChanged { player_id: PlayerId, ready: bool },
     Game(GameEvent),
-}
-
-impl<'de> Deserialize<'de> for MatchEvent {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let value = serde_json::Value::deserialize(deserializer)?;
-
-        #[allow(clippy::large_enum_variant)]
-        #[derive(Deserialize)]
-        #[serde(tag = "type", content = "data")]
-        enum TaggedMatchEvent {
-            MatchCreated { settings: GameSettings },
-            PlayerJoined { user_claims: UserClaims },
-            PlayerStatusChanged { player_id: PlayerId, ready: bool },
-            Game(GameEvent),
-        }
-
-        match serde_json::from_value::<TaggedMatchEvent>(value.clone()) {
-            Ok(TaggedMatchEvent::MatchCreated { settings }) => Ok(Self::MatchCreated { settings }),
-            Ok(TaggedMatchEvent::PlayerJoined { user_claims }) => {
-                Ok(Self::PlayerJoined { user_claims })
-            }
-            Ok(TaggedMatchEvent::PlayerStatusChanged { player_id, ready }) => {
-                Ok(Self::PlayerStatusChanged { player_id, ready })
-            }
-            Ok(TaggedMatchEvent::Game(event)) => Ok(Self::Game(event)),
-            Err(new_error) => serde_json::from_value::<fodinha_classic::MatchEvent>(value)
-                .map(|event| Self::Game(GameEvent::FodinhaClassic(event)))
-                .map_err(|legacy_error| {
-                    serde::de::Error::custom(format!(
-                        "invalid match event: {new_error}; legacy fodinha_classic event: {legacy_error}"
-                    ))
-                }),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -592,9 +555,10 @@ mod tests {
         let inner = document.get_document("settings").unwrap();
 
         assert_eq!(document.get_str("game_type"), Ok("fodinha_power"));
-        assert_eq!(inner.len(), 2);
+        assert_eq!(inner.len(), 3);
         assert_eq!(inner.get_i64("lifes"), Ok(50));
         assert_eq!(inner.get_str("power_deck_id"), Ok("test_deck"));
+        assert_eq!(inner.get_document("player_mercenaries").unwrap().len(), 0);
     }
 
     #[test]
@@ -732,31 +696,6 @@ mod tests {
                 assert_eq!(effects.lifes.get(&player_id), Some(&60));
             }
             decoded => panic!("unexpected decoded event: {decoded:?}"),
-        }
-    }
-
-    #[test]
-    fn legacy_fodinha_event_deserializes_as_typed_game_event() {
-        let player_id = PlayerId(Arc::from("player-1"));
-        let legacy_event = fodinha_classic::MatchEvent::TurnPlayed {
-            turn: crate::models::Turn {
-                player_id: player_id.clone(),
-                card: Card::new(Rank::Four, Suit::Golds),
-            },
-            next_set: None,
-        };
-
-        let document = mongodb::bson::to_document(&legacy_event).unwrap();
-        let decoded: MatchEvent = mongodb::bson::from_document(document).unwrap();
-
-        match decoded {
-            MatchEvent::Game(GameEvent::FodinhaClassic(
-                fodinha_classic::MatchEvent::TurnPlayed { turn, next_set },
-            )) => {
-                assert_eq!(turn.player_id, player_id);
-                assert_eq!(next_set, None);
-            }
-            decoded => panic!("unexpected decoded legacy event: {decoded:?}"),
         }
     }
 }

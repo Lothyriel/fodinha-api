@@ -20,7 +20,7 @@ pub(crate) mod tasks;
 pub struct GameInfoDto {
     pub info: Vec<PlayerInfoDto>,
     pub deck: Option<Vec<Card>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub power_cards: Option<Vec<PowerCardDto>>,
     pub upcard: Option<Card>,
     pub current_player: String,
@@ -35,7 +35,7 @@ pub struct PowerCardDto {
     pub mana_cost: usize,
     #[serde(rename = "type")]
     pub card_type: PowerCardType,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub image_url: Option<String>,
 }
 
@@ -58,7 +58,7 @@ pub struct PlayerInfoDto {
     pub lifes: usize,
     pub rounds: Option<usize>,
     pub bid: Option<usize>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub mana: Option<PlayerManaDto>,
 }
 

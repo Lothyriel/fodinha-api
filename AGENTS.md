@@ -14,7 +14,7 @@
 - `cargo test` uses a real MongoDB at `mongodb://localhost/?retryWrites=true` and creates per-test databases named `oh_hell_test_*` inside `src/infra/api/mod.rs` tests.
 - Good focused regression check for actor restore/replay work: `cargo test test_concurrent_lazy_loads_match_actor_from_events -- --exact`
 - Good focused regression check for persistence boundaries: `cargo test test_lobby_changes_do_not_write_match_events -- --exact`
-- Good focused check for game event BSON/wire compatibility: `cargo test game::tests`
+- Good focused check for game event BSON/wire serialization: `cargo test game::tests`
 
 ## Architecture
 
@@ -35,13 +35,12 @@
 - `MatchMetadata.settings` stores typed settings as `{ game_type, settings }`; for `fodinha_classic`, `settings` should only contain `lifes`. `MatchEvents.event` stores common lobby events directly and gameplay events as `MatchEvent::Game(GameEvent::...)` with a nested `game_type`.
 - Important current behavior: lobby create/join/ready changes are persisted to `MatchMetadata`, but do not write `MatchEvents`. This is verified by `test_lobby_changes_do_not_write_match_events`.
 - Gameplay events are appended from `MatchActor::persist_apply()`. If you change event shapes or ordering, audit replay in `actor.rs`, metadata projection in `src/services/matches/projection.rs`, and stats projection in `src/services/stats/` together.
-- Legacy bare Fodinha event deserialization is intentionally supported in `src/models/game/mod.rs`; do not remove it unless persisted event migration is handled.
 
 ## API Boundaries
 
 - HTTP route wiring lives in `src/infra/api/mod.rs`.
 - `/lobby` is authenticated by Bearer middleware.
-- `POST /lobby` accepts optional `game_type` and defaults to `fodinha_classic` when omitted. Fodinha-specific `lifes` is accepted at the top level for current frontend compatibility, e.g. `{ "game_type": "fodinha_classic", "lifes": 5 }` or `{ "lifes": 5 }`.
+- `POST /lobby` requires `game_type`. Fodinha-specific `lifes` is accepted at the top level, e.g. `{ "game_type": "fodinha_classic", "lifes": 5 }`.
 - `CreateLobbyResponse` returns `{ lobby_id, game_type }`; `GET /lobby` returns `GetLobbyDto` entries with `{ id, game_type, player_count }`.
 - `/game` is a WebSocket endpoint that authenticates with `?token=...`, not an `Authorization` header.
 - A player must join a lobby before opening `/game`; websocket connection resolution depends on `player_routes` in memory or `active_metadata_for_player()` in Mongo.
@@ -64,5 +63,5 @@
 - If you change player identity/auth, audit `src/infra/api/auth.rs`, `src/services/repositories/users.rs`, fallback user hydration in `src/services/matches/manager.rs`, and stats response hydration.
 - If you change match finish behavior, also audit actor cleanup (`stop_match()`), metadata status updates, and `StatsProjectorHandle::notify_match_finished()`.
 - Stats projection is currently Fodinha-specific. If adding a new game type, either implement a game-specific stats projector path or explicitly skip stats for that game.
-- If you change `GameType`, `GameSettings`, `GameCommand`, `GameEvent`, or `MatchEvent` serialization, run `cargo test game::tests` and at least one restore/replay regression test before trusting Mongo compatibility.
+- If you change `GameType`, `GameSettings`, `GameCommand`, `GameEvent`, or `MatchEvent` serialization, run `cargo test game::tests` and at least one restore/replay regression test.
 - Stats are eventually consistent by design: finished matches trigger background projection after the actor stops, so stats endpoints may need polling in tests and clients.

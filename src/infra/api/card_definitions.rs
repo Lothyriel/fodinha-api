@@ -154,7 +154,6 @@ struct CreatePowerDeckRequest {
     status: Option<CardDeckStatus>,
     name: String,
     description: Option<String>,
-    #[serde(default)]
     card_ids: Vec<CardId>,
     generic_card_ids: Option<Vec<CardId>>,
     mercenary_card_ids: Option<HashMap<MercenaryId, Vec<CardId>>>,

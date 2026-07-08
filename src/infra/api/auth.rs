@@ -348,21 +348,11 @@ impl IntoResponse for AuthError {
 
 #[cfg(test)]
 mod tests {
-    use jsonwebtoken::{EncodingKey, Header};
-
-    use super::{ISSUER, get_claims_from_token, merge_guest_profile};
+    use super::merge_guest_profile;
     use crate::{
         infra::{AnonymousUserClaims, GoogleUserClaims, UserClaims},
         models::id::PlayerId,
     };
-
-    #[derive(serde::Serialize, serde::Deserialize)]
-    struct LegacyAnonymousUserClaimsDto {
-        id: PlayerId,
-        data: serde_json::Value,
-        iss: &'static str,
-        exp: usize,
-    }
 
     #[test]
     fn merge_guest_profile_prefers_existing_guest_nickname_and_picture() {
@@ -393,28 +383,5 @@ mod tests {
         assert_eq!(merged.picture_override.as_deref(), Some("guest-picture"));
         assert_eq!(merged.name, "Google Name");
         assert_eq!(merged.picture, "google-picture");
-    }
-
-    #[tokio::test]
-    async fn legacy_anonymous_token_is_not_accepted_as_app_session() {
-        let legacy = LegacyAnonymousUserClaimsDto {
-            id: PlayerId("guest-id".into()),
-            data: serde_json::json!({ "nickname": "Guest Hero" }),
-            iss: ISSUER,
-            exp: 10_000_000_000,
-        };
-        let jwt_key = "test-jwt-key";
-        let token = jsonwebtoken::encode(
-            &Header::default(),
-            &legacy,
-            &EncodingKey::from_secret(jwt_key.as_bytes()),
-        )
-        .unwrap();
-
-        assert!(
-            get_claims_from_token(&token, jwt_key, Some("google-client-id"))
-                .await
-                .is_err()
-        );
     }
 }

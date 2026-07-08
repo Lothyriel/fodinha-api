@@ -875,11 +875,7 @@ impl ManagerHandle {
 }
 
 fn metadata_game_type(metadata: &MatchMetadataDto) -> GameType {
-    metadata
-        .settings
-        .as_ref()
-        .map(GameSettings::game_type)
-        .unwrap_or_else(|| GameSettings::default().game_type())
+    metadata.settings.game_type()
 }
 
 async fn abandon_stale_playing_matches(

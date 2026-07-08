@@ -421,16 +421,11 @@ impl MatchesRepository {
 pub struct MatchMetadataDto {
     pub match_id: String,
     pub status: MatchMetadataStatus,
-    pub settings: Option<GameSettings>,
-    #[serde(default)]
+    pub settings: GameSettings,
     pub creator_id: Option<String>,
-    #[serde(default)]
     pub players: Vec<String>,
-    #[serde(default)]
     pub ready_players: Vec<String>,
-    #[serde(default)]
     pub player_mercenaries: std::collections::HashMap<String, String>,
-    #[serde(default)]
     pub updated_at: i64,
 }
 
@@ -439,7 +434,7 @@ impl MatchMetadataDto {
         Self {
             match_id: match_id.as_str().to_string(),
             status: MatchMetadataStatus::Waiting,
-            settings: Some(settings),
+            settings,
             creator_id: creator_id.map(|id| id.as_str().to_string()),
             players: Vec::new(),
             ready_players: Vec::new(),

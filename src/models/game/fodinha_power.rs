@@ -31,7 +31,6 @@ const MERCENARY_POWER_CARDS_PER_PLAYER: usize = 1;
 const INITIAL_MANA_POOL: usize = 2;
 const MANA_POOL_GAIN_PER_SET: usize = 1;
 const MANA_REGEN_PER_BIDDING_TURN: usize = 1;
-const DRAW_POWER_CARD_SEQUENCE_SALT: i64 = 10_000;
 
 pub const DEFAULT_INITIAL_LIFES: usize = 50;
 pub const MIN_INITIAL_LIFES: usize = 10;
@@ -46,6 +45,7 @@ pub struct Game {
     power_deck_id: DeckId,
     player_mercenaries: HashMap<PlayerId, MercenaryId>,
     power_seed: i64,
+    draw_seed: i64,
     next_power_shuffle_sequence: i64,
 }
 
@@ -53,7 +53,6 @@ pub struct Game {
 pub struct GameSettings {
     pub lifes: usize,
     pub power_deck_id: DeckId,
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub player_mercenaries: HashMap<PlayerId, MercenaryId>,
 }
 
@@ -61,7 +60,6 @@ pub struct GameSettings {
 pub struct PowerSet {
     pub shuffle: DeckShuffle,
     pub decks: IndexMap<PlayerId, Vec<PowerCard>>,
-    #[serde(default)]
     pub mana: IndexMap<PlayerId, PlayerMana>,
 }
 
@@ -166,7 +164,7 @@ pub struct PowerCard {
     pub mana_cost: usize,
     #[serde(rename = "type")]
     pub card_type: PowerCardType,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub image_url: Option<String>,
 }
 
@@ -215,22 +213,19 @@ pub enum MatchEvent {
         settings: GameSettings,
         set: NewSet,
         power_set: PowerSet,
-        #[serde(default, skip_serializing_if = "PowerCardEffects::is_empty")]
+        draw_seed: i64,
         passive_effects: PowerCardEffects,
     },
     BidPlaced {
         player_id: PlayerId,
         bid: usize,
-        #[serde(default, skip_serializing_if = "HashMap::is_empty")]
         mana: HashMap<PlayerId, PlayerMana>,
-        #[serde(default, skip_serializing_if = "PowerCardEffects::is_empty")]
         passive_effects: PowerCardEffects,
     },
     TurnPlayed {
         turn: Turn,
         next_set: Option<NewSet>,
         next_power_set: Option<PowerSet>,
-        #[serde(default, skip_serializing_if = "PowerCardEffects::is_empty")]
         passive_effects: PowerCardEffects,
     },
     PowerCardPlayed {
@@ -243,24 +238,13 @@ pub enum MatchEvent {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PowerCardEffects {
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub lifes: HashMap<PlayerId, usize>,
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub mana: HashMap<PlayerId, PlayerMana>,
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub decks: HashMap<PlayerId, Vec<Card>>,
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub power_decks: HashMap<PlayerId, Vec<PowerCard>>,
 }
 
 impl PowerCardEffects {
-    fn is_empty(&self) -> bool {
-        self.lifes.is_empty()
-            && self.mana.is_empty()
-            && self.decks.is_empty()
-            && self.power_decks.is_empty()
-    }
-
     fn merge(&mut self, other: Self) {
         self.lifes.extend(other.lifes);
         self.mana.extend(other.mana);
@@ -605,7 +589,7 @@ pub fn upsert_mercenary_definition(
 
 impl Game {
     pub fn new(players: &[PlayerId], settings: GameSettings) -> Result<Self, GameError> {
-        Self::new_with_seed(players, settings, rand::random())
+        Self::new_with_seeds(players, settings, rand::random(), rand::random())
     }
 
     pub fn new_with_seed(
@@ -613,16 +597,26 @@ impl Game {
         settings: GameSettings,
         seed: i64,
     ) -> Result<Self, GameError> {
-        let event = Self::start_match_event_with_seed(players, settings, seed)?;
+        Self::new_with_seeds(players, settings, seed, seed)
+    }
+
+    pub fn new_with_seeds(
+        players: &[PlayerId],
+        settings: GameSettings,
+        seed: i64,
+        draw_seed: i64,
+    ) -> Result<Self, GameError> {
+        let event = Self::start_match_event_with_seeds(players, settings, seed, draw_seed)?;
 
         match event {
             MatchEvent::GameStarted {
                 settings,
                 set,
                 power_set,
+                draw_seed,
                 passive_effects,
             } => {
-                let mut game = Self::from_started(players, settings, set, power_set)?;
+                let mut game = Self::from_started(players, settings, set, power_set, draw_seed)?;
                 game.apply_effects(&passive_effects);
 
                 Ok(game)
@@ -635,13 +629,22 @@ impl Game {
         players: &[PlayerId],
         settings: GameSettings,
     ) -> Result<MatchEvent, GameError> {
-        Self::start_match_event_with_seed(players, settings, rand::random())
+        Self::start_match_event_with_seeds(players, settings, rand::random(), rand::random())
     }
 
     pub fn start_match_event_with_seed(
         players: &[PlayerId],
         settings: GameSettings,
         seed: i64,
+    ) -> Result<MatchEvent, GameError> {
+        Self::start_match_event_with_seeds(players, settings, seed, seed)
+    }
+
+    pub fn start_match_event_with_seeds(
+        players: &[PlayerId],
+        settings: GameSettings,
+        seed: i64,
+        draw_seed: i64,
     ) -> Result<MatchEvent, GameError> {
         let classic_settings = Self::classic_settings(&settings);
         let classic_event =
@@ -657,7 +660,13 @@ impl Game {
             &settings.player_mercenaries,
             Self::initial_mana(players),
         )?;
-        let game = Self::from_started(players, settings.clone(), set.clone(), power_set.clone())?;
+        let game = Self::from_started(
+            players,
+            settings.clone(),
+            set.clone(),
+            power_set.clone(),
+            draw_seed,
+        )?;
         let passive_effects = game
             .passive_effects(PassiveGameEvent::MatchStarted)
             .unwrap_or_default();
@@ -666,6 +675,7 @@ impl Game {
             settings,
             set,
             power_set,
+            draw_seed,
             passive_effects,
         })
     }
@@ -675,6 +685,7 @@ impl Game {
         settings: GameSettings,
         set: NewSet,
         power_set: PowerSet,
+        draw_seed: i64,
     ) -> Result<Self, GameError> {
         let classic = fodinha_classic::Game::from_started_with_rules(
             players,
@@ -698,6 +709,7 @@ impl Game {
             power_deck_id: settings.power_deck_id,
             player_mercenaries: settings.player_mercenaries,
             power_seed: power_set.shuffle.seed,
+            draw_seed,
             next_power_shuffle_sequence: power_set.shuffle.sequence.wrapping_add(1),
         })
     }
@@ -1090,7 +1102,7 @@ impl Game {
     fn power_card_drawer(&self) -> DrawPowerCardsFn {
         let power_deck_id = self.power_deck_id.clone();
         let player_mercenaries = self.player_mercenaries.clone();
-        let power_seed = self.power_seed;
+        let draw_seed = self.draw_seed;
         let next_power_shuffle_sequence = self.next_power_shuffle_sequence;
         let mut player_order = self.power_decks.keys().cloned().collect::<Vec<_>>();
         let mut missing_players = self
@@ -1111,10 +1123,9 @@ impl Game {
         ));
 
         Rc::new(move |player_id, count| {
-            let Some((player_idx, player_id)) = player_order
+            let Some(player_id) = player_order
                 .iter()
-                .enumerate()
-                .find(|(_, known_player_id)| known_player_id.as_str() == player_id)
+                .find(|known_player_id| known_player_id.as_str() == player_id)
             else {
                 return Err(format!("unknown player_id: {player_id}"));
             };
@@ -1129,9 +1140,8 @@ impl Game {
                 &player_mercenaries,
                 player_id,
                 count,
-                power_seed,
+                draw_seed,
                 next_power_shuffle_sequence,
-                player_idx,
                 offset,
             )
             .map_err(|error| error.to_string())?;
@@ -1315,7 +1325,7 @@ impl Game {
                 sequence,
             )?
         } else {
-            Self::new_legacy_power_decks(players, &definition, seed, sequence)?
+            Self::new_unpartitioned_power_decks(players, &definition, seed, sequence)?
         };
 
         Ok(PowerSet {
@@ -1325,7 +1335,7 @@ impl Game {
         })
     }
 
-    fn new_legacy_power_decks(
+    fn new_unpartitioned_power_decks(
         players: &[PlayerId],
         deck_definition: &PowerDeckDefinition,
         seed: i64,
@@ -1474,7 +1484,6 @@ fn draw_power_cards_for_player(
     count: usize,
     seed: i64,
     sequence: i64,
-    player_idx: usize,
     offset: usize,
 ) -> Result<Vec<PowerCard>, PowerCardDefinitionError> {
     let deck_definition = power_deck_definition(deck_id)?;
@@ -1484,14 +1493,7 @@ fn draw_power_cards_for_player(
         .map(|idx| definitions[idx % definitions.len()].to_card())
         .collect::<Vec<_>>();
 
-    shuffle_power_cards(
-        &mut deck,
-        seed,
-        sequence
-            .wrapping_add(DRAW_POWER_CARD_SEQUENCE_SALT)
-            .wrapping_mul(31)
-            .wrapping_add(player_idx as i64),
-    );
+    shuffle_power_cards(&mut deck, seed, sequence);
 
     Ok(deck.into_iter().skip(offset).take(count).collect())
 }
@@ -1745,6 +1747,43 @@ return {
         .expect("valid partitioned deck");
     }
 
+    fn install_draw_power_card_definitions() -> CardId {
+        let draw_id = card_id("draw_eight");
+        let mut definitions = vec![PowerCardDefinitionInput {
+            id: draw_id.clone(),
+            name: "Draw Eight".to_string(),
+            description: "Draws eight power cards.".to_string(),
+            mana_cost: 0,
+            card_type: PowerCardType::Instant,
+            image_url: None,
+            script: r#"
+                return {
+                    effect = function(game, card)
+                        game:draw_power_cards(card.owner_id, 8)
+                    end,
+                }
+            "#
+            .to_string(),
+            source: "test/draw_eight.lua".to_string(),
+        }];
+
+        definitions.extend((0..24).map(|idx| PowerCardDefinitionInput {
+            id: card_id(&format!("drawn_{idx}")),
+            name: format!("Drawn {idx}"),
+            description: "Can be drawn.".to_string(),
+            mana_cost: 0,
+            card_type: PowerCardType::Instant,
+            image_url: None,
+            script: NOOP_POWER_SCRIPT.to_string(),
+            source: format!("test/drawn_{idx}.lua"),
+        }));
+
+        replace_power_card_definitions(test_deck_id(), definitions)
+            .expect("valid draw card definitions");
+
+        draw_id
+    }
+
     fn install_test_mercenary_passives() {
         install_mercenary_passive(BID_HEAL_PASSIVE_SCRIPT);
     }
@@ -1793,6 +1832,33 @@ return {
         let event = game.validate_bid(&player_id, bid).unwrap();
 
         game.apply_match_event(event);
+    }
+
+    fn drawn_power_card_ids(
+        players: &[PlayerId],
+        player_id: &PlayerId,
+        draw_id: &CardId,
+        draw_seed: i64,
+    ) -> Vec<CardId> {
+        let mut game = Game::new_with_seeds(players, test_settings(), 42, draw_seed).unwrap();
+        game.power_decks.insert(
+            player_id.clone(),
+            vec![
+                power_card_definition(&test_deck_id(), draw_id)
+                    .unwrap()
+                    .unwrap()
+                    .to_card(),
+            ],
+        );
+        let event = game.validate_power_card(player_id, draw_id, None).unwrap();
+        let AppliedGameChange::PowerCardPlayed(outcome) = game.apply_match_event(event) else {
+            panic!("expected power card outcome");
+        };
+
+        outcome.power_decks[player_id]
+            .iter()
+            .map(|card| card.id.clone())
+            .collect()
     }
 
     fn validate_current_turn(game: &Game) -> MatchEvent {
@@ -1847,6 +1913,36 @@ return {
                 })
             );
         }
+    }
+
+    #[test]
+    fn game_started_event_persists_draw_seed() {
+        let _lock = power_card_test_lock();
+        install_test_power_card_definitions();
+        let players = test_players();
+
+        let MatchEvent::GameStarted { draw_seed, .. } =
+            Game::start_match_event_with_seeds(&players, test_settings(), 42, 77).unwrap()
+        else {
+            panic!("expected game started event");
+        };
+
+        assert_eq!(draw_seed, 77);
+    }
+
+    #[test]
+    fn draw_power_cards_uses_persisted_draw_seed() {
+        let _lock = power_card_test_lock();
+        let draw_id = install_draw_power_card_definitions();
+        let [player1, player2] = test_players();
+        let players = [player1.clone(), player2];
+
+        let first = drawn_power_card_ids(&players, &player1, &draw_id, 77);
+        let repeated = drawn_power_card_ids(&players, &player1, &draw_id, 77);
+        let changed = drawn_power_card_ids(&players, &player1, &draw_id, 123_456_789);
+
+        assert_eq!(first, repeated);
+        assert_ne!(first, changed);
     }
 
     #[test]

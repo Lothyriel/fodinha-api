@@ -233,7 +233,7 @@ mod tests {
             commands::{
                 ClientCommand, CreateLobbyResponse, LobbyInfo, MatchSnapshot, ServerMessage,
             },
-            game::{GameCommand, GameType, fodinha_classic, fodinha_power},
+            game::{GameCommand, GameSettings, GameType, fodinha_classic, fodinha_power},
             id::{CardId, DeckId, LobbyId, MercenaryId, PlayerId},
         },
         services::{
@@ -721,9 +721,11 @@ return {
             .insert_one(doc! {
                 "match_id": match_id.as_str(),
                 "status": "playing",
+                "settings": mongodb::bson::to_bson(&GameSettings::default()).unwrap(),
                 "updated_at": 0_i64,
                 "players": [],
                 "ready_players": [],
+                "player_mercenaries": {},
             })
             .await
             .unwrap();

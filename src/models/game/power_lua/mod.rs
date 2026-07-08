@@ -607,44 +607,6 @@ mod tests {
     }
 
     #[test]
-    fn script_can_switch_table_cards_for_compatibility() {
-        let player1 = PlayerId(Arc::from("P1"));
-        let player2 = PlayerId(Arc::from("P2"));
-        let first_card = Card::new(Rank::Four, Suit::Golds);
-        let second_card = Card::new(Rank::Three, Suit::Clubs);
-        let mut first_state = script_player(50);
-        let mut second_state = script_player(50);
-        first_state.cards = vec![first_card];
-        second_state.cards = vec![second_card];
-        let output = run_power_card_script(
-            r#"
-            return {
-                effect = function(game, card)
-                    game.switch_cards(
-                        card.owner_id,
-                        { rank = "Four", suit = "Golds" },
-                        card.target_player_id,
-                        { rank = "Three", suit = "Clubs" }
-                    )
-                end,
-            }
-            "#,
-            script_input(
-                player1.clone(),
-                Some(player2.clone()),
-                HashMap::from([
-                    (player1.clone(), first_state),
-                    (player2.clone(), second_state),
-                ]),
-            ),
-        )
-        .unwrap();
-
-        assert_eq!(output.cards.get(&player1), Some(&vec![second_card]));
-        assert_eq!(output.cards.get(&player2), Some(&vec![first_card]));
-    }
-
-    #[test]
     fn script_can_steal_power_cards() {
         let player1 = PlayerId(Arc::from("P1"));
         let player2 = PlayerId(Arc::from("P2"));

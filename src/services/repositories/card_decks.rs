@@ -76,10 +76,7 @@ impl CardDecksRepository {
                 .decks
                 .find(doc! {
                     "active": true,
-                    "$or": [
-                        { "status": CardDeckStatus::Valid.as_str() },
-                        { "status": { "$exists": false } },
-                    ],
+                    "status": CardDeckStatus::Valid.as_str(),
                 })
                 .sort(doc! { "created_at": -1 })
                 .await?;
@@ -95,10 +92,7 @@ impl CardDecksRepository {
                 .find_one(doc! {
                     "deck_id": deck_id.as_str(),
                     "active": true,
-                    "$or": [
-                        { "status": CardDeckStatus::Valid.as_str() },
-                        { "status": { "$exists": false } },
-                    ],
+                    "status": CardDeckStatus::Valid.as_str(),
                 })
                 .await
         })
@@ -110,19 +104,14 @@ impl CardDecksRepository {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CardDeckDto {
     pub deck_id: DeckId,
-    #[serde(default = "default_card_deck_kind")]
     pub kind: CardDeckKind,
     pub name: String,
     pub description: String,
     pub creator_id: PlayerId,
     pub card_ids: Vec<CardId>,
-    #[serde(default)]
     pub generic_card_ids: Vec<CardId>,
-    #[serde(default)]
     pub mercenary_card_ids: std::collections::HashMap<crate::models::id::MercenaryId, Vec<CardId>>,
-    #[serde(default)]
     pub status: CardDeckStatus,
-    #[serde(default = "default_active")]
     pub active: bool,
     pub created_at: i64,
     pub updated_at: i64,
@@ -163,14 +152,6 @@ pub struct NewCardDeck {
     pub generic_card_ids: Vec<CardId>,
     pub mercenary_card_ids: std::collections::HashMap<crate::models::id::MercenaryId, Vec<CardId>>,
     pub status: CardDeckStatus,
-}
-
-fn default_active() -> bool {
-    true
-}
-
-fn default_card_deck_kind() -> CardDeckKind {
-    CardDeckKind::Community
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

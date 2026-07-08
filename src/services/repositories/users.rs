@@ -147,11 +147,8 @@ pub struct RefreshSession {
 struct UserDto {
     player_id: String,
     user: UserClaims,
-    #[serde(default)]
     role: Option<UserRole>,
-    #[serde(default)]
     refresh_token: Option<String>,
-    #[serde(default)]
     refresh_token_expires_at: Option<i64>,
 }
 

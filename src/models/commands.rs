@@ -27,7 +27,7 @@ pub struct CreateLobbyResponse {
 pub struct PlayerStatus {
     pub ready: bool,
     pub player: UserClaims,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub mercenary_id: Option<MercenaryId>,
 }
 
