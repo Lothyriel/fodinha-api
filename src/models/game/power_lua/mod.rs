@@ -92,10 +92,6 @@ impl std::fmt::Debug for PassiveScriptInput {
     }
 }
 
-pub(crate) fn no_power_card_draws() -> DrawPowerCardsFn {
-    Rc::new(|_, _| Err("power card drawing is not available".to_string()))
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PassiveGameEvent {
     MatchStarted,
@@ -178,6 +174,10 @@ mod tests {
             cards: Vec::new(),
             power_cards: Vec::new(),
         }
+    }
+
+    fn no_power_card_draws() -> DrawPowerCardsFn {
+        Rc::new(|_, _| Err("power card drawing is not available".to_string()))
     }
 
     fn script_input(

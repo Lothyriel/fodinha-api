@@ -97,8 +97,7 @@ impl ManagerHandle {
         card_definitions: CardDefinitionsService,
         mercenaries: MercenariesService,
         stats_projector: StatsProjectorHandle,
-        waiting_lobby_timeout: Duration,
-        empty_playing_timeout: Duration,
+        (waiting_lobby_timeout, empty_playing_timeout): (Duration, Duration),
     ) -> Self {
         Self {
             registry: MatchRegistry::new(),

@@ -165,6 +165,7 @@ impl<'de> Deserialize<'de> for GameSettings {
     }
 }
 
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "game_type", content = "event", rename_all = "snake_case")]
 pub enum GameEvent {
@@ -355,6 +356,7 @@ impl<'de> Deserialize<'de> for GameCommand {
     }
 }
 
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone)]
 pub enum Game {
     FodinhaClassic(fodinha_classic::Game),
@@ -521,7 +523,6 @@ mod tests {
     use std::{collections::HashMap, sync::Arc};
 
     use crate::models::{
-        Card, Rank, Suit,
         game::{fodinha_classic, fodinha_power},
         id::PlayerId,
     };

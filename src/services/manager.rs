@@ -108,8 +108,7 @@ impl GameManager {
             card_definitions,
             mercenaries,
             stats_projector,
-            waiting_lobby_timeout,
-            empty_playing_timeout,
+            (waiting_lobby_timeout, empty_playing_timeout),
         );
 
         manager.start_abandoned_match_janitor(empty_playing_timeout, abandoned_match_scan_interval);
