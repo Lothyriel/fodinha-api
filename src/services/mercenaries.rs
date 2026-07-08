@@ -23,6 +23,7 @@ pub struct MercenariesService {
     mercenaries: MercenariesRepository,
     storage: ObjectStorage,
     users: UsersRepository,
+    power_card_registry: fodinha_power::PowerCardRegistryStore,
 }
 
 #[derive(Debug)]
@@ -72,11 +73,13 @@ impl MercenariesService {
         mercenaries: MercenariesRepository,
         storage: ObjectStorage,
         users: UsersRepository,
+        power_card_registry: fodinha_power::PowerCardRegistryStore,
     ) -> Self {
         Self {
             mercenaries,
             storage,
             users,
+            power_card_registry,
         }
     }
 
@@ -96,7 +99,8 @@ impl MercenariesService {
         }
 
         let count = definitions.len();
-        fodinha_power::replace_mercenary_definitions(definitions)
+        self.power_card_registry
+            .replace_mercenary_definitions(definitions)
             .map_err(|error| MercenaryError::Script(error.to_string()))?;
 
         Ok(count)
@@ -156,11 +160,9 @@ impl MercenariesService {
         });
 
         self.mercenaries.insert(mercenary.clone()).await?;
-        fodinha_power::upsert_mercenary_definition(mercenary_definition_input(
-            &mercenary,
-            script.clone(),
-        ))
-        .map_err(|error| MercenaryError::Script(error.to_string()))?;
+        self.power_card_registry
+            .upsert_mercenary_definition(mercenary_definition_input(&mercenary, script.clone()))
+            .map_err(|error| MercenaryError::Script(error.to_string()))?;
 
         self.response(mercenary, script)
     }
@@ -236,11 +238,9 @@ impl MercenariesService {
         mercenary.updated_at = Utc::now().timestamp();
 
         self.mercenaries.replace(mercenary.clone()).await?;
-        fodinha_power::upsert_mercenary_definition(mercenary_definition_input(
-            &mercenary,
-            script.clone(),
-        ))
-        .map_err(|error| MercenaryError::Script(error.to_string()))?;
+        self.power_card_registry
+            .upsert_mercenary_definition(mercenary_definition_input(&mercenary, script.clone()))
+            .map_err(|error| MercenaryError::Script(error.to_string()))?;
 
         self.response(mercenary, script)
     }

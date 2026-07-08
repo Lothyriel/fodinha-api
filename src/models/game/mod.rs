@@ -367,6 +367,7 @@ impl Game {
     pub fn start_match_event(
         players: &[PlayerId],
         settings: GameSettings,
+        power_card_registry: &fodinha_power::PowerCardRegistry,
     ) -> Result<MatchEvent, GameError> {
         match settings {
             GameSettings::FodinhaClassic(settings) => {
@@ -375,7 +376,7 @@ impl Game {
                     .map(MatchEvent::Game)
             }
             GameSettings::FodinhaPower(settings) => {
-                fodinha_power::Game::start_match_event(players, settings)
+                fodinha_power::Game::start_match_event(players, settings, power_card_registry)
                     .map(GameEvent::FodinhaPower)
                     .map(MatchEvent::Game)
             }

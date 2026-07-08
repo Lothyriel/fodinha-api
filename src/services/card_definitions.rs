@@ -39,6 +39,7 @@ pub struct CardDefinitionsService {
     mercenaries: MercenariesRepository,
     storage: ObjectStorage,
     users: UsersRepository,
+    power_card_registry: fodinha_power::PowerCardRegistryStore,
 }
 
 #[derive(Debug)]
@@ -152,6 +153,7 @@ impl CardDefinitionsService {
         mercenaries: MercenariesRepository,
         storage: ObjectStorage,
         users: UsersRepository,
+        power_card_registry: fodinha_power::PowerCardRegistryStore,
     ) -> Self {
         Self {
             cards,
@@ -159,6 +161,7 @@ impl CardDefinitionsService {
             mercenaries,
             storage,
             users,
+            power_card_registry,
         }
     }
 
@@ -198,7 +201,8 @@ impl CardDefinitionsService {
         }
 
         if count > 0 {
-            fodinha_power::replace_power_card_registry(definitions, deck_definitions)?;
+            self.power_card_registry
+                .replace_power_card_registry(definitions, deck_definitions)?;
         }
 
         Ok(count)
@@ -309,7 +313,8 @@ impl CardDefinitionsService {
         });
 
         self.cards.insert(card.clone()).await?;
-        fodinha_power::upsert_power_card_definition(definition)?;
+        self.power_card_registry
+            .upsert_power_card_definition(definition)?;
 
         self.card_response(card, script)
     }
@@ -418,7 +423,8 @@ impl CardDefinitionsService {
         });
 
         self.cards.insert(card.clone()).await?;
-        fodinha_power::upsert_power_card_definition(definition)?;
+        self.power_card_registry
+            .upsert_power_card_definition(definition)?;
 
         self.card_response(card, script)
     }
@@ -521,7 +527,8 @@ impl CardDefinitionsService {
         let definition = self.definition_input(&card, script.clone());
 
         self.cards.replace(card.clone()).await?;
-        fodinha_power::upsert_power_card_definition(definition)?;
+        self.power_card_registry
+            .upsert_power_card_definition(definition)?;
 
         self.card_response(card, script)
     }
@@ -606,12 +613,13 @@ impl CardDefinitionsService {
         self.decks.insert(deck.clone()).await?;
 
         if deck.status == CardDeckStatus::Valid {
-            fodinha_power::upsert_power_deck_definition(PowerDeckDefinitionInput {
-                id: deck.deck_id.clone(),
-                card_ids: deck.card_ids.clone(),
-                generic_card_ids: deck.generic_card_ids.clone(),
-                mercenary_card_ids: deck.mercenary_card_ids.clone(),
-            });
+            self.power_card_registry
+                .upsert_power_deck_definition(PowerDeckDefinitionInput {
+                    id: deck.deck_id.clone(),
+                    card_ids: deck.card_ids.clone(),
+                    generic_card_ids: deck.generic_card_ids.clone(),
+                    mercenary_card_ids: deck.mercenary_card_ids.clone(),
+                });
         }
 
         let mut decks = self.hydrate_decks(vec![deck], Some(&creator_id)).await?;

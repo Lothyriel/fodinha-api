@@ -380,7 +380,8 @@ return {
             )
             .await;
             insert_test_power_deck(&database).await;
-            install_test_power_card_definitions();
+
+            install_test_power_card_definitions(&manager.power_card_registry());
 
             let server_manager = manager.clone();
             let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
@@ -523,33 +524,36 @@ return {
         }
     }
 
-    fn install_test_power_card_definitions() {
-        fodinha_power::replace_power_card_definitions(
-            DeckId(TEST_POWER_DECK_ID.into()),
-            vec![
-                fodinha_power::PowerCardDefinitionInput {
-                    id: CardId("heal_10".into()),
-                    name: "Heal 10".to_string(),
-                    description: "Restore 10 lives to yourself.".to_string(),
-                    mana_cost: 2,
-                    card_type: fodinha_power::PowerCardType::Instant,
-                    image_url: None,
-                    script: TEST_HEAL_10_SCRIPT.to_string(),
-                    source: "test/heal_10.lua".to_string(),
-                },
-                fodinha_power::PowerCardDefinitionInput {
-                    id: CardId("strike_10".into()),
-                    name: "Strike 10".to_string(),
-                    description: "Remove 10 lives from a target player.".to_string(),
-                    mana_cost: 2,
-                    card_type: fodinha_power::PowerCardType::Targetable,
-                    image_url: None,
-                    script: TEST_STRIKE_10_SCRIPT.to_string(),
-                    source: "test/strike_10.lua".to_string(),
-                },
-            ],
-        )
-        .expect("valid test power card definitions");
+    fn install_test_power_card_definitions(
+        power_card_registry: &fodinha_power::PowerCardRegistryStore,
+    ) {
+        power_card_registry
+            .replace_power_card_definitions(
+                DeckId(TEST_POWER_DECK_ID.into()),
+                vec![
+                    fodinha_power::PowerCardDefinitionInput {
+                        id: CardId("heal_10".into()),
+                        name: "Heal 10".to_string(),
+                        description: "Restore 10 lives to yourself.".to_string(),
+                        mana_cost: 2,
+                        card_type: fodinha_power::PowerCardType::Instant,
+                        image_url: None,
+                        script: TEST_HEAL_10_SCRIPT.to_string(),
+                        source: "test/heal_10.lua".to_string(),
+                    },
+                    fodinha_power::PowerCardDefinitionInput {
+                        id: CardId("strike_10".into()),
+                        name: "Strike 10".to_string(),
+                        description: "Remove 10 lives from a target player.".to_string(),
+                        mana_cost: 2,
+                        card_type: fodinha_power::PowerCardType::Targetable,
+                        image_url: None,
+                        script: TEST_STRIKE_10_SCRIPT.to_string(),
+                        source: "test/strike_10.lua".to_string(),
+                    },
+                ],
+            )
+            .expect("valid test power card definitions");
     }
 
     async fn insert_test_power_deck(database: &Database) {

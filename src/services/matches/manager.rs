@@ -20,7 +20,7 @@ use crate::{
             CreateLobbyResponse, GetLobbyDto, LobbyInfo, MatchSnapshot, PlayerStatus,
             PlayingMatchSnapshot, ServerMessage,
         },
-        game::{GameCommand, GameSettings, GameType, fodinha_classic},
+        game::{GameCommand, GameSettings, GameType, fodinha_classic, fodinha_power},
         id::{self, MatchId, MercenaryId, PlayerId},
         lobby::{
             LobbyInfoInternal, LobbyPlayerStatus, MatchSnapshotInternal,
@@ -36,8 +36,9 @@ use crate::{
             PowerDeckResponse, UpdateCardDefinitionInput,
         },
         matches::{
-            MatchActor, MatchActorContext, MatchActorMessage, MatchReceiver, MatchRegistry,
-            MatchSender, OutboundMessage, PlayerReceiver, PlayerSender, SenderLookup,
+            MatchActor, MatchActorContext, MatchActorMessage, MatchActorResources, MatchReceiver,
+            MatchRegistry, MatchSender, OutboundMessage, PlayerReceiver, PlayerSender,
+            SenderLookup,
         },
         mercenaries::{
             MercenariesService, MercenaryError, MercenaryResponse, UpsertMercenaryInput,
@@ -62,9 +63,22 @@ pub struct ManagerHandle {
     mercenaries: MercenariesService,
     user_cache: Arc<DashMap<PlayerId, UserClaims>>,
     stats_projector: StatsProjectorHandle,
+    power_card_registry: fodinha_power::PowerCardRegistryStore,
     background: ManagerBackground,
     waiting_lobby_timeout: Duration,
     empty_playing_timeout: Duration,
+}
+
+pub(crate) struct ManagerResources {
+    pub(crate) repo: MatchesRepository,
+    pub(crate) stats_repo: StatsRepository,
+    pub(crate) users_repo: UsersRepository,
+    pub(crate) card_definitions: CardDefinitionsService,
+    pub(crate) mercenaries: MercenariesService,
+    pub(crate) stats_projector: StatsProjectorHandle,
+    pub(crate) power_card_registry: fodinha_power::PowerCardRegistryStore,
+    pub(crate) waiting_lobby_timeout: Duration,
+    pub(crate) empty_playing_timeout: Duration,
 }
 
 #[derive(Clone, Default)]
@@ -90,15 +104,19 @@ pub struct PlayerConnectionContext {
 }
 
 impl ManagerHandle {
-    pub fn new(
-        repo: MatchesRepository,
-        stats_repo: StatsRepository,
-        users_repo: UsersRepository,
-        card_definitions: CardDefinitionsService,
-        mercenaries: MercenariesService,
-        stats_projector: StatsProjectorHandle,
-        (waiting_lobby_timeout, empty_playing_timeout): (Duration, Duration),
-    ) -> Self {
+    pub(crate) fn new(resources: ManagerResources) -> Self {
+        let ManagerResources {
+            repo,
+            stats_repo,
+            users_repo,
+            card_definitions,
+            mercenaries,
+            stats_projector,
+            power_card_registry,
+            waiting_lobby_timeout,
+            empty_playing_timeout,
+        } = resources;
+
         Self {
             registry: MatchRegistry::new(),
             repo,
@@ -108,6 +126,7 @@ impl ManagerHandle {
             mercenaries,
             user_cache: Arc::new(DashMap::new()),
             stats_projector,
+            power_card_registry,
             background: ManagerBackground::default(),
             waiting_lobby_timeout,
             empty_playing_timeout,
@@ -223,6 +242,10 @@ impl ManagerHandle {
             lobby_id: match_id,
             game_type,
         })
+    }
+
+    pub fn power_card_registry(&self) -> fodinha_power::PowerCardRegistryStore {
+        self.power_card_registry.clone()
     }
 
     async fn validate_lobby_settings(&self, settings: &GameSettings) -> Result<(), ManagerError> {
@@ -864,11 +887,15 @@ impl ManagerHandle {
         MatchActor::new(
             match_id,
             game_type,
-            self.repo.clone(),
-            self.stats_projector.clone(),
-            self.background.deferred_tasks.clone(),
-            self.registry.clone(),
-            (self.waiting_lobby_timeout, self.empty_playing_timeout),
+            MatchActorResources {
+                repo: self.repo.clone(),
+                stats_projector: self.stats_projector.clone(),
+                deferred_tasks: self.background.deferred_tasks.clone(),
+                power_card_registry: self.power_card_registry.clone(),
+                registry: self.registry.clone(),
+                waiting_lobby_timeout: self.waiting_lobby_timeout,
+                empty_playing_timeout: self.empty_playing_timeout,
+            },
         )
     }
 }

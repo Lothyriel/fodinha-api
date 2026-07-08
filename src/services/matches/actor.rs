@@ -40,12 +40,23 @@ pub(crate) struct MatchActor {
     repo: MatchesRepository,
     stats_projector: StatsProjectorHandle,
     deferred_tasks: TaskTracker,
+    power_card_registry: fodinha_power::PowerCardRegistryStore,
     match_entries: MatchEntries,
     player_routes: PlayerRoutes,
     last_activity: Instant,
     waiting_lobby_timeout: Duration,
     empty_playing_since: Option<Instant>,
     empty_playing_timeout: Duration,
+}
+
+pub(crate) struct MatchActorResources {
+    pub(crate) repo: MatchesRepository,
+    pub(crate) stats_projector: StatsProjectorHandle,
+    pub(crate) deferred_tasks: TaskTracker,
+    pub(crate) power_card_registry: fodinha_power::PowerCardRegistryStore,
+    pub(crate) registry: MatchRegistry,
+    pub(crate) waiting_lobby_timeout: Duration,
+    pub(crate) empty_playing_timeout: Duration,
 }
 
 enum AppliedEvent {
@@ -66,13 +77,17 @@ impl MatchActor {
     pub(crate) fn new(
         match_id: MatchId,
         game_type: GameType,
-        repo: MatchesRepository,
-        stats_projector: StatsProjectorHandle,
-        deferred_tasks: TaskTracker,
-        registry: MatchRegistry,
-        timeouts: (Duration, Duration),
+        resources: MatchActorResources,
     ) -> Self {
-        let (waiting_lobby_timeout, empty_playing_timeout) = timeouts;
+        let MatchActorResources {
+            repo,
+            stats_projector,
+            deferred_tasks,
+            power_card_registry,
+            registry,
+            waiting_lobby_timeout,
+            empty_playing_timeout,
+        } = resources;
 
         Self {
             match_id,
@@ -84,6 +99,7 @@ impl MatchActor {
             repo,
             stats_projector,
             deferred_tasks,
+            power_card_registry,
             match_entries: registry.matches,
             player_routes: registry.player_routes,
             last_activity: Instant::now(),
@@ -448,7 +464,8 @@ impl MatchActor {
         self.broadcast(msg).await;
 
         if let Some((players, settings)) = self.start_game_data()? {
-            let event = Game::start_match_event(&players, settings)
+            let power_card_registry = self.power_card_registry.snapshot();
+            let event = Game::start_match_event(&players, settings, &power_card_registry)
                 .map_err(|e| ManagerError::Lobby(LobbyError::GameError(e)))?;
             let applied = match self.persist_apply(event).await {
                 Ok(applied) => applied,
@@ -674,6 +691,7 @@ impl MatchActor {
                 draw_seed,
                 passive_effects,
             })) => {
+                let power_card_registry = self.power_card_registry.snapshot();
                 let lobby = self.lobby_mut()?;
                 let players = lobby.get_players_id();
                 let mut power_game = fodinha_power::Game::from_started(
@@ -682,6 +700,7 @@ impl MatchActor {
                     set.clone(),
                     power_set.clone(),
                     draw_seed,
+                    power_card_registry,
                 )
                 .map_err(|e| ManagerError::Lobby(LobbyError::GameError(e)))?;
                 let (passive_mana, passive_power_decks) =

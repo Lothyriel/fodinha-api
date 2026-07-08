@@ -2,7 +2,7 @@ use std::{
     cell::RefCell,
     collections::HashMap,
     rc::Rc,
-    sync::{LazyLock, RwLock},
+    sync::{Arc, RwLock},
 };
 
 use indexmap::IndexMap;
@@ -42,6 +42,7 @@ pub struct Game {
     core: fodinha_classic::Game,
     power_decks: IndexMap<PlayerId, Vec<PowerCard>>,
     mana: IndexMap<PlayerId, PlayerMana>,
+    registry: PowerCardRegistry,
     power_deck_id: DeckId,
     player_mercenaries: HashMap<PlayerId, MercenaryId>,
     power_seed: i64,
@@ -475,129 +476,290 @@ impl MercenaryDefinition {
     }
 }
 
-static POWER_CARD_DEFINITIONS: RwLock<Vec<PowerCardDefinition>> = RwLock::new(Vec::new());
-static POWER_DECK_DEFINITIONS: LazyLock<RwLock<HashMap<DeckId, PowerDeckDefinition>>> =
-    LazyLock::new(|| RwLock::new(HashMap::new()));
-static MERCENARY_DEFINITIONS: LazyLock<RwLock<HashMap<MercenaryId, MercenaryDefinition>>> =
-    LazyLock::new(|| RwLock::new(HashMap::new()));
-
-pub fn replace_power_card_registry(
-    definitions: Vec<PowerCardDefinitionInput>,
-    decks: Vec<PowerDeckDefinitionInput>,
-) -> Result<(), PowerCardDefinitionError> {
-    let definitions = validate_power_card_definitions(definitions)?;
-    let mut registry = POWER_CARD_DEFINITIONS
-        .write()
-        .expect("power card definitions registry lock poisoned");
-    let mut deck_registry = POWER_DECK_DEFINITIONS
-        .write()
-        .expect("power deck definitions registry lock poisoned");
-
-    *registry = definitions;
-    *deck_registry = decks
-        .into_iter()
-        .map(|deck| (deck.id.clone(), PowerDeckDefinition::from_input(deck)))
-        .collect();
-
-    Ok(())
+#[derive(Debug, Clone, Default)]
+pub struct PowerCardRegistry {
+    card_definitions: Arc<HashMap<CardId, PowerCardDefinition>>,
+    deck_definitions: Arc<HashMap<DeckId, PowerDeckDefinition>>,
+    mercenary_definitions: Arc<HashMap<MercenaryId, MercenaryDefinition>>,
 }
 
-pub fn replace_power_card_definitions(
-    deck_id: DeckId,
-    definitions: Vec<PowerCardDefinitionInput>,
-) -> Result<(), PowerCardDefinitionError> {
-    let card_ids = definitions
-        .iter()
-        .map(|definition| definition.id.clone())
-        .collect();
+impl PowerCardRegistry {
+    pub fn replace_power_card_registry(
+        &mut self,
+        definitions: Vec<PowerCardDefinitionInput>,
+        decks: Vec<PowerDeckDefinitionInput>,
+    ) -> Result<(), PowerCardDefinitionError> {
+        let definitions = validate_power_card_definitions(definitions)?;
 
-    replace_power_card_registry(
-        definitions,
-        vec![PowerDeckDefinitionInput {
-            id: deck_id,
-            card_ids,
-            generic_card_ids: Vec::new(),
-            mercenary_card_ids: HashMap::new(),
-        }],
-    )
-}
+        *Arc::make_mut(&mut self.card_definitions) = definitions
+            .into_iter()
+            .map(|definition| (definition.id.clone(), definition))
+            .collect();
+        *Arc::make_mut(&mut self.deck_definitions) = decks
+            .into_iter()
+            .map(|deck| (deck.id.clone(), PowerDeckDefinition::from_input(deck)))
+            .collect();
 
-pub fn upsert_power_card_definition(
-    definition: PowerCardDefinitionInput,
-) -> Result<(), PowerCardDefinitionError> {
-    let definition = PowerCardDefinition::from_input(definition)?;
-    let mut registry = POWER_CARD_DEFINITIONS
-        .write()
-        .expect("power card definitions registry lock poisoned");
-
-    if let Some(existing) = registry.iter_mut().find(|card| card.id == definition.id) {
-        *existing = definition;
-    } else {
-        registry.push(definition);
+        Ok(())
     }
 
-    Ok(())
-}
+    pub fn replace_power_card_definitions(
+        &mut self,
+        deck_id: DeckId,
+        definitions: Vec<PowerCardDefinitionInput>,
+    ) -> Result<(), PowerCardDefinitionError> {
+        let card_ids = definitions
+            .iter()
+            .map(|definition| definition.id.clone())
+            .collect();
 
-pub fn upsert_power_deck_definition(definition: PowerDeckDefinitionInput) {
-    POWER_DECK_DEFINITIONS
-        .write()
-        .expect("power deck definitions registry lock poisoned")
-        .insert(
+        self.replace_power_card_registry(
+            definitions,
+            vec![PowerDeckDefinitionInput {
+                id: deck_id,
+                card_ids,
+                generic_card_ids: Vec::new(),
+                mercenary_card_ids: HashMap::new(),
+            }],
+        )
+    }
+
+    pub fn upsert_power_card_definition(
+        &mut self,
+        definition: PowerCardDefinitionInput,
+    ) -> Result<(), PowerCardDefinitionError> {
+        let definition = PowerCardDefinition::from_input(definition)?;
+
+        Arc::make_mut(&mut self.card_definitions).insert(definition.id.clone(), definition);
+
+        Ok(())
+    }
+
+    pub fn upsert_power_deck_definition(&mut self, definition: PowerDeckDefinitionInput) {
+        Arc::make_mut(&mut self.deck_definitions).insert(
             definition.id.clone(),
             PowerDeckDefinition::from_input(definition),
         );
-}
-
-pub fn replace_mercenary_definitions(
-    definitions: Vec<MercenaryDefinitionInput>,
-) -> Result<(), PowerCardDefinitionError> {
-    let mut loaded = HashMap::new();
-
-    for definition in definitions {
-        let definition = MercenaryDefinition::from_input(definition)?;
-
-        if loaded.contains_key(&definition.id) {
-            return Err(PowerCardDefinitionError::DuplicateId {
-                id: definition.id.to_string(),
-                path: definition.passive_source,
-            });
-        }
-
-        loaded.insert(definition.id.clone(), definition);
     }
 
-    *MERCENARY_DEFINITIONS
-        .write()
-        .expect("mercenary definitions registry lock poisoned") = loaded;
+    pub fn replace_mercenary_definitions(
+        &mut self,
+        definitions: Vec<MercenaryDefinitionInput>,
+    ) -> Result<(), PowerCardDefinitionError> {
+        let mut loaded = HashMap::new();
 
-    Ok(())
+        for definition in definitions {
+            let definition = MercenaryDefinition::from_input(definition)?;
+
+            if loaded.contains_key(&definition.id) {
+                return Err(PowerCardDefinitionError::DuplicateId {
+                    id: definition.id.to_string(),
+                    path: definition.passive_source,
+                });
+            }
+
+            loaded.insert(definition.id.clone(), definition);
+        }
+
+        *Arc::make_mut(&mut self.mercenary_definitions) = loaded;
+
+        Ok(())
+    }
+
+    pub fn upsert_mercenary_definition(
+        &mut self,
+        definition: MercenaryDefinitionInput,
+    ) -> Result<(), PowerCardDefinitionError> {
+        let definition = MercenaryDefinition::from_input(definition)?;
+
+        Arc::make_mut(&mut self.mercenary_definitions).insert(definition.id.clone(), definition);
+
+        Ok(())
+    }
+
+    fn mercenary_definition(&self, id: &MercenaryId) -> Option<MercenaryDefinition> {
+        self.mercenary_definitions.get(id).cloned()
+    }
+
+    fn power_deck_definition(
+        &self,
+        deck_id: &DeckId,
+    ) -> Result<PowerDeckDefinition, PowerCardDefinitionError> {
+        self.deck_definitions
+            .get(deck_id)
+            .cloned()
+            .ok_or(PowerCardDefinitionError::MissingDefinitions)
+    }
+
+    fn power_card_definition(
+        &self,
+        deck_id: &DeckId,
+        id: &CardId,
+    ) -> Result<Option<PowerCardDefinition>, PowerCardDefinitionError> {
+        Ok(self
+            .power_card_definitions(deck_id)?
+            .iter()
+            .find(|definition| &definition.id == id)
+            .cloned())
+    }
+
+    fn power_card_definitions(
+        &self,
+        deck_id: &DeckId,
+    ) -> Result<Vec<PowerCardDefinition>, PowerCardDefinitionError> {
+        let deck_card_ids = self.power_deck_definition(deck_id)?.all_card_ids();
+
+        self.power_card_definitions_from_ids(&deck_card_ids)
+    }
+
+    fn power_card_definitions_from_ids(
+        &self,
+        card_ids: &[CardId],
+    ) -> Result<Vec<PowerCardDefinition>, PowerCardDefinitionError> {
+        let definitions = card_ids
+            .iter()
+            .filter_map(|card_id| self.card_definitions.get(card_id).cloned())
+            .collect::<Vec<_>>();
+
+        if definitions.is_empty() {
+            return Err(PowerCardDefinitionError::MissingDefinitions);
+        }
+
+        Ok(definitions)
+    }
+
+    fn draw_power_cards_for_player(
+        &self,
+        deck_id: &DeckId,
+        player_mercenaries: &HashMap<PlayerId, MercenaryId>,
+        player_id: &PlayerId,
+        count: usize,
+        (seed, sequence): (i64, i64),
+        offset: usize,
+    ) -> Result<Vec<PowerCard>, PowerCardDefinitionError> {
+        let deck_definition = self.power_deck_definition(deck_id)?;
+        let definitions =
+            self.draw_power_card_definitions(&deck_definition, player_mercenaries, player_id)?;
+        let needed_cards = offset.saturating_add(count);
+        let mut deck = (0..needed_cards)
+            .map(|idx| definitions[idx % definitions.len()].to_card())
+            .collect::<Vec<_>>();
+
+        shuffle_power_cards(&mut deck, seed, sequence);
+
+        Ok(deck.into_iter().skip(offset).take(count).collect())
+    }
+
+    fn draw_power_card_definitions(
+        &self,
+        deck_definition: &PowerDeckDefinition,
+        player_mercenaries: &HashMap<PlayerId, MercenaryId>,
+        player_id: &PlayerId,
+    ) -> Result<Vec<PowerCardDefinition>, PowerCardDefinitionError> {
+        if !deck_definition.is_partitioned() {
+            return self.power_card_definitions_from_ids(&deck_definition.card_ids);
+        }
+
+        let mut card_ids = deck_definition.generic_card_ids.clone();
+        if let Some(mercenary_id) = player_mercenaries.get(player_id)
+            && let Some(mercenary_card_ids) = deck_definition.mercenary_card_ids.get(mercenary_id)
+        {
+            card_ids.extend(mercenary_card_ids.iter().cloned());
+        }
+
+        self.power_card_definitions_from_ids(&card_ids)
+    }
 }
 
-pub fn upsert_mercenary_definition(
-    definition: MercenaryDefinitionInput,
-) -> Result<(), PowerCardDefinitionError> {
-    let definition = MercenaryDefinition::from_input(definition)?;
+#[derive(Debug, Clone, Default)]
+pub struct PowerCardRegistryStore {
+    registry: Arc<RwLock<PowerCardRegistry>>,
+}
 
-    MERCENARY_DEFINITIONS
-        .write()
-        .expect("mercenary definitions registry lock poisoned")
-        .insert(definition.id.clone(), definition);
+impl PowerCardRegistryStore {
+    pub fn snapshot(&self) -> PowerCardRegistry {
+        self.registry
+            .read()
+            .expect("power card registry lock poisoned")
+            .clone()
+    }
 
-    Ok(())
+    pub fn replace_power_card_registry(
+        &self,
+        definitions: Vec<PowerCardDefinitionInput>,
+        decks: Vec<PowerDeckDefinitionInput>,
+    ) -> Result<(), PowerCardDefinitionError> {
+        self.registry
+            .write()
+            .expect("power card registry lock poisoned")
+            .replace_power_card_registry(definitions, decks)
+    }
+
+    pub fn replace_power_card_definitions(
+        &self,
+        deck_id: DeckId,
+        definitions: Vec<PowerCardDefinitionInput>,
+    ) -> Result<(), PowerCardDefinitionError> {
+        self.registry
+            .write()
+            .expect("power card registry lock poisoned")
+            .replace_power_card_definitions(deck_id, definitions)
+    }
+
+    pub fn upsert_power_card_definition(
+        &self,
+        definition: PowerCardDefinitionInput,
+    ) -> Result<(), PowerCardDefinitionError> {
+        self.registry
+            .write()
+            .expect("power card registry lock poisoned")
+            .upsert_power_card_definition(definition)
+    }
+
+    pub fn upsert_power_deck_definition(&self, definition: PowerDeckDefinitionInput) {
+        self.registry
+            .write()
+            .expect("power card registry lock poisoned")
+            .upsert_power_deck_definition(definition);
+    }
+
+    pub fn replace_mercenary_definitions(
+        &self,
+        definitions: Vec<MercenaryDefinitionInput>,
+    ) -> Result<(), PowerCardDefinitionError> {
+        self.registry
+            .write()
+            .expect("power card registry lock poisoned")
+            .replace_mercenary_definitions(definitions)
+    }
+
+    pub fn upsert_mercenary_definition(
+        &self,
+        definition: MercenaryDefinitionInput,
+    ) -> Result<(), PowerCardDefinitionError> {
+        self.registry
+            .write()
+            .expect("power card registry lock poisoned")
+            .upsert_mercenary_definition(definition)
+    }
 }
 
 impl Game {
-    pub fn new(players: &[PlayerId], settings: GameSettings) -> Result<Self, GameError> {
-        Self::new_with_seeds(players, settings, rand::random(), rand::random())
+    pub fn new(
+        players: &[PlayerId],
+        settings: GameSettings,
+        registry: PowerCardRegistry,
+    ) -> Result<Self, GameError> {
+        Self::new_with_seeds(players, settings, rand::random(), rand::random(), registry)
     }
 
     pub fn new_with_seed(
         players: &[PlayerId],
         settings: GameSettings,
         seed: i64,
+        registry: PowerCardRegistry,
     ) -> Result<Self, GameError> {
-        Self::new_with_seeds(players, settings, seed, seed)
+        Self::new_with_seeds(players, settings, seed, seed, registry)
     }
 
     pub fn new_with_seeds(
@@ -605,8 +767,10 @@ impl Game {
         settings: GameSettings,
         seed: i64,
         draw_seed: i64,
+        registry: PowerCardRegistry,
     ) -> Result<Self, GameError> {
-        let event = Self::start_match_event_with_seeds(players, settings, seed, draw_seed)?;
+        let event =
+            Self::start_match_event_with_seeds(players, settings, seed, draw_seed, &registry)?;
 
         match event {
             MatchEvent::GameStarted {
@@ -616,7 +780,8 @@ impl Game {
                 draw_seed,
                 passive_effects,
             } => {
-                let mut game = Self::from_started(players, settings, set, power_set, draw_seed)?;
+                let mut game =
+                    Self::from_started(players, settings, set, power_set, draw_seed, registry)?;
                 game.apply_effects(&passive_effects);
 
                 Ok(game)
@@ -628,16 +793,24 @@ impl Game {
     pub fn start_match_event(
         players: &[PlayerId],
         settings: GameSettings,
+        registry: &PowerCardRegistry,
     ) -> Result<MatchEvent, GameError> {
-        Self::start_match_event_with_seeds(players, settings, rand::random(), rand::random())
+        Self::start_match_event_with_seeds(
+            players,
+            settings,
+            rand::random(),
+            rand::random(),
+            registry,
+        )
     }
 
     pub fn start_match_event_with_seed(
         players: &[PlayerId],
         settings: GameSettings,
         seed: i64,
+        registry: &PowerCardRegistry,
     ) -> Result<MatchEvent, GameError> {
-        Self::start_match_event_with_seeds(players, settings, seed, seed)
+        Self::start_match_event_with_seeds(players, settings, seed, seed, registry)
     }
 
     pub fn start_match_event_with_seeds(
@@ -645,6 +818,7 @@ impl Game {
         settings: GameSettings,
         seed: i64,
         draw_seed: i64,
+        registry: &PowerCardRegistry,
     ) -> Result<MatchEvent, GameError> {
         let classic_settings = Self::classic_settings(&settings);
         let classic_event =
@@ -659,6 +833,7 @@ impl Game {
             &settings.power_deck_id,
             &settings.player_mercenaries,
             Self::initial_mana(players),
+            registry,
         )?;
         let game = Self::from_started(
             players,
@@ -666,6 +841,7 @@ impl Game {
             set.clone(),
             power_set.clone(),
             draw_seed,
+            registry.clone(),
         )?;
         let passive_effects = game
             .passive_effects(PassiveGameEvent::MatchStarted)
@@ -686,6 +862,7 @@ impl Game {
         set: NewSet,
         power_set: PowerSet,
         draw_seed: i64,
+        registry: PowerCardRegistry,
     ) -> Result<Self, GameError> {
         let classic = fodinha_classic::Game::from_started_with_rules(
             players,
@@ -706,6 +883,7 @@ impl Game {
             core: classic,
             power_decks: power_set.decks,
             mana,
+            registry,
             power_deck_id: settings.power_deck_id,
             player_mercenaries: settings.player_mercenaries,
             power_seed: power_set.shuffle.seed,
@@ -818,7 +996,9 @@ impl Game {
             .cloned()
             .ok_or(PowerCardError::InvalidPowerCard)?;
 
-        let definition = power_card_definition(&self.power_deck_id, &card.id)?
+        let definition = self
+            .registry
+            .power_card_definition(&self.power_deck_id, &card.id)?
             .ok_or(PowerCardError::InvalidPowerCard)?;
 
         if definition.card_type.needs_target() && target_player_id.is_none() {
@@ -1036,7 +1216,7 @@ impl Game {
                 continue;
             }
 
-            let Some(definition) = mercenary_definition(mercenary_id) else {
+            let Some(definition) = self.registry.mercenary_definition(mercenary_id) else {
                 continue;
             };
             let output = super::power_lua::run_passive_script(
@@ -1101,6 +1281,7 @@ impl Game {
 
     fn power_card_drawer(&self) -> DrawPowerCardsFn {
         let power_deck_id = self.power_deck_id.clone();
+        let registry = self.registry.clone();
         let player_mercenaries = self.player_mercenaries.clone();
         let draw_seed = self.draw_seed;
         let next_power_shuffle_sequence = self.next_power_shuffle_sequence;
@@ -1135,16 +1316,16 @@ impl Game {
                 .get(player_id)
                 .copied()
                 .unwrap_or_default();
-            let cards = draw_power_cards_for_player(
-                &power_deck_id,
-                &player_mercenaries,
-                player_id,
-                count,
-                draw_seed,
-                next_power_shuffle_sequence,
-                offset,
-            )
-            .map_err(|error| error.to_string())?;
+            let cards = registry
+                .draw_power_cards_for_player(
+                    &power_deck_id,
+                    &player_mercenaries,
+                    player_id,
+                    count,
+                    (draw_seed, next_power_shuffle_sequence),
+                    offset,
+                )
+                .map_err(|error| error.to_string())?;
 
             draw_offsets
                 .borrow_mut()
@@ -1303,6 +1484,7 @@ impl Game {
             &self.power_deck_id,
             &self.player_mercenaries,
             self.next_set_mana(players),
+            &self.registry,
         )
         .expect("FodinhaPower card definitions are loaded before the game starts")
     }
@@ -1314,8 +1496,9 @@ impl Game {
         power_deck_id: &DeckId,
         player_mercenaries: &HashMap<PlayerId, MercenaryId>,
         mana: IndexMap<PlayerId, PlayerMana>,
+        registry: &PowerCardRegistry,
     ) -> Result<PowerSet, PowerCardDefinitionError> {
-        let definition = power_deck_definition(power_deck_id)?;
+        let definition = registry.power_deck_definition(power_deck_id)?;
         let decks = if definition.is_partitioned() {
             Self::new_partitioned_power_decks(
                 players,
@@ -1323,9 +1506,10 @@ impl Game {
                 &definition,
                 seed,
                 sequence,
+                registry,
             )?
         } else {
-            Self::new_unpartitioned_power_decks(players, &definition, seed, sequence)?
+            Self::new_unpartitioned_power_decks(players, &definition, seed, sequence, registry)?
         };
 
         Ok(PowerSet {
@@ -1340,8 +1524,9 @@ impl Game {
         deck_definition: &PowerDeckDefinition,
         seed: i64,
         sequence: i64,
+        registry: &PowerCardRegistry,
     ) -> Result<IndexMap<PlayerId, Vec<PowerCard>>, PowerCardDefinitionError> {
-        let definitions = power_card_definitions_from_ids(&deck_definition.card_ids)?;
+        let definitions = registry.power_card_definitions_from_ids(&deck_definition.card_ids)?;
         let needed_cards = players.len().saturating_mul(POWER_CARDS_PER_PLAYER);
         let mut deck = (0..needed_cards)
             .map(|idx| definitions[idx % definitions.len()].to_card())
@@ -1367,8 +1552,10 @@ impl Game {
         deck_definition: &PowerDeckDefinition,
         seed: i64,
         sequence: i64,
+        registry: &PowerCardRegistry,
     ) -> Result<IndexMap<PlayerId, Vec<PowerCard>>, PowerCardDefinitionError> {
-        let generic_cards = power_card_definitions_from_ids(&deck_definition.generic_card_ids)?;
+        let generic_cards =
+            registry.power_card_definitions_from_ids(&deck_definition.generic_card_ids)?;
         let mut generic_deck = (0..players.len().saturating_mul(GENERIC_POWER_CARDS_PER_PLAYER))
             .map(|idx| generic_cards[idx % generic_cards.len()].to_card())
             .collect::<Vec<_>>();
@@ -1384,7 +1571,7 @@ impl Game {
             if let Some(mercenary_id) = player_mercenaries.get(player_id)
                 && let Some(card_ids) = deck_definition.mercenary_card_ids.get(mercenary_id)
             {
-                let mercenary_cards = power_card_definitions_from_ids(card_ids)?;
+                let mercenary_cards = registry.power_card_definitions_from_ids(card_ids)?;
                 let mut mercenary_deck = (0..MERCENARY_POWER_CARDS_PER_PLAYER)
                     .map(|idx| mercenary_cards[idx % mercenary_cards.len()].to_card())
                     .collect::<Vec<_>>();
@@ -1477,106 +1664,6 @@ fn mana_to_dto(mana: &IndexMap<PlayerId, PlayerMana>) -> HashMap<PlayerId, Playe
         .collect()
 }
 
-fn draw_power_cards_for_player(
-    deck_id: &DeckId,
-    player_mercenaries: &HashMap<PlayerId, MercenaryId>,
-    player_id: &PlayerId,
-    count: usize,
-    seed: i64,
-    sequence: i64,
-    offset: usize,
-) -> Result<Vec<PowerCard>, PowerCardDefinitionError> {
-    let deck_definition = power_deck_definition(deck_id)?;
-    let definitions = draw_power_card_definitions(&deck_definition, player_mercenaries, player_id)?;
-    let needed_cards = offset.saturating_add(count);
-    let mut deck = (0..needed_cards)
-        .map(|idx| definitions[idx % definitions.len()].to_card())
-        .collect::<Vec<_>>();
-
-    shuffle_power_cards(&mut deck, seed, sequence);
-
-    Ok(deck.into_iter().skip(offset).take(count).collect())
-}
-
-fn draw_power_card_definitions(
-    deck_definition: &PowerDeckDefinition,
-    player_mercenaries: &HashMap<PlayerId, MercenaryId>,
-    player_id: &PlayerId,
-) -> Result<Vec<PowerCardDefinition>, PowerCardDefinitionError> {
-    if !deck_definition.is_partitioned() {
-        return power_card_definitions_from_ids(&deck_definition.card_ids);
-    }
-
-    let mut card_ids = deck_definition.generic_card_ids.clone();
-    if let Some(mercenary_id) = player_mercenaries.get(player_id)
-        && let Some(mercenary_card_ids) = deck_definition.mercenary_card_ids.get(mercenary_id)
-    {
-        card_ids.extend(mercenary_card_ids.iter().cloned());
-    }
-
-    power_card_definitions_from_ids(&card_ids)
-}
-
-fn power_card_definition(
-    deck_id: &DeckId,
-    id: &CardId,
-) -> Result<Option<PowerCardDefinition>, PowerCardDefinitionError> {
-    Ok(power_card_definitions(deck_id)?
-        .iter()
-        .find(|definition| &definition.id == id)
-        .cloned())
-}
-
-fn mercenary_definition(id: &MercenaryId) -> Option<MercenaryDefinition> {
-    MERCENARY_DEFINITIONS
-        .read()
-        .expect("mercenary definitions registry lock poisoned")
-        .get(id)
-        .cloned()
-}
-
-fn power_deck_definition(
-    deck_id: &DeckId,
-) -> Result<PowerDeckDefinition, PowerCardDefinitionError> {
-    POWER_DECK_DEFINITIONS
-        .read()
-        .expect("power deck definitions registry lock poisoned")
-        .get(deck_id)
-        .cloned()
-        .ok_or(PowerCardDefinitionError::MissingDefinitions)
-}
-
-fn power_card_definitions(
-    deck_id: &DeckId,
-) -> Result<Vec<PowerCardDefinition>, PowerCardDefinitionError> {
-    let deck_card_ids = power_deck_definition(deck_id)?.all_card_ids();
-
-    power_card_definitions_from_ids(&deck_card_ids)
-}
-
-fn power_card_definitions_from_ids(
-    card_ids: &[CardId],
-) -> Result<Vec<PowerCardDefinition>, PowerCardDefinitionError> {
-    let registry = POWER_CARD_DEFINITIONS
-        .read()
-        .expect("power card definitions registry lock poisoned");
-    let definitions = card_ids
-        .iter()
-        .filter_map(|card_id| {
-            registry
-                .iter()
-                .find(|definition| &definition.id == card_id)
-                .cloned()
-        })
-        .collect::<Vec<_>>();
-
-    if definitions.is_empty() {
-        return Err(PowerCardDefinitionError::MissingDefinitions);
-    }
-
-    Ok(definitions)
-}
-
 fn validate_power_card_definitions(
     definitions: Vec<PowerCardDefinitionInput>,
 ) -> Result<Vec<PowerCardDefinition>, PowerCardDefinitionError> {
@@ -1611,7 +1698,7 @@ fn shuffle_power_cards(deck: &mut [PowerCard], seed: i64, sequence: i64) {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{Arc, Mutex, MutexGuard};
+    use std::sync::Arc;
 
     use crate::models::id::PlayerId;
 
@@ -1666,17 +1753,18 @@ return {
 }
 "#;
 
-    static POWER_CARD_TEST_LOCK: Mutex<()> = Mutex::new(());
-
-    fn power_card_test_lock() -> MutexGuard<'static, ()> {
-        POWER_CARD_TEST_LOCK
-            .lock()
-            .expect("power card test lock poisoned")
+    fn test_registry() -> PowerCardRegistry {
+        registry_with_power_card_definitions(test_power_card_definitions())
     }
 
-    pub(crate) fn install_test_power_card_definitions() {
-        replace_power_card_definitions(test_deck_id(), test_power_card_definitions())
+    fn registry_with_power_card_definitions(
+        definitions: Vec<PowerCardDefinitionInput>,
+    ) -> PowerCardRegistry {
+        let mut registry = PowerCardRegistry::default();
+        registry
+            .replace_power_card_definitions(test_deck_id(), definitions)
             .expect("valid test power card definitions");
+        registry
     }
 
     fn test_power_card_definitions() -> Vec<PowerCardDefinitionInput> {
@@ -1724,30 +1812,34 @@ return {
         }
     }
 
-    fn install_partitioned_power_deck() {
-        replace_power_card_registry(
-            partitioned_power_card_definitions(),
-            vec![PowerDeckDefinitionInput {
-                id: test_deck_id(),
-                card_ids: (0..10)
-                    .map(|idx| card_id(&format!("generic_{idx}")))
-                    .chain((0..5).map(|idx| card_id(&format!("artemis_{idx}"))))
-                    .collect(),
-                generic_card_ids: (0..10)
-                    .map(|idx| card_id(&format!("generic_{idx}")))
-                    .collect(),
-                mercenary_card_ids: HashMap::from([(
-                    mercenary_id("artemis"),
-                    (0..5)
-                        .map(|idx| card_id(&format!("artemis_{idx}")))
+    fn partitioned_power_deck_registry() -> PowerCardRegistry {
+        let mut registry = PowerCardRegistry::default();
+        registry
+            .replace_power_card_registry(
+                partitioned_power_card_definitions(),
+                vec![PowerDeckDefinitionInput {
+                    id: test_deck_id(),
+                    card_ids: (0..10)
+                        .map(|idx| card_id(&format!("generic_{idx}")))
+                        .chain((0..5).map(|idx| card_id(&format!("artemis_{idx}"))))
                         .collect(),
-                )]),
-            }],
-        )
-        .expect("valid partitioned deck");
+                    generic_card_ids: (0..10)
+                        .map(|idx| card_id(&format!("generic_{idx}")))
+                        .collect(),
+                    mercenary_card_ids: HashMap::from([(
+                        mercenary_id("artemis"),
+                        (0..5)
+                            .map(|idx| card_id(&format!("artemis_{idx}")))
+                            .collect(),
+                    )]),
+                }],
+            )
+            .expect("valid partitioned deck");
+
+        registry
     }
 
-    fn install_draw_power_card_definitions() -> CardId {
+    fn draw_power_card_registry() -> (PowerCardRegistry, CardId) {
         let draw_id = card_id("draw_eight");
         let mut definitions = vec![PowerCardDefinitionInput {
             id: draw_id.clone(),
@@ -1778,29 +1870,30 @@ return {
             source: format!("test/drawn_{idx}.lua"),
         }));
 
-        replace_power_card_definitions(test_deck_id(), definitions)
-            .expect("valid draw card definitions");
+        let registry = registry_with_power_card_definitions(definitions);
 
-        draw_id
+        (registry, draw_id)
     }
 
-    fn install_test_mercenary_passives() {
-        install_mercenary_passive(BID_HEAL_PASSIVE_SCRIPT);
+    fn test_registry_with_mercenary_passives() -> PowerCardRegistry {
+        test_registry_with_mercenary_passive(BID_HEAL_PASSIVE_SCRIPT)
     }
 
-    fn install_mercenary_passive(script: &str) {
-        replace_mercenary_definitions(vec![MercenaryDefinitionInput {
-            id: mercenary_id("artemis"),
-            name: "Artemis".to_string(),
-            passive_script: script.to_string(),
-            passive_source: "test/artemis_passive.lua".to_string(),
-        }])
-        .expect("valid mercenary passive");
+    fn test_registry_with_mercenary_passive(script: &str) -> PowerCardRegistry {
+        let mut registry = test_registry();
+        registry
+            .replace_mercenary_definitions(vec![MercenaryDefinitionInput {
+                id: mercenary_id("artemis"),
+                name: "Artemis".to_string(),
+                passive_script: script.to_string(),
+                passive_source: "test/artemis_passive.lua".to_string(),
+            }])
+            .expect("valid mercenary passive");
+        registry
     }
 
     fn new_test_game(players: &[PlayerId]) -> Game {
-        install_test_power_card_definitions();
-        Game::new_with_seed(players, test_settings(), 42).unwrap()
+        Game::new_with_seed(players, test_settings(), 42, test_registry()).unwrap()
     }
 
     fn card_id(value: &str) -> CardId {
@@ -1835,16 +1928,20 @@ return {
     }
 
     fn drawn_power_card_ids(
+        registry: &PowerCardRegistry,
         players: &[PlayerId],
         player_id: &PlayerId,
         draw_id: &CardId,
         draw_seed: i64,
     ) -> Vec<CardId> {
-        let mut game = Game::new_with_seeds(players, test_settings(), 42, draw_seed).unwrap();
+        let mut game =
+            Game::new_with_seeds(players, test_settings(), 42, draw_seed, registry.clone())
+                .unwrap();
         game.power_decks.insert(
             player_id.clone(),
             vec![
-                power_card_definition(&test_deck_id(), draw_id)
+                registry
+                    .power_card_definition(&test_deck_id(), draw_id)
                     .unwrap()
                     .unwrap()
                     .to_card(),
@@ -1868,11 +1965,18 @@ return {
         game.validate_turn(Turn { player_id, card }).unwrap()
     }
 
+    fn registry_power_card(registry: &PowerCardRegistry, id: &str) -> PowerCard {
+        registry
+            .power_card_definition(&test_deck_id(), &card_id(id))
+            .unwrap()
+            .unwrap()
+            .to_card()
+    }
+
     #[test]
     fn loads_power_cards_from_runtime_registry() {
-        let _lock = power_card_test_lock();
-        install_test_power_card_definitions();
-        let definitions = power_card_definitions(&test_deck_id()).unwrap();
+        let registry = test_registry();
+        let definitions = registry.power_card_definitions(&test_deck_id()).unwrap();
 
         assert!(
             definitions
@@ -1893,12 +1997,11 @@ return {
 
     #[test]
     fn game_starts_with_initial_mana_pool() {
-        let _lock = power_card_test_lock();
-        install_test_power_card_definitions();
+        let registry = test_registry();
         let players = test_players();
 
         let MatchEvent::GameStarted { power_set, .. } =
-            Game::start_match_event_with_seed(&players, test_settings(), 42).unwrap()
+            Game::start_match_event_with_seed(&players, test_settings(), 42, &registry).unwrap()
         else {
             panic!("expected game started event");
         };
@@ -1917,12 +2020,12 @@ return {
 
     #[test]
     fn game_started_event_persists_draw_seed() {
-        let _lock = power_card_test_lock();
-        install_test_power_card_definitions();
+        let registry = test_registry();
         let players = test_players();
 
         let MatchEvent::GameStarted { draw_seed, .. } =
-            Game::start_match_event_with_seeds(&players, test_settings(), 42, 77).unwrap()
+            Game::start_match_event_with_seeds(&players, test_settings(), 42, 77, &registry)
+                .unwrap()
         else {
             panic!("expected game started event");
         };
@@ -1932,14 +2035,13 @@ return {
 
     #[test]
     fn draw_power_cards_uses_persisted_draw_seed() {
-        let _lock = power_card_test_lock();
-        let draw_id = install_draw_power_card_definitions();
+        let (registry, draw_id) = draw_power_card_registry();
         let [player1, player2] = test_players();
         let players = [player1.clone(), player2];
 
-        let first = drawn_power_card_ids(&players, &player1, &draw_id, 77);
-        let repeated = drawn_power_card_ids(&players, &player1, &draw_id, 77);
-        let changed = drawn_power_card_ids(&players, &player1, &draw_id, 123_456_789);
+        let first = drawn_power_card_ids(&registry, &players, &player1, &draw_id, 77);
+        let repeated = drawn_power_card_ids(&registry, &players, &player1, &draw_id, 77);
+        let changed = drawn_power_card_ids(&registry, &players, &player1, &draw_id, 123_456_789);
 
         assert_eq!(first, repeated);
         assert_ne!(first, changed);
@@ -1947,8 +2049,7 @@ return {
 
     #[test]
     fn partitioned_deck_deals_generic_and_mercenary_cards() {
-        let _lock = power_card_test_lock();
-        install_partitioned_power_deck();
+        let registry = partitioned_power_deck_registry();
         let [player1, player2] = test_players();
         let players = [player1.clone(), player2.clone()];
         let settings = GameSettings {
@@ -1961,7 +2062,7 @@ return {
         };
 
         let MatchEvent::GameStarted { power_set, .. } =
-            Game::start_match_event_with_seed(&players, settings, 42).unwrap()
+            Game::start_match_event_with_seed(&players, settings, 42, &registry).unwrap()
         else {
             panic!("expected game started event");
         };
@@ -1985,9 +2086,7 @@ return {
 
     #[test]
     fn mercenary_passive_effect_is_persisted_on_bid_event() {
-        let _lock = power_card_test_lock();
-        install_test_power_card_definitions();
-        install_test_mercenary_passives();
+        let registry = test_registry_with_mercenary_passives();
         let [player1, player2] = test_players();
         let players = [player1.clone(), player2.clone()];
         let settings = GameSettings {
@@ -1995,7 +2094,7 @@ return {
             power_deck_id: test_deck_id(),
             player_mercenaries: HashMap::from([(player1.clone(), mercenary_id("artemis"))]),
         };
-        let mut game = Game::new_with_seed(&players, settings, 42).unwrap();
+        let mut game = Game::new_with_seed(&players, settings, 42, registry).unwrap();
 
         let event = game.validate_bid(&player1, 1).unwrap();
         let MatchEvent::BidPlaced {
@@ -2014,9 +2113,7 @@ return {
 
     #[test]
     fn mercenary_passive_effect_is_persisted_on_match_started_event() {
-        let _lock = power_card_test_lock();
-        install_test_power_card_definitions();
-        install_mercenary_passive(MATCH_STARTED_HEAL_PASSIVE_SCRIPT);
+        let registry = test_registry_with_mercenary_passive(MATCH_STARTED_HEAL_PASSIVE_SCRIPT);
         let [player1, player2] = test_players();
         let players = [player1.clone(), player2.clone()];
         let settings = GameSettings {
@@ -2025,7 +2122,8 @@ return {
             player_mercenaries: HashMap::from([(player1.clone(), mercenary_id("artemis"))]),
         };
 
-        let event = Game::start_match_event_with_seed(&players, settings.clone(), 42).unwrap();
+        let event =
+            Game::start_match_event_with_seed(&players, settings.clone(), 42, &registry).unwrap();
         let MatchEvent::GameStarted {
             passive_effects, ..
         } = &event
@@ -2035,16 +2133,14 @@ return {
 
         assert_eq!(passive_effects.lifes.get(&player1), Some(&52));
 
-        let game = Game::new_with_seed(&players, settings, 42).unwrap();
+        let game = Game::new_with_seed(&players, settings, 42, registry).unwrap();
 
         assert_eq!(game.core.get_lifes().get(&player1), Some(&52));
     }
 
     #[test]
     fn mercenary_passive_effect_is_persisted_on_round_ended_event() {
-        let _lock = power_card_test_lock();
-        install_test_power_card_definitions();
-        install_mercenary_passive(ROUND_ENDED_HEAL_PASSIVE_SCRIPT);
+        let registry = test_registry_with_mercenary_passive(ROUND_ENDED_HEAL_PASSIVE_SCRIPT);
         let [player1, player2] = test_players();
         let players = [player1.clone(), player2.clone()];
         let settings = GameSettings {
@@ -2052,7 +2148,7 @@ return {
             power_deck_id: test_deck_id(),
             player_mercenaries: HashMap::from([(player1.clone(), mercenary_id("artemis"))]),
         };
-        let mut game = Game::new_with_seed(&players, settings, 42).unwrap();
+        let mut game = Game::new_with_seed(&players, settings, 42, registry).unwrap();
 
         bid_current_player(&mut game, 0);
         bid_current_player(&mut game, 0);
@@ -2083,7 +2179,6 @@ return {
 
     #[test]
     fn bid_mismatch_costs_ten_lives() {
-        let _lock = power_card_test_lock();
         let player1 = PlayerId(Arc::from("P1"));
         let player2 = PlayerId(Arc::from("P2"));
         let players = [player1.clone(), player2.clone()];
@@ -2119,7 +2214,6 @@ return {
 
     #[test]
     fn power_card_script_applies_life_effect() {
-        let _lock = power_card_test_lock();
         let player1 = PlayerId(Arc::from("P1"));
         let player2 = PlayerId(Arc::from("P2"));
         let players = [player1.clone(), player2.clone()];
@@ -2128,7 +2222,8 @@ return {
         game.power_decks.insert(
             player1.clone(),
             vec![
-                power_card_definition(&test_deck_id(), &card_id("strike_10"))
+                game.registry
+                    .power_card_definition(&test_deck_id(), &card_id("strike_10"))
                     .unwrap()
                     .unwrap()
                     .to_card(),
@@ -2150,7 +2245,6 @@ return {
 
     #[test]
     fn power_card_cost_is_deducted_from_mana() {
-        let _lock = power_card_test_lock();
         let [player1, player2] = test_players();
         let players = [player1.clone(), player2.clone()];
         let mut game = new_test_game(&players);
@@ -2158,7 +2252,8 @@ return {
         game.power_decks.insert(
             player1.clone(),
             vec![
-                power_card_definition(&test_deck_id(), &card_id("strike_10"))
+                game.registry
+                    .power_card_definition(&test_deck_id(), &card_id("strike_10"))
                     .unwrap()
                     .unwrap()
                     .to_card(),
@@ -2183,37 +2278,34 @@ return {
 
     #[test]
     fn power_card_script_can_reduce_mana_cost_before_deduction() {
-        let _lock = power_card_test_lock();
         let [player1, player2] = test_players();
         let players = [player1.clone(), player2];
         let discounted_id = card_id("discounted");
 
-        replace_power_card_definitions(
-            test_deck_id(),
-            vec![PowerCardDefinitionInput {
-                id: discounted_id.clone(),
-                name: "Discounted".to_string(),
-                description: "Costs less while resolving.".to_string(),
-                mana_cost: 3,
-                card_type: PowerCardType::Instant,
-                image_url: None,
-                script: r#"
+        let registry = registry_with_power_card_definitions(vec![PowerCardDefinitionInput {
+            id: discounted_id.clone(),
+            name: "Discounted".to_string(),
+            description: "Costs less while resolving.".to_string(),
+            mana_cost: 3,
+            card_type: PowerCardType::Instant,
+            image_url: None,
+            script: r#"
                     return {
                         effect = function(game, card)
                             card:add_mana_cost(-2)
                         end,
                     }
                 "#
-                .to_string(),
-                source: "test/discounted.lua".to_string(),
-            }],
-        )
-        .expect("valid discounted card definition");
-        let mut game = Game::new_with_seed(&players, test_settings(), 42).unwrap();
+            .to_string(),
+            source: "test/discounted.lua".to_string(),
+        }]);
+        let mut game =
+            Game::new_with_seed(&players, test_settings(), 42, registry.clone()).unwrap();
         game.power_decks.insert(
             player1.clone(),
             vec![
-                power_card_definition(&test_deck_id(), &discounted_id)
+                registry
+                    .power_card_definition(&test_deck_id(), &discounted_id)
                     .unwrap()
                     .unwrap()
                     .to_card(),
@@ -2235,37 +2327,34 @@ return {
 
     #[test]
     fn negative_power_card_cost_regenerates_mana() {
-        let _lock = power_card_test_lock();
         let [player1, player2] = test_players();
         let players = [player1.clone(), player2];
         let refund_id = card_id("refund");
 
-        replace_power_card_definitions(
-            test_deck_id(),
-            vec![PowerCardDefinitionInput {
-                id: refund_id.clone(),
-                name: "Refund".to_string(),
-                description: "Regenerates mana while resolving.".to_string(),
-                mana_cost: 2,
-                card_type: PowerCardType::Instant,
-                image_url: None,
-                script: r#"
+        let registry = registry_with_power_card_definitions(vec![PowerCardDefinitionInput {
+            id: refund_id.clone(),
+            name: "Refund".to_string(),
+            description: "Regenerates mana while resolving.".to_string(),
+            mana_cost: 2,
+            card_type: PowerCardType::Instant,
+            image_url: None,
+            script: r#"
                     return {
                         effect = function(game, card)
                             card:add_mana_cost(-4)
                         end,
                     }
                 "#
-                .to_string(),
-                source: "test/refund.lua".to_string(),
-            }],
-        )
-        .expect("valid refund card definition");
-        let mut game = Game::new_with_seed(&players, test_settings(), 42).unwrap();
+            .to_string(),
+            source: "test/refund.lua".to_string(),
+        }]);
+        let mut game =
+            Game::new_with_seed(&players, test_settings(), 42, registry.clone()).unwrap();
         game.power_decks.insert(
             player1.clone(),
             vec![
-                power_card_definition(&test_deck_id(), &refund_id)
+                registry
+                    .power_card_definition(&test_deck_id(), &refund_id)
                     .unwrap()
                     .unwrap()
                     .to_card(),
@@ -2287,37 +2376,34 @@ return {
 
     #[test]
     fn power_card_script_can_increase_mana_cost_before_deduction() {
-        let _lock = power_card_test_lock();
         let [player1, player2] = test_players();
         let players = [player1.clone(), player2];
         let surcharge_id = card_id("surcharge");
 
-        replace_power_card_definitions(
-            test_deck_id(),
-            vec![PowerCardDefinitionInput {
-                id: surcharge_id.clone(),
-                name: "Surcharge".to_string(),
-                description: "Costs more while resolving.".to_string(),
-                mana_cost: 2,
-                card_type: PowerCardType::Instant,
-                image_url: None,
-                script: r#"
+        let registry = registry_with_power_card_definitions(vec![PowerCardDefinitionInput {
+            id: surcharge_id.clone(),
+            name: "Surcharge".to_string(),
+            description: "Costs more while resolving.".to_string(),
+            mana_cost: 2,
+            card_type: PowerCardType::Instant,
+            image_url: None,
+            script: r#"
                     return {
                         effect = function(game, card)
                             card:add_mana_cost(2)
                         end,
                     }
                 "#
-                .to_string(),
-                source: "test/surcharge.lua".to_string(),
-            }],
-        )
-        .expect("valid surcharge card definition");
-        let mut game = Game::new_with_seed(&players, test_settings(), 42).unwrap();
+            .to_string(),
+            source: "test/surcharge.lua".to_string(),
+        }]);
+        let mut game =
+            Game::new_with_seed(&players, test_settings(), 42, registry.clone()).unwrap();
         game.power_decks.insert(
             player1.clone(),
             vec![
-                power_card_definition(&test_deck_id(), &surcharge_id)
+                registry
+                    .power_card_definition(&test_deck_id(), &surcharge_id)
                     .unwrap()
                     .unwrap()
                     .to_card(),
@@ -2339,37 +2425,34 @@ return {
 
     #[test]
     fn power_card_script_cannot_raise_mana_cost_past_available_mana() {
-        let _lock = power_card_test_lock();
         let [player1, player2] = test_players();
         let players = [player1.clone(), player2];
         let expensive_id = card_id("too_expensive");
 
-        replace_power_card_definitions(
-            test_deck_id(),
-            vec![PowerCardDefinitionInput {
-                id: expensive_id.clone(),
-                name: "Too Expensive".to_string(),
-                description: "Costs too much while resolving.".to_string(),
-                mana_cost: 2,
-                card_type: PowerCardType::Instant,
-                image_url: None,
-                script: r#"
+        let registry = registry_with_power_card_definitions(vec![PowerCardDefinitionInput {
+            id: expensive_id.clone(),
+            name: "Too Expensive".to_string(),
+            description: "Costs too much while resolving.".to_string(),
+            mana_cost: 2,
+            card_type: PowerCardType::Instant,
+            image_url: None,
+            script: r#"
                     return {
                         effect = function(game, card)
                             card:add_mana_cost(3)
                         end,
                     }
                 "#
-                .to_string(),
-                source: "test/too_expensive.lua".to_string(),
-            }],
-        )
-        .expect("valid expensive card definition");
-        let mut game = Game::new_with_seed(&players, test_settings(), 42).unwrap();
+            .to_string(),
+            source: "test/too_expensive.lua".to_string(),
+        }]);
+        let mut game =
+            Game::new_with_seed(&players, test_settings(), 42, registry.clone()).unwrap();
         game.power_decks.insert(
             player1.clone(),
             vec![
-                power_card_definition(&test_deck_id(), &expensive_id)
+                registry
+                    .power_card_definition(&test_deck_id(), &expensive_id)
                     .unwrap()
                     .unwrap()
                     .to_card(),
@@ -2387,59 +2470,56 @@ return {
 
     #[test]
     fn power_card_script_can_draw_power_cards() {
-        let _lock = power_card_test_lock();
         let [player1, player2] = test_players();
         let players = [player1.clone(), player2];
         let draw_id = card_id("draw_two");
 
-        replace_power_card_definitions(
-            test_deck_id(),
-            vec![
-                PowerCardDefinitionInput {
-                    id: draw_id.clone(),
-                    name: "Draw Two".to_string(),
-                    description: "Draws two power cards.".to_string(),
-                    mana_cost: 0,
-                    card_type: PowerCardType::Instant,
-                    image_url: None,
-                    script: r#"
+        let registry = registry_with_power_card_definitions(vec![
+            PowerCardDefinitionInput {
+                id: draw_id.clone(),
+                name: "Draw Two".to_string(),
+                description: "Draws two power cards.".to_string(),
+                mana_cost: 0,
+                card_type: PowerCardType::Instant,
+                image_url: None,
+                script: r#"
                         return {
                             effect = function(game, card)
                                 game:draw_power_cards(card.owner_id, 2)
                             end,
                         }
                     "#
-                    .to_string(),
-                    source: "test/draw_two.lua".to_string(),
-                },
-                PowerCardDefinitionInput {
-                    id: card_id("drawn_one"),
-                    name: "Drawn One".to_string(),
-                    description: "Can be drawn.".to_string(),
-                    mana_cost: 0,
-                    card_type: PowerCardType::Instant,
-                    image_url: None,
-                    script: NOOP_POWER_SCRIPT.to_string(),
-                    source: "test/drawn_one.lua".to_string(),
-                },
-                PowerCardDefinitionInput {
-                    id: card_id("drawn_two"),
-                    name: "Drawn Two".to_string(),
-                    description: "Can be drawn.".to_string(),
-                    mana_cost: 0,
-                    card_type: PowerCardType::Instant,
-                    image_url: None,
-                    script: NOOP_POWER_SCRIPT.to_string(),
-                    source: "test/drawn_two.lua".to_string(),
-                },
-            ],
-        )
-        .expect("valid draw card definitions");
-        let mut game = Game::new_with_seed(&players, test_settings(), 42).unwrap();
+                .to_string(),
+                source: "test/draw_two.lua".to_string(),
+            },
+            PowerCardDefinitionInput {
+                id: card_id("drawn_one"),
+                name: "Drawn One".to_string(),
+                description: "Can be drawn.".to_string(),
+                mana_cost: 0,
+                card_type: PowerCardType::Instant,
+                image_url: None,
+                script: NOOP_POWER_SCRIPT.to_string(),
+                source: "test/drawn_one.lua".to_string(),
+            },
+            PowerCardDefinitionInput {
+                id: card_id("drawn_two"),
+                name: "Drawn Two".to_string(),
+                description: "Can be drawn.".to_string(),
+                mana_cost: 0,
+                card_type: PowerCardType::Instant,
+                image_url: None,
+                script: NOOP_POWER_SCRIPT.to_string(),
+                source: "test/drawn_two.lua".to_string(),
+            },
+        ]);
+        let mut game =
+            Game::new_with_seed(&players, test_settings(), 42, registry.clone()).unwrap();
         game.power_decks.insert(
             player1.clone(),
             vec![
-                power_card_definition(&test_deck_id(), &draw_id)
+                registry
+                    .power_card_definition(&test_deck_id(), &draw_id)
                     .unwrap()
                     .unwrap()
                     .to_card(),
@@ -2457,20 +2537,12 @@ return {
 
     #[test]
     fn power_card_requires_enough_mana() {
-        let _lock = power_card_test_lock();
         let [player1, player2] = test_players();
         let players = [player1.clone(), player2.clone()];
         let mut game = new_test_game(&players);
+        let card = registry_power_card(&game.registry, "strike_10");
 
-        game.power_decks.insert(
-            player1.clone(),
-            vec![
-                power_card_definition(&test_deck_id(), &card_id("strike_10"))
-                    .unwrap()
-                    .unwrap()
-                    .to_card(),
-            ],
-        );
+        game.power_decks.insert(player1.clone(), vec![card]);
         game.mana.insert(
             player1.clone(),
             PlayerMana {
@@ -2487,27 +2559,28 @@ return {
 
     #[test]
     fn power_card_script_lookup_uses_selected_deck() {
-        let _lock = power_card_test_lock();
         let custom_deck_id = DeckId(Arc::from("custom_deck"));
 
-        replace_power_card_registry(
-            test_power_card_definitions(),
-            vec![
-                PowerDeckDefinitionInput {
-                    id: test_deck_id(),
-                    card_ids: vec![card_id("heal_10")],
-                    generic_card_ids: Vec::new(),
-                    mercenary_card_ids: HashMap::new(),
-                },
-                PowerDeckDefinitionInput {
-                    id: custom_deck_id.clone(),
-                    card_ids: vec![card_id("strike_10")],
-                    generic_card_ids: Vec::new(),
-                    mercenary_card_ids: HashMap::new(),
-                },
-            ],
-        )
-        .expect("valid custom deck definitions");
+        let mut registry = PowerCardRegistry::default();
+        registry
+            .replace_power_card_registry(
+                test_power_card_definitions(),
+                vec![
+                    PowerDeckDefinitionInput {
+                        id: test_deck_id(),
+                        card_ids: vec![card_id("heal_10")],
+                        generic_card_ids: Vec::new(),
+                        mercenary_card_ids: HashMap::new(),
+                    },
+                    PowerDeckDefinitionInput {
+                        id: custom_deck_id.clone(),
+                        card_ids: vec![card_id("strike_10")],
+                        generic_card_ids: Vec::new(),
+                        mercenary_card_ids: HashMap::new(),
+                    },
+                ],
+            )
+            .expect("valid custom deck definitions");
 
         let player1 = PlayerId(Arc::from("P1"));
         let player2 = PlayerId(Arc::from("P2"));
@@ -2517,7 +2590,7 @@ return {
             power_deck_id: custom_deck_id,
             player_mercenaries: HashMap::new(),
         };
-        let mut game = Game::new_with_seed(&players, settings, 42).unwrap();
+        let mut game = Game::new_with_seed(&players, settings, 42, registry).unwrap();
         game.mana
             .insert(player1.clone(), PlayerMana { current: 3, max: 3 });
 
@@ -2533,21 +2606,13 @@ return {
 
     #[test]
     fn validates_power_card_errors() {
-        let _lock = power_card_test_lock();
         let player1 = PlayerId(Arc::from("P1"));
         let player2 = PlayerId(Arc::from("P2"));
         let players = [player1.clone(), player2.clone()];
         let mut game = new_test_game(&players);
+        let card = registry_power_card(&game.registry, "strike_10");
 
-        game.power_decks.insert(
-            player1.clone(),
-            vec![
-                power_card_definition(&test_deck_id(), &card_id("strike_10"))
-                    .unwrap()
-                    .unwrap()
-                    .to_card(),
-            ],
-        );
+        game.power_decks.insert(player1.clone(), vec![card]);
 
         assert!(matches!(
             game.validate_power_card(&player1, &card_id("strike_10"), None),
@@ -2575,15 +2640,11 @@ return {
 
     #[test]
     fn applying_persisted_power_card_event_removes_card_and_can_end_game() {
-        let _lock = power_card_test_lock();
         let player1 = PlayerId(Arc::from("P1"));
         let player2 = PlayerId(Arc::from("P2"));
         let players = [player1.clone(), player2.clone()];
         let mut game = new_test_game(&players);
-        let card = power_card_definition(&test_deck_id(), &card_id("strike_10"))
-            .unwrap()
-            .unwrap()
-            .to_card();
+        let card = registry_power_card(&game.registry, "strike_10");
 
         game.power_decks.insert(player1.clone(), vec![card.clone()]);
 
@@ -2611,7 +2672,6 @@ return {
 
     #[test]
     fn next_set_refreshes_power_cards() {
-        let _lock = power_card_test_lock();
         let player1 = PlayerId(Arc::from("P1"));
         let player2 = PlayerId(Arc::from("P2"));
         let players = [player1.clone(), player2.clone()];
@@ -2662,7 +2722,6 @@ return {
 
     #[test]
     fn bidding_turn_regenerates_next_players_mana() {
-        let _lock = power_card_test_lock();
         let [player1, player2] = test_players();
         let players = [player1.clone(), player2.clone()];
         let mut game = new_test_game(&players);
@@ -2695,7 +2754,6 @@ return {
 
     #[test]
     fn next_set_increases_and_refills_mana_pool() {
-        let _lock = power_card_test_lock();
         let [player1, player2] = test_players();
         let players = [player1.clone(), player2.clone()];
         let mut game = new_test_game(&players);
@@ -2759,7 +2817,6 @@ return {
 
     #[test]
     fn next_set_mana_pool_has_no_global_cap() {
-        let _lock = power_card_test_lock();
         let [player1, player2] = test_players();
         let players = [player1.clone(), player2.clone()];
         let mut game = new_test_game(&players);
@@ -2785,7 +2842,6 @@ return {
 
     #[test]
     fn game_info_exposes_private_power_cards() {
-        let _lock = power_card_test_lock();
         let player1 = PlayerId(Arc::from("P1"));
         let player2 = PlayerId(Arc::from("P2"));
         let players = [player1.clone(), player2.clone()];

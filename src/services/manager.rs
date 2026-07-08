@@ -2,9 +2,10 @@ use std::time::Duration;
 
 use crate::{
     AppSettings,
+    models::game::fodinha_power,
     services::{
         card_definitions::CardDefinitionsService,
-        matches::ManagerHandle,
+        matches::{ManagerHandle, ManagerResources},
         mercenaries::MercenariesService,
         object_storage::ObjectStorage,
         repositories::{
@@ -55,15 +56,21 @@ impl GameManager {
         let stats_repo = StatsRepository::new(&db);
         let users_repo = UsersRepository::new(&db);
         let object_storage = ObjectStorage::new(settings);
+        let power_card_registry = fodinha_power::PowerCardRegistryStore::default();
         let card_definitions = CardDefinitionsService::new(
             card_definitions_repo.clone(),
             card_decks_repo.clone(),
             mercenaries_repo.clone(),
             object_storage.clone(),
             users_repo.clone(),
+            power_card_registry.clone(),
         );
-        let mercenaries =
-            MercenariesService::new(mercenaries_repo.clone(), object_storage, users_repo.clone());
+        let mercenaries = MercenariesService::new(
+            mercenaries_repo.clone(),
+            object_storage,
+            users_repo.clone(),
+            power_card_registry.clone(),
+        );
 
         if let Err(e) = matches_repo.ensure_indexes().await {
             tracing::error!("Error creating match indexes: {e}");
@@ -101,15 +108,17 @@ impl GameManager {
 
         let stats_projector = StatsProjector::start(matches_repo.clone(), stats_repo.clone());
 
-        let manager = ManagerHandle::new(
-            matches_repo,
+        let manager = ManagerHandle::new(ManagerResources {
+            repo: matches_repo,
             stats_repo,
             users_repo,
             card_definitions,
             mercenaries,
             stats_projector,
-            (waiting_lobby_timeout, empty_playing_timeout),
-        );
+            power_card_registry,
+            waiting_lobby_timeout,
+            empty_playing_timeout,
+        });
 
         manager.start_abandoned_match_janitor(empty_playing_timeout, abandoned_match_scan_interval);
 
