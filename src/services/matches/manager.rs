@@ -573,6 +573,9 @@ impl ManagerHandle {
             OutboundMessage::PlayersManaChanged(mana) => {
                 Ok(ServerMessage::PlayersManaChanged(mana))
             }
+            OutboundMessage::PlayersLifesChanged(lifes) => {
+                Ok(ServerMessage::PlayersLifesChanged(lifes))
+            }
             OutboundMessage::PlayerBiddingTurn {
                 player_id,
                 possible_bids,
@@ -580,6 +583,9 @@ impl ManagerHandle {
                 player_id,
                 possible_bids,
             }),
+            OutboundMessage::PlayerPowerTurn { player_id } => {
+                Ok(ServerMessage::PlayerPowerTurn { player_id })
+            }
             OutboundMessage::PlayerStatusChange { player_id, ready } => {
                 Ok(ServerMessage::PlayerStatusChange { player_id, ready })
             }

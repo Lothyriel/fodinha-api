@@ -65,6 +65,7 @@ enum AppliedEvent {
     PlayerStatusChanged,
     GameStarted {
         set: NewSet,
+        lifes: Option<HashMap<PlayerId, usize>>,
         power_decks: Option<IndexMap<PlayerId, Vec<PowerCardDto>>>,
         mana: Option<HashMap<PlayerId, PlayerManaDto>>,
         next: PlayerId,
@@ -483,6 +484,7 @@ impl MatchActor {
 
             if let AppliedEvent::GameStarted {
                 set,
+                lifes,
                 power_decks,
                 mana,
                 next,
@@ -493,6 +495,7 @@ impl MatchActor {
                 self.broadcast_snapshots().await;
                 self.init_set(
                     set.decks,
+                    lifes,
                     power_decks,
                     mana,
                     set.upcard,
@@ -580,6 +583,15 @@ impl MatchActor {
             }
             AppliedEvent::Game(AppliedGameChange::PowerCardPlayed(outcome)) => {
                 let ended = self.broadcast_power_card(outcome).await;
+
+                if ended {
+                    Ok(ActorResult::Stop)
+                } else {
+                    Ok(ActorResult::Continue)
+                }
+            }
+            AppliedEvent::Game(AppliedGameChange::PowerPhaseSkipped(outcome)) => {
+                let ended = self.broadcast_power_phase_skip(outcome).await;
 
                 if ended {
                     Ok(ActorResult::Stop)
@@ -678,6 +690,7 @@ impl MatchActor {
 
                 Ok(AppliedEvent::GameStarted {
                     set,
+                    lifes: None,
                     power_decks: None,
                     mana: None,
                     next: game.get_bidding_player(),
@@ -708,9 +721,10 @@ impl MatchActor {
                 let game = Game::FodinhaPower(power_game);
                 let mut power_decks = power_decks_to_dto(&power_set.decks);
                 let mut mana = power_mana_to_dto(&power_set.mana);
+                let lifes = (!passive_effects.lifes.is_empty()).then(|| passive_effects.lifes.clone());
 
-                for (player_id, deck) in passive_effects.decks {
-                    set.decks.insert(player_id, deck);
+                for (player_id, deck) in &passive_effects.decks {
+                    set.decks.insert(player_id.clone(), deck.clone());
                 }
 
                 mana.extend(passive_mana);
@@ -725,6 +739,7 @@ impl MatchActor {
 
                 Ok(AppliedEvent::GameStarted {
                     set,
+                    lifes,
                     power_decks: Some(power_decks),
                     mana: Some(mana),
                     next: game.get_bidding_player(),
@@ -786,6 +801,13 @@ impl MatchActor {
                 .await;
         }
 
+        if self.is_finished()
+            && let Some(lifes) = self.current_lifes()
+        {
+            self.broadcast(OutboundMessage::GameEnded { lifes }).await;
+            return;
+        }
+
         let msg = match state {
             BiddingState::Active {
                 possible_bids,
@@ -794,7 +816,9 @@ impl MatchActor {
                 player_id: next,
                 possible_bids,
             },
-            BiddingState::Ended { next } => OutboundMessage::PlayerTurn { player_id: next },
+            BiddingState::Ended { next } => self
+                .current_phase_message()
+                .unwrap_or(OutboundMessage::PlayerTurn { player_id: next }),
         };
 
         self.broadcast(msg).await;
@@ -816,7 +840,7 @@ impl MatchActor {
                 let msg = OutboundMessage::SetEnded { lifes };
                 self.broadcast(msg).await;
 
-                self.init_set(decks, turn.power_decks, turn.mana, upcard, next, possible)
+                self.init_set(decks, turn.lifes, turn.power_decks, turn.mana, upcard, next, possible)
                     .await;
 
                 false
@@ -874,6 +898,44 @@ impl MatchActor {
 
         if ended {
             self.broadcast(OutboundMessage::GameEnded { lifes }).await;
+        } else if let Some(msg) = self.current_phase_message() {
+            self.broadcast(msg).await;
+        }
+
+        ended
+    }
+
+    async fn broadcast_power_phase_skip(
+        &self,
+        outcome: fodinha_power::PowerPhaseSkipOutcome,
+    ) -> bool {
+        let ended = outcome.ended;
+        let lifes = outcome.lifes.clone();
+
+        if !outcome.changed_lifes.is_empty() {
+            self.broadcast(OutboundMessage::PlayersLifesChanged(outcome.changed_lifes))
+                .await;
+        }
+
+        if !outcome.mana.is_empty() {
+            self.broadcast(OutboundMessage::PlayersManaChanged(outcome.mana))
+                .await;
+        }
+
+        for (player_id, deck) in outcome.decks {
+            self.send_to_player(&player_id, OutboundMessage::PlayerDeck(deck))
+                .await;
+        }
+
+        for (player_id, deck) in outcome.power_decks {
+            self.send_to_player(&player_id, OutboundMessage::PlayerPowerCards(deck))
+                .await;
+        }
+
+        if ended {
+            self.broadcast(OutboundMessage::GameEnded { lifes }).await;
+        } else if let Some(msg) = self.current_phase_message() {
+            self.broadcast(msg).await;
         }
 
         ended
@@ -882,6 +944,7 @@ impl MatchActor {
     async fn init_set(
         &self,
         decks: IndexMap<PlayerId, Vec<Card>>,
+        lifes: Option<HashMap<PlayerId, usize>>,
         power_decks: Option<IndexMap<PlayerId, Vec<PowerCardDto>>>,
         mana: Option<HashMap<PlayerId, PlayerManaDto>>,
         upcard: Card,
@@ -889,6 +952,13 @@ impl MatchActor {
         possible_bids: Vec<usize>,
     ) {
         self.broadcast(OutboundMessage::SetStart { upcard }).await;
+
+        if let Some(lifes) = lifes
+            && !lifes.is_empty()
+        {
+            self.broadcast(OutboundMessage::PlayersLifesChanged(lifes))
+                .await;
+        }
 
         if let Some(mana) = mana
             && !mana.is_empty()
@@ -909,11 +979,50 @@ impl MatchActor {
             }
         }
 
+        if self.is_finished()
+            && let Some(lifes) = self.current_lifes()
+        {
+            self.broadcast(OutboundMessage::GameEnded { lifes }).await;
+            return;
+        }
+
         self.broadcast(OutboundMessage::PlayerBiddingTurn {
             player_id: next,
             possible_bids,
         })
         .await;
+    }
+
+    fn current_phase_message(&self) -> Option<OutboundMessage> {
+        let lobby = self.lobby.as_ref()?;
+        let LobbyState::Playing(game) = &lobby.state else {
+            return None;
+        };
+        let player_id = game.current_player()?;
+
+        match game.get_stage_dto() {
+            crate::services::GameStageDto::Bidding { possible_bids } => {
+                Some(OutboundMessage::PlayerBiddingTurn {
+                    player_id,
+                    possible_bids,
+                })
+            }
+            crate::services::GameStageDto::Power => {
+                Some(OutboundMessage::PlayerPowerTurn { player_id })
+            }
+            crate::services::GameStageDto::Dealing => {
+                Some(OutboundMessage::PlayerTurn { player_id })
+            }
+        }
+    }
+
+    fn current_lifes(&self) -> Option<HashMap<PlayerId, usize>> {
+        let lobby = self.lobby.as_ref()?;
+        let LobbyState::Playing(game) = &lobby.state else {
+            return None;
+        };
+
+        Some(game.get_lifes())
     }
 
     async fn send_to_player(&self, player_id: &PlayerId, msg: OutboundMessage) {
@@ -1209,7 +1318,10 @@ fn should_project_match_metadata(event: &MatchEvent, match_finished: bool) -> bo
         }))
         | MatchEvent::Game(GameEvent::FodinhaPower(fodinha_power::MatchEvent::PowerCardPlayed {
             ..
-        })) => match_finished,
+        }))
+        | MatchEvent::Game(GameEvent::FodinhaPower(
+            fodinha_power::MatchEvent::PowerPhaseSkipped { .. },
+        )) => match_finished,
         MatchEvent::Game(GameEvent::FodinhaClassic(fodinha_classic::MatchEvent::BidPlaced {
             ..
         }))

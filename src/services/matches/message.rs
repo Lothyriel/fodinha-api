@@ -41,9 +41,13 @@ pub enum OutboundMessage {
         bid: usize,
     },
     PlayersManaChanged(PlayerMana),
+    PlayersLifesChanged(PlayerPoints),
     PlayerBiddingTurn {
         player_id: PlayerId,
         possible_bids: Vec<usize>,
+    },
+    PlayerPowerTurn {
+        player_id: PlayerId,
     },
     PlayerStatusChange {
         player_id: PlayerId,

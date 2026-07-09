@@ -49,6 +49,7 @@ pub struct PlayerManaDto {
 #[serde(tag = "type", content = "data")]
 pub enum GameStageDto {
     Bidding { possible_bids: Vec<usize> },
+    Power,
     Dealing,
 }
 

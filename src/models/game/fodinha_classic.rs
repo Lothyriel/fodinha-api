@@ -432,12 +432,7 @@ impl Game {
             upcard: Some(self.upcard),
             info,
             current_player: current_player.0.to_string(),
-            stage: match self.get_stage() {
-                GameStage::Bidding => GameStageDto::Bidding {
-                    possible_bids: self.get_possible_bids(),
-                },
-                GameStage::Dealing => GameStageDto::Dealing,
-            },
+            stage: self.get_stage_dto(),
         }
     }
 
@@ -510,6 +505,15 @@ impl Game {
         }
     }
 
+    pub fn get_stage_dto(&self) -> GameStageDto {
+        match self.get_stage() {
+            GameStage::Bidding => GameStageDto::Bidding {
+                possible_bids: self.get_possible_bids(),
+            },
+            GameStage::Dealing => GameStageDto::Dealing,
+        }
+    }
+
     pub fn is_bidding_stage(&self) -> bool {
         self.get_stage() == GameStage::Bidding
     }
@@ -535,6 +539,12 @@ impl Game {
         } else {
             (0..=self.cards_count).collect()
         }
+    }
+
+    pub fn get_round_order(&self) -> Vec<PlayerId> {
+        let mut round_iter = self.round_iter.clone();
+
+        round_iter.by_ref().map(|idx| self.get_player(idx)).collect()
     }
 
     fn apply_bid(&mut self, player_id: &PlayerId, bid: usize) -> BiddingState {

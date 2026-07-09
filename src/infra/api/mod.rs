@@ -1525,24 +1525,26 @@ return {
                 .insert(player_id.clone(), get_power_cards(&mut p.connection).await);
         }
 
+        power_bidding(&mut player_data, 1).await;
+
         let first_connection = player_data.values_mut().next().unwrap();
-        let bidding_player = get_next_bidding_player(&mut first_connection.connection).await;
+        let power_player = get_next_power_player(&mut first_connection.connection).await;
 
         for p in player_data.values_mut().skip(1) {
-            get_next_bidding_player(&mut p.connection).await;
+            get_next_power_player(&mut p.connection).await;
         }
 
-        let card = power_cards_by_player[&bidding_player][0].clone();
+        let card = power_cards_by_player[&power_player][0].clone();
         let target_player_id = card.card_type.needs_target().then(|| {
             player_data
                 .keys()
-                .find(|player_id| **player_id != bidding_player)
+                .find(|player_id| **player_id != power_player)
                 .cloned()
                 .expect("expected target player")
         });
 
         send_msg(
-            &mut player_data.get_mut(&bidding_player).unwrap().connection,
+            &mut player_data.get_mut(&power_player).unwrap().connection,
             ClientCommand::GameCommand(GameCommand::FodinhaPower(
                 fodinha_power::GameCommand::UsePowerCard {
                     card_id: card.id.clone(),
@@ -1560,14 +1562,14 @@ return {
                     target_player_id: played_target,
                     lifes,
                 } => {
-                    assert_eq!(player_id, bidding_player);
+                    assert_eq!(player_id, power_player);
                     assert_eq!(played_card.id, card.id);
                     assert_eq!(played_target, target_player_id);
 
                     if card.card_type.needs_target() {
                         assert_eq!(lifes.get(target_player_id.as_ref().unwrap()), Some(&40));
                     } else {
-                        assert_eq!(lifes.get(&bidding_player), Some(&60));
+                        assert_eq!(lifes.get(&power_player), Some(&60));
                     }
                 }
                 msg => panic!("Expected PowerCardPlayed, got {msg:?}"),
@@ -1891,10 +1893,37 @@ return {
         let rounds_count = players.values().next().unwrap().deck.len();
 
         power_bidding(players, rounds_count).await;
+        power_phase(players).await;
 
         for i in 0..rounds_count {
             play_power_round(players, i == rounds_count - 1).await;
         }
+    }
+
+    async fn power_phase(players: &mut TestPlayersData) {
+        for _ in 0..players.len() {
+            power_phase_turn(players).await;
+        }
+    }
+
+    async fn power_phase_turn(players: &mut TestPlayersData) {
+        let data = players.values_mut().next().unwrap();
+
+        let next = get_next_power_player(&mut data.connection).await;
+
+        for p in players.values_mut().skip(1) {
+            get_next_power_player(&mut p.connection).await;
+        }
+
+        let next = players.get_mut(&next).unwrap();
+
+        send_msg(
+            &mut next.connection,
+            ClientCommand::GameCommand(GameCommand::FodinhaPower(
+                fodinha_power::GameCommand::SkipPowerPhase,
+            )),
+        )
+        .await;
     }
 
     async fn play_power_round(players: &mut TestPlayersData, last: bool) {
@@ -1985,6 +2014,10 @@ return {
         )
     }
 
+    fn validate_power_turn(m: &ServerMessage) -> bool {
+        matches!(m, ServerMessage::PlayerPowerTurn { player_id: _ })
+    }
+
     fn validate_player_bidded(m: &ServerMessage) -> bool {
         matches!(
             m,
@@ -2039,6 +2072,13 @@ return {
                 possible_bids: _,
             } => player_id,
             _ => panic!("Should be a PlayerTurn message"),
+        }
+    }
+
+    async fn get_next_power_player(stream: &mut WebSocket) -> PlayerId {
+        match assert_game_msg(stream, validate_power_turn).await {
+            ServerMessage::PlayerPowerTurn { player_id } => player_id,
+            _ => panic!("Should be a PlayerPowerTurn message"),
         }
     }
 

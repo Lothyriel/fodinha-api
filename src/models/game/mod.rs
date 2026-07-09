@@ -13,7 +13,7 @@ use crate::{
         Card, GameError, Turn,
         id::{CardId, PlayerId},
     },
-    services::{GameInfoDto, PlayerManaDto, PowerCardDto},
+    services::{GameInfoDto, GameStageDto, PlayerManaDto, PowerCardDto},
 };
 
 pub use fodinha_classic::{BiddingState, DealState, DealingMode, DeckShuffle, GameOutcome, NewSet};
@@ -21,6 +21,7 @@ pub use fodinha_classic::{BiddingState, DealState, DealingMode, DeckShuffle, Gam
 #[derive(Debug, Clone)]
 pub struct AppliedTurn {
     pub state: DealState,
+    pub lifes: Option<HashMap<PlayerId, usize>>,
     pub power_decks: Option<IndexMap<PlayerId, Vec<PowerCardDto>>>,
     pub mana: Option<HashMap<PlayerId, PlayerManaDto>>,
 }
@@ -35,6 +36,7 @@ pub enum AppliedGameChange {
     },
     TurnPlayed(AppliedTurn),
     PowerCardPlayed(fodinha_power::PowerCardOutcome),
+    PowerPhaseSkipped(fodinha_power::PowerPhaseSkipOutcome),
 }
 
 impl From<fodinha_classic::AppliedGameChange> for AppliedGameChange {
@@ -53,6 +55,7 @@ impl From<fodinha_classic::AppliedGameChange> for AppliedGameChange {
             fodinha_classic::AppliedGameChange::TurnPlayed(state) => {
                 Self::TurnPlayed(AppliedTurn {
                     state,
+                    lifes: None,
                     power_decks: None,
                     mana: None,
                 })
@@ -77,15 +80,20 @@ impl From<fodinha_power::AppliedGameChange> for AppliedGameChange {
             },
             fodinha_power::AppliedGameChange::TurnPlayed {
                 state,
+                lifes,
                 power_decks,
                 mana,
             } => Self::TurnPlayed(AppliedTurn {
                 state,
+                lifes,
                 power_decks,
                 mana,
             }),
             fodinha_power::AppliedGameChange::PowerCardPlayed(outcome) => {
                 Self::PowerCardPlayed(outcome)
+            }
+            fodinha_power::AppliedGameChange::PowerPhaseSkipped(outcome) => {
+                Self::PowerPhaseSkipped(outcome)
             }
         }
     }
@@ -205,6 +213,7 @@ pub enum InferredGameCommand {
         card_id: CardId,
         target_player_id: Option<PlayerId>,
     },
+    SkipPowerPhase,
 }
 
 impl InferredGameCommand {
@@ -213,6 +222,7 @@ impl InferredGameCommand {
             Self::PlayTurn { .. } => "game.inferred.play_turn",
             Self::PutBid { .. } => "game.inferred.put_bid",
             Self::UsePowerCard { .. } => "game.inferred.use_power_card",
+            Self::SkipPowerPhase => "game.inferred.skip_power_phase",
         }
     }
 
@@ -221,6 +231,7 @@ impl InferredGameCommand {
             Self::PlayTurn { .. } => "PlayTurn",
             Self::PutBid { .. } => "PutBid",
             Self::UsePowerCard { .. } => "UsePowerCard",
+            Self::SkipPowerPhase => "SkipPowerPhase",
         }
     }
 
@@ -233,10 +244,12 @@ impl InferredGameCommand {
                 Self::PutBid { bid } => Ok(GameCommand::FodinhaClassic(
                     fodinha_classic::GameCommand::PutBid { bid },
                 )),
-                command @ Self::UsePowerCard { .. } => Err(GameCommandError::UnsupportedCommand {
-                    game_type,
-                    command: command.wire_type(),
-                }),
+                command @ (Self::UsePowerCard { .. } | Self::SkipPowerPhase) => {
+                    Err(GameCommandError::UnsupportedCommand {
+                        game_type,
+                        command: command.wire_type(),
+                    })
+                }
             },
             GameType::FodinhaPower => match self {
                 Self::PlayTurn { card } => Ok(GameCommand::FodinhaPower(
@@ -254,6 +267,9 @@ impl InferredGameCommand {
                         target_player_id,
                     },
                 )),
+                Self::SkipPowerPhase => {
+                    Ok(GameCommand::FodinhaPower(fodinha_power::GameCommand::SkipPowerPhase))
+                }
             },
         }
     }
@@ -404,6 +420,27 @@ impl Game {
         }
     }
 
+    pub fn current_player(&self) -> Option<PlayerId> {
+        match self {
+            Self::FodinhaClassic(game) => game.current_player(),
+            Self::FodinhaPower(game) => game.current_player(),
+        }
+    }
+
+    pub fn get_lifes(&self) -> HashMap<PlayerId, usize> {
+        match self {
+            Self::FodinhaClassic(game) => game.get_lifes(),
+            Self::FodinhaPower(game) => game.get_lifes(),
+        }
+    }
+
+    pub fn get_stage_dto(&self) -> GameStageDto {
+        match self {
+            Self::FodinhaClassic(game) => game.get_stage_dto(),
+            Self::FodinhaPower(game) => game.get_stage_dto(),
+        }
+    }
+
     pub fn get_bidding_player(&self) -> PlayerId {
         match self {
             Self::FodinhaClassic(game) => game.get_bidding_player(),
@@ -510,6 +547,11 @@ impl Game {
                     target_player_id,
                 } => game
                     .validate_power_card(player_id, &card_id, target_player_id)
+                    .map(GameEvent::FodinhaPower)
+                    .map(MatchEvent::Game)
+                    .map_err(GameCommandError::Power),
+                fodinha_power::GameCommand::SkipPowerPhase => game
+                    .validate_skip_power_phase(player_id)
                     .map(GameEvent::FodinhaPower)
                     .map(MatchEvent::Game)
                     .map_err(GameCommandError::Power),

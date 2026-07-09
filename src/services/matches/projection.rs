@@ -35,7 +35,10 @@ pub(crate) async fn project_match_metadata(
         }))
         | MatchEvent::Game(GameEvent::FodinhaPower(fodinha_power::MatchEvent::PowerCardPlayed {
             ..
-        })) if match_finished => repo.mark_metadata_finished(match_id).await,
+        }))
+        | MatchEvent::Game(GameEvent::FodinhaPower(
+            fodinha_power::MatchEvent::PowerPhaseSkipped { .. },
+        )) if match_finished => repo.mark_metadata_finished(match_id).await,
         _ => Ok(()),
     }
 }

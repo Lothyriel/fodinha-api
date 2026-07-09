@@ -21,7 +21,7 @@ use crate::{
         id::{CardId, DeckId, MercenaryId, PlayerId},
         util::DeterministicRng,
     },
-    services::{GameInfoDto, PlayerManaDto, PowerCardDto},
+    services::{GameInfoDto, GameStageDto, PlayerManaDto, PowerCardDto},
 };
 
 const LIFE_LOSS_PER_BID_DIFFERENCE: usize = 10;
@@ -40,6 +40,7 @@ pub const MAX_PLAYER_COUNT: usize = fodinha_classic::MAX_PLAYER_COUNT;
 #[derive(Debug, Clone)]
 pub struct Game {
     core: fodinha_classic::Game,
+    stage: PowerGameStage,
     power_decks: IndexMap<PlayerId, Vec<PowerCard>>,
     mana: IndexMap<PlayerId, PlayerMana>,
     registry: PowerCardRegistry,
@@ -48,6 +49,15 @@ pub struct Game {
     power_seed: i64,
     draw_seed: i64,
     next_power_shuffle_sequence: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PowerGameStage {
+    Bidding,
+    Power {
+        pending_players: Vec<PlayerId>,
+    },
+    Dealing,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -195,6 +205,7 @@ pub enum GameCommand {
         card_id: CardId,
         target_player_id: Option<PlayerId>,
     },
+    SkipPowerPhase,
 }
 
 impl GameCommand {
@@ -203,6 +214,7 @@ impl GameCommand {
             Self::PlayTurn { .. } => "game.fodinha_power.play_turn",
             Self::PutBid { .. } => "game.fodinha_power.put_bid",
             Self::UsePowerCard { .. } => "game.fodinha_power.use_power_card",
+            Self::SkipPowerPhase => "game.fodinha_power.skip_power_phase",
         }
     }
 }
@@ -228,11 +240,16 @@ pub enum MatchEvent {
         next_set: Option<NewSet>,
         next_power_set: Option<PowerSet>,
         passive_effects: PowerCardEffects,
+        next_set_passive_effects: PowerCardEffects,
     },
     PowerCardPlayed {
         player_id: PlayerId,
         card: PowerCard,
         target_player_id: Option<PlayerId>,
+        effects: PowerCardEffects,
+    },
+    PowerPhaseSkipped {
+        player_id: PlayerId,
         effects: PowerCardEffects,
     },
 }
@@ -264,10 +281,12 @@ pub enum AppliedGameChange {
     },
     TurnPlayed {
         state: DealState,
+        lifes: Option<HashMap<PlayerId, usize>>,
         power_decks: Option<IndexMap<PlayerId, Vec<PowerCardDto>>>,
         mana: Option<HashMap<PlayerId, PlayerManaDto>>,
     },
     PowerCardPlayed(PowerCardOutcome),
+    PowerPhaseSkipped(PowerPhaseSkipOutcome),
 }
 
 #[derive(Debug, Clone)]
@@ -282,10 +301,21 @@ pub struct PowerCardOutcome {
     pub ended: bool,
 }
 
+#[derive(Debug, Clone)]
+pub struct PowerPhaseSkipOutcome {
+    pub player_id: PlayerId,
+    pub lifes: HashMap<PlayerId, usize>,
+    pub changed_lifes: HashMap<PlayerId, usize>,
+    pub mana: HashMap<PlayerId, PlayerManaDto>,
+    pub decks: HashMap<PlayerId, Vec<Card>>,
+    pub power_decks: HashMap<PlayerId, Vec<PowerCardDto>>,
+    pub ended: bool,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum PowerCardError {
-    #[error("power cards can only be used during bidding")]
-    BiddingStageRequired,
+    #[error("power cards can only be used during the power phase")]
+    PowerStageRequired,
     #[error("not your turn")]
     NotYourTurn,
     #[error("invalid player")]
@@ -843,9 +873,16 @@ impl Game {
             draw_seed,
             registry.clone(),
         )?;
-        let passive_effects = game
+        let mut preview = game.clone();
+        let mut passive_effects = preview
             .passive_effects(PassiveGameEvent::MatchStarted)
             .unwrap_or_default();
+        preview.apply_effects(&passive_effects);
+        passive_effects.merge(
+            preview
+                .passive_effects(PassiveGameEvent::SetStarted)
+                .unwrap_or_default(),
+        );
 
         Ok(MatchEvent::GameStarted {
             settings,
@@ -881,6 +918,7 @@ impl Game {
 
         Ok(Self {
             core: classic,
+            stage: PowerGameStage::Bidding,
             power_decks: power_set.decks,
             mana,
             registry,
@@ -898,34 +936,12 @@ impl Game {
         bid: usize,
     ) -> Result<MatchEvent, BiddingError> {
         self.core.validate_bid(player_id, bid)?;
-        let mut passive_effects = self
+        let passive_effects = self
             .passive_effects(PassiveGameEvent::BidPlaced {
                 player_id: player_id.clone(),
                 bid,
             })
             .unwrap_or_default();
-
-        let mut preview = self.clone();
-        let round_started = matches!(
-            preview
-                .core
-                .apply_match_event(fodinha_classic::MatchEvent::BidPlaced {
-                    player_id: player_id.clone(),
-                    bid,
-                }),
-            fodinha_classic::AppliedGameChange::BidPlaced {
-                state: BiddingState::Ended { .. },
-                ..
-            }
-        );
-
-        if round_started {
-            passive_effects.merge(
-                preview
-                    .passive_effects(PassiveGameEvent::RoundStart)
-                    .unwrap_or_default(),
-            );
-        }
 
         Ok(MatchEvent::BidPlaced {
             player_id: player_id.clone(),
@@ -936,6 +952,10 @@ impl Game {
     }
 
     pub fn validate_turn(&self, turn: Turn) -> Result<MatchEvent, DealError> {
+        if !matches!(self.stage, PowerGameStage::Dealing) {
+            return Err(DealError::BiddingStageActive);
+        }
+
         let event = self.core.validate_turn(turn)?;
         let fodinha_classic::MatchEvent::TurnPlayed { turn, next_set } = event else {
             unreachable!("validate_turn only emits TurnPlayed")
@@ -957,24 +977,26 @@ impl Game {
                 self.passive_effects(PassiveGameEvent::SetEnded)
                     .unwrap_or_default(),
             );
-            passive_effects.merge(
-                self.passive_effects(PassiveGameEvent::SetStarted)
-                    .unwrap_or_default(),
-            );
         }
+
+        let base_event = MatchEvent::TurnPlayed {
+            turn: turn.clone(),
+            next_set: next_set.clone(),
+            next_power_set: next_power_set.clone(),
+            passive_effects: passive_effects.clone(),
+            next_set_passive_effects: PowerCardEffects::default(),
+        };
 
         let mut preview = self.clone();
         let round_ended = matches!(
-            preview
-                .core
-                .apply_match_event(fodinha_classic::MatchEvent::TurnPlayed {
-                    turn: turn.clone(),
-                    next_set: next_set.clone(),
-                }),
-            fodinha_classic::AppliedGameChange::TurnPlayed(DealState {
-                outcome: fodinha_classic::GameOutcome::RoundEnded { .. },
+            preview.apply_match_event(base_event),
+            AppliedGameChange::TurnPlayed {
+                state: DealState {
+                    outcome: fodinha_classic::GameOutcome::RoundEnded { .. },
+                    ..
+                },
                 ..
-            })
+            }
         );
 
         if round_ended {
@@ -985,11 +1007,20 @@ impl Game {
             );
         }
 
+        let next_set_passive_effects = if next_set.is_some() && !preview.is_finished() {
+            preview
+                .passive_effects(PassiveGameEvent::SetStarted)
+                .unwrap_or_default()
+        } else {
+            PowerCardEffects::default()
+        };
+
         Ok(MatchEvent::TurnPlayed {
             turn,
             next_set,
             next_power_set,
             passive_effects,
+            next_set_passive_effects,
         })
     }
 
@@ -999,11 +1030,11 @@ impl Game {
         card_id: &CardId,
         target_player_id: Option<PlayerId>,
     ) -> Result<MatchEvent, PowerCardError> {
-        if !self.core.is_bidding_stage() {
-            return Err(PowerCardError::BiddingStageRequired);
+        if !matches!(self.stage, PowerGameStage::Power { .. }) {
+            return Err(PowerCardError::PowerStageRequired);
         }
 
-        if self.core.current_player().as_ref() != Some(player_id) {
+        if self.current_player().as_ref() != Some(player_id) {
             return Err(PowerCardError::NotYourTurn);
         }
 
@@ -1061,10 +1092,62 @@ impl Game {
             .unwrap_or_default(),
         );
 
+        let mut preview = self.clone();
+        preview.apply_match_event(MatchEvent::PowerCardPlayed {
+            player_id: player_id.clone(),
+            card: card.clone(),
+            target_player_id: target_player_id.clone(),
+            effects: effects.clone(),
+        });
+
+        if matches!(preview.stage, PowerGameStage::Dealing) && !preview.is_finished() {
+            effects.merge(
+                preview
+                    .passive_effects(PassiveGameEvent::RoundStart)
+                    .unwrap_or_default(),
+            );
+        }
+
         Ok(MatchEvent::PowerCardPlayed {
             player_id: player_id.clone(),
             card,
             target_player_id,
+            effects,
+        })
+    }
+
+    pub fn validate_skip_power_phase(
+        &self,
+        player_id: &PlayerId,
+    ) -> Result<MatchEvent, PowerCardError> {
+        if !matches!(self.stage, PowerGameStage::Power { .. }) {
+            return Err(PowerCardError::PowerStageRequired);
+        }
+
+        if self.current_player().as_ref() != Some(player_id) {
+            return Err(PowerCardError::NotYourTurn);
+        }
+
+        if !self.core.is_player_alive(player_id) {
+            return Err(PowerCardError::InvalidPlayer);
+        }
+
+        let mut preview = self.clone();
+        preview.apply_match_event(MatchEvent::PowerPhaseSkipped {
+            player_id: player_id.clone(),
+            effects: PowerCardEffects::default(),
+        });
+
+        let effects = if matches!(preview.stage, PowerGameStage::Dealing) && !preview.is_finished() {
+            preview
+                .passive_effects(PassiveGameEvent::RoundStart)
+                .unwrap_or_default()
+        } else {
+            PowerCardEffects::default()
+        };
+
+        Ok(MatchEvent::PowerPhaseSkipped {
+            player_id: player_id.clone(),
             effects,
         })
     }
@@ -1085,17 +1168,19 @@ impl Game {
                         player_id,
                         bid,
                         state,
-                    } => AppliedGameChange::BidPlaced {
-                        player_id,
-                        bid,
-                        state,
-                        mana: {
-                            let mut mana = self.apply_mana_totals(&mana);
-                            let (passive_mana, _) = self.apply_effects(&passive_effects);
-                            mana.extend(passive_mana);
-                            mana
-                        },
-                    },
+                    } => {
+                        let mut mana = self.apply_mana_totals(&mana);
+                        let (passive_mana, _) = self.apply_effects(&passive_effects);
+                        self.set_stage_after_bid(&state);
+                        mana.extend(passive_mana);
+
+                        AppliedGameChange::BidPlaced {
+                            player_id,
+                            bid,
+                            state,
+                            mana,
+                        }
+                    }
                     _ => unreachable!("bid event applies as bid change"),
                 }
             }
@@ -1104,8 +1189,9 @@ impl Game {
                 next_set,
                 next_power_set,
                 passive_effects,
+                next_set_passive_effects,
             } => {
-                let state = match self
+                let mut state = match self
                     .core
                     .apply_match_event(fodinha_classic::MatchEvent::TurnPlayed { turn, next_set })
                 {
@@ -1118,11 +1204,24 @@ impl Game {
                 });
                 let mana = next_power_set.as_ref().map(|set| mana_to_dto(&set.mana));
                 let (passive_mana, passive_power_decks) = self.apply_effects(&passive_effects);
+                Self::sync_turn_outcome_lifes(&mut state.outcome, self.core.get_lifes());
+                let (next_set_passive_mana, next_set_passive_power_decks) =
+                    self.apply_effects(&next_set_passive_effects);
+                let lifes = (!next_set_passive_effects.lifes.is_empty())
+                    .then(|| next_set_passive_effects.lifes.clone());
+                Self::merge_next_set_decks(&mut state.outcome, &next_set_passive_effects.decks);
                 let mana = if passive_mana.is_empty() {
                     mana
                 } else {
                     let mut mana = mana.unwrap_or_default();
                     mana.extend(passive_mana);
+                    Some(mana)
+                };
+                let mana = if next_set_passive_mana.is_empty() {
+                    mana
+                } else {
+                    let mut mana = mana.unwrap_or_default();
+                    mana.extend(next_set_passive_mana);
                     Some(mana)
                 };
                 let power_decks = if passive_power_decks.is_empty() {
@@ -1132,9 +1231,26 @@ impl Game {
                     power_decks.extend(passive_power_decks);
                     Some(power_decks)
                 };
+                let power_decks = if next_set_passive_power_decks.is_empty() {
+                    power_decks
+                } else {
+                    let mut power_decks = power_decks.unwrap_or_default();
+                    power_decks.extend(next_set_passive_power_decks);
+                    Some(power_decks)
+                };
+
+                self.stage = if matches!(
+                    &state.outcome,
+                    fodinha_classic::GameOutcome::SetEnded { .. }
+                ) {
+                    PowerGameStage::Bidding
+                } else {
+                    PowerGameStage::Dealing
+                };
 
                 AppliedGameChange::TurnPlayed {
                     state,
+                    lifes,
                     power_decks,
                     mana,
                 }
@@ -1152,12 +1268,27 @@ impl Game {
                 }
 
                 let (mana, power_decks) = self.apply_effects(&effects);
+                self.advance_power_phase(&player_id);
 
                 AppliedGameChange::PowerCardPlayed(PowerCardOutcome {
                     player_id,
                     card: card.to_dto(),
                     target_player_id,
                     lifes: self.core.get_lifes(),
+                    mana,
+                    decks: effects.decks,
+                    power_decks,
+                    ended: self.core.is_finished(),
+                })
+            }
+            MatchEvent::PowerPhaseSkipped { player_id, effects } => {
+                let (mana, power_decks) = self.apply_effects(&effects);
+                self.advance_power_phase(&player_id);
+
+                AppliedGameChange::PowerPhaseSkipped(PowerPhaseSkipOutcome {
+                    player_id,
+                    lifes: self.core.get_lifes(),
+                    changed_lifes: effects.lifes.clone(),
                     mana,
                     decks: effects.decks,
                     power_decks,
@@ -1172,8 +1303,37 @@ impl Game {
         self.core.is_finished()
     }
 
+    pub fn get_lifes(&self) -> HashMap<PlayerId, usize> {
+        self.core.get_lifes()
+    }
+
+    pub fn current_player(&self) -> Option<PlayerId> {
+        match &self.stage {
+            PowerGameStage::Bidding | PowerGameStage::Dealing => self.core.current_player(),
+            PowerGameStage::Power { pending_players } => pending_players
+                .iter()
+                .find(|player_id| self.core.is_player_alive(player_id))
+                .cloned(),
+        }
+    }
+
+    pub fn get_stage_dto(&self) -> GameStageDto {
+        match &self.stage {
+            PowerGameStage::Bidding => GameStageDto::Bidding {
+                possible_bids: self.core.get_possible_bids(),
+            },
+            PowerGameStage::Power { .. } => GameStageDto::Power,
+            PowerGameStage::Dealing => GameStageDto::Dealing,
+        }
+    }
+
     pub fn get_game_info(&self, player_id: &PlayerId) -> GameInfoDto {
         let mut info = self.core.get_game_info(player_id);
+        info.current_player = self
+            .current_player()
+            .map(|player_id| player_id.as_str().to_string())
+            .unwrap_or_default();
+        info.stage = self.get_stage_dto();
         for player in &mut info.info {
             player.mana = self.mana.get(&player.id).map(PlayerMana::to_dto);
         }
@@ -1496,6 +1656,79 @@ impl Game {
             .collect();
 
         (mana, power_decks)
+    }
+
+    fn set_stage_after_bid(&mut self, state: &BiddingState) {
+        self.stage = match state {
+            BiddingState::Active { .. } => PowerGameStage::Bidding,
+            BiddingState::Ended { .. } => PowerGameStage::Power {
+                pending_players: self.power_phase_order(),
+            },
+        };
+    }
+
+    fn advance_power_phase(&mut self, player_id: &PlayerId) {
+        let alive_players = self
+            .core
+            .get_player_snapshots()
+            .into_iter()
+            .filter(|(_, player)| player.lifes > 0)
+            .map(|(player_id, _)| player_id)
+            .collect::<Vec<_>>();
+        let PowerGameStage::Power { pending_players } = &mut self.stage else {
+            return;
+        };
+
+        pending_players.retain(|pending_player| {
+            pending_player != player_id && alive_players.contains(pending_player)
+        });
+
+        if pending_players.is_empty() {
+            self.stage = PowerGameStage::Dealing;
+        }
+    }
+
+    fn power_phase_order(&self) -> Vec<PlayerId> {
+        self.core
+            .get_round_order()
+            .into_iter()
+            .filter(|player_id| self.core.is_player_alive(player_id))
+            .collect()
+    }
+
+    fn sync_turn_outcome_lifes(
+        outcome: &mut fodinha_classic::GameOutcome,
+        lifes: HashMap<PlayerId, usize>,
+    ) {
+        match outcome {
+            fodinha_classic::GameOutcome::SetEnded {
+                lifes: outcome_lifes,
+                ..
+            }
+            | fodinha_classic::GameOutcome::Ended {
+                lifes: outcome_lifes,
+            } => *outcome_lifes = lifes,
+            _ => {}
+        }
+    }
+
+    fn merge_next_set_decks(
+        outcome: &mut fodinha_classic::GameOutcome,
+        decks: &HashMap<PlayerId, Vec<Card>>,
+    ) {
+        if decks.is_empty() {
+            return;
+        }
+
+        if let fodinha_classic::GameOutcome::SetEnded {
+            decks: outcome_decks,
+            ..
+        } = outcome
+        {
+            for (player_id, deck) in decks {
+                outcome_decks.insert(player_id.clone(), deck.clone());
+            }
+        }
     }
 
     fn new_power_set_for_game(&self, players: &[PlayerId]) -> PowerSet {
@@ -1951,10 +2184,44 @@ return {
     }
 
     fn bid_current_player(game: &mut Game, bid: usize) {
-        let player_id = game.core.current_player().expect("expected bidding player");
+        let player_id = game.current_player().expect("expected bidding player");
         let event = game.validate_bid(&player_id, bid).unwrap();
 
         game.apply_match_event(event);
+    }
+
+    fn enter_power_phase(game: &mut Game) {
+        while matches!(game.stage, PowerGameStage::Bidding) {
+            let player_id = game.current_player().expect("expected bidding player");
+            let bid = game
+                .get_possible_bids()
+                .into_iter()
+                .next()
+                .expect("expected at least one bid");
+            let event = game.validate_bid(&player_id, bid).unwrap();
+
+            game.apply_match_event(event);
+        }
+    }
+
+    fn finish_power_phase(game: &mut Game) {
+        while matches!(game.stage, PowerGameStage::Power { .. }) {
+            let player_id = game.current_player().expect("expected power player");
+            let event = game.validate_skip_power_phase(&player_id).unwrap();
+
+            game.apply_match_event(event);
+        }
+    }
+
+    fn advance_to_dealing(game: &mut Game) {
+        enter_power_phase(game);
+        finish_power_phase(game);
+    }
+
+    fn set_power_phase(game: &mut Game, players: &[PlayerId]) {
+        game.stage = PowerGameStage::Power {
+            pending_players: players.to_vec(),
+        };
     }
 
     fn drawn_power_card_ids(
@@ -1967,6 +2234,7 @@ return {
         let mut game =
             Game::new_with_seeds(players, test_settings(), 42, draw_seed, registry.clone())
                 .unwrap();
+        set_power_phase(&mut game, players);
         game.power_decks.insert(
             player_id.clone(),
             vec![
@@ -2180,15 +2448,18 @@ return {
         };
         let mut game = Game::new_with_seed(&players, settings, 42, registry).unwrap();
 
-        bid_current_player(&mut game, 0);
+        enter_power_phase(&mut game);
+        let first_power_player = game.current_player().expect("expected power player");
+        game.apply_match_event(game.validate_skip_power_phase(&first_power_player).unwrap());
         let before = game.core.get_lifes()[&player1];
-        let player_id = game.core.current_player().expect("expected bidding player");
-        let event = game.validate_bid(&player_id, 0).unwrap();
-        let MatchEvent::BidPlaced {
-            passive_effects, ..
+        let player_id = game.current_player().expect("expected final power player");
+        let event = game.validate_skip_power_phase(&player_id).unwrap();
+        let MatchEvent::PowerPhaseSkipped {
+            effects: passive_effects,
+            ..
         } = &event
         else {
-            panic!("expected bid event");
+            panic!("expected power phase skip event");
         };
 
         assert_eq!(passive_effects.lifes.get(&player1), Some(&(before + 1)));
@@ -2210,15 +2481,15 @@ return {
         };
         let mut game = Game::new_with_seed(&players, settings, 42, registry).unwrap();
 
-        bid_current_player(&mut game, 0);
-        bid_current_player(&mut game, 0);
+        enter_power_phase(&mut game);
+        finish_power_phase(&mut game);
         let event = validate_current_turn(&game);
         game.apply_match_event(event);
         let event = validate_current_turn(&game);
         game.apply_match_event(event);
 
-        bid_current_player(&mut game, 0);
-        bid_current_player(&mut game, 0);
+        enter_power_phase(&mut game);
+        finish_power_phase(&mut game);
         let event = validate_current_turn(&game);
         game.apply_match_event(event);
         let before = game.core.get_lifes()[&player1];
@@ -2246,6 +2517,7 @@ return {
 
         game.apply_match_event(game.validate_bid(&player1, 1).unwrap());
         game.apply_match_event(game.validate_bid(&player2, 1).unwrap());
+        finish_power_phase(&mut game);
 
         let first_card = game.core.get_player_snapshots()[&player1].deck[0];
         let second_card = game.core.get_player_snapshots()[&player2].deck[0];
@@ -2278,6 +2550,7 @@ return {
         let player2 = PlayerId(Arc::from("P2"));
         let players = [player1.clone(), player2.clone()];
         let mut game = new_test_game(&players);
+        set_power_phase(&mut game, &players);
 
         game.power_decks.insert(
             player1.clone(),
@@ -2308,6 +2581,7 @@ return {
         let [player1, player2] = test_players();
         let players = [player1.clone(), player2.clone()];
         let mut game = new_test_game(&players);
+        set_power_phase(&mut game, &players);
 
         game.power_decks.insert(
             player1.clone(),
@@ -2361,6 +2635,7 @@ return {
         }]);
         let mut game =
             Game::new_with_seed(&players, test_settings(), 42, registry.clone()).unwrap();
+        set_power_phase(&mut game, &players);
         game.power_decks.insert(
             player1.clone(),
             vec![
@@ -2410,6 +2685,7 @@ return {
         }]);
         let mut game =
             Game::new_with_seed(&players, test_settings(), 42, registry.clone()).unwrap();
+        set_power_phase(&mut game, &players);
         game.power_decks.insert(
             player1.clone(),
             vec![
@@ -2459,6 +2735,7 @@ return {
         }]);
         let mut game =
             Game::new_with_seed(&players, test_settings(), 42, registry.clone()).unwrap();
+        set_power_phase(&mut game, &players);
         game.power_decks.insert(
             player1.clone(),
             vec![
@@ -2508,6 +2785,7 @@ return {
         }]);
         let mut game =
             Game::new_with_seed(&players, test_settings(), 42, registry.clone()).unwrap();
+        set_power_phase(&mut game, &players);
         game.power_decks.insert(
             player1.clone(),
             vec![
@@ -2575,6 +2853,7 @@ return {
         ]);
         let mut game =
             Game::new_with_seed(&players, test_settings(), 42, registry.clone()).unwrap();
+        set_power_phase(&mut game, &players);
         game.power_decks.insert(
             player1.clone(),
             vec![
@@ -2602,6 +2881,7 @@ return {
         let mut game = new_test_game(&players);
         let card = registry_power_card(&game.registry, "strike_10");
 
+        set_power_phase(&mut game, &players);
         game.power_decks.insert(player1.clone(), vec![card]);
         game.mana.insert(
             player1.clone(),
@@ -2651,6 +2931,7 @@ return {
             player_mercenaries: HashMap::new(),
         };
         let mut game = Game::new_with_seed(&players, settings, 42, registry).unwrap();
+        set_power_phase(&mut game, &players);
         game.mana
             .insert(player1.clone(), PlayerMana { current: 3, max: 3 });
 
@@ -2675,6 +2956,14 @@ return {
         game.power_decks.insert(player1.clone(), vec![card]);
 
         assert!(matches!(
+            game.validate_power_card(&player1, &card_id("strike_10"), Some(player2.clone())),
+            Err(PowerCardError::PowerStageRequired)
+        ));
+
+        game.apply_match_event(game.validate_bid(&player1, 1).unwrap());
+        game.apply_match_event(game.validate_bid(&player2, 1).unwrap());
+
+        assert!(matches!(
             game.validate_power_card(&player1, &card_id("strike_10"), None),
             Err(PowerCardError::TargetRequired)
         ));
@@ -2689,12 +2978,12 @@ return {
             Err(PowerCardError::NotYourTurn)
         ));
 
-        game.apply_match_event(game.validate_bid(&player1, 1).unwrap());
-        game.apply_match_event(game.validate_bid(&player2, 1).unwrap());
+        game.apply_match_event(game.validate_skip_power_phase(&player1).unwrap());
+        game.apply_match_event(game.validate_skip_power_phase(&player2).unwrap());
 
         assert!(matches!(
             game.validate_power_card(&player1, &card_id("strike_10"), Some(player2)),
-            Err(PowerCardError::BiddingStageRequired)
+            Err(PowerCardError::PowerStageRequired)
         ));
     }
 
@@ -2739,6 +3028,7 @@ return {
 
         game.apply_match_event(game.validate_bid(&player1, 1).unwrap());
         game.apply_match_event(game.validate_bid(&player2, 1).unwrap());
+        finish_power_phase(&mut game);
 
         let first_card = game.core.get_player_snapshots()[&player1].deck[0];
         let second_card = game.core.get_player_snapshots()[&player2].deck[0];
@@ -2835,6 +3125,7 @@ return {
 
         game.apply_match_event(game.validate_bid(&player1, 1).unwrap());
         game.apply_match_event(game.validate_bid(&player2, 1).unwrap());
+        finish_power_phase(&mut game);
 
         let first_card = game.core.get_player_snapshots()[&player1].deck[0];
         let second_card = game.core.get_player_snapshots()[&player2].deck[0];
