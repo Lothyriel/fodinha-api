@@ -19,6 +19,7 @@ pub fn lua_api_type_definitions() -> [power_lua_api::LuaTypeDefinition; 5] {
 
 use crate::models::{
     Card,
+    Rank,
     game::fodinha_power::PowerCardType,
     id::{MercenaryId, PlayerId},
 };
@@ -60,6 +61,7 @@ pub struct PowerScriptInput {
     pub draw_power_cards: DrawPowerCardsFn,
     pub event: Option<PassiveGameEvent>,
     pub card_state: Option<ScriptPowerCardState>,
+    pub current_trump: Rank,
 }
 
 impl std::fmt::Debug for PowerScriptInput {
@@ -83,6 +85,7 @@ pub struct PassiveScriptInput {
     pub event: PassiveGameEvent,
     pub players: HashMap<PlayerId, ScriptPlayerState>,
     pub draw_power_cards: DrawPowerCardsFn,
+    pub current_trump: Rank,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -129,7 +132,7 @@ pub enum PassiveGameEvent {
         player_id: PlayerId,
         card: Card,
     },
-    RoundEnded,
+    RoundEnded { winner: PlayerId, card: Card },
     SetStarted,
     SetEnded {
         lost_players: Vec<PlayerId>,
@@ -144,7 +147,7 @@ impl PassiveGameEvent {
             Self::PowerCardPlayed { .. } => metadata::ON_POWER_CARD_PLAYED,
             Self::RoundStart => metadata::ON_ROUND_START,
             Self::TurnPlayed { .. } => metadata::ON_TURN_PLAYED,
-            Self::RoundEnded => metadata::ON_ROUND_ENDED,
+            Self::RoundEnded { .. } => metadata::ON_ROUND_ENDED,
             Self::SetStarted => metadata::ON_SET_STARTED,
             Self::SetEnded { .. } => metadata::ON_SET_ENDED,
         }
@@ -157,7 +160,7 @@ impl PassiveGameEvent {
             Self::PowerCardPlayed { .. } => "power_card_played",
             Self::RoundStart => "round_start",
             Self::TurnPlayed { .. } => "turn_played",
-            Self::RoundEnded => "round_ended",
+            Self::RoundEnded { .. } => "round_ended",
             Self::SetStarted => "set_started",
             Self::SetEnded { .. } => "set_ended",
         }
@@ -219,6 +222,7 @@ mod tests {
             draw_power_cards: no_power_card_draws(),
             event: None,
             card_state: None,
+            current_trump: Rank::Four,
         }
     }
 
@@ -235,6 +239,7 @@ mod tests {
             event,
             players,
             draw_power_cards: no_power_card_draws(),
+            current_trump: Rank::Four,
         }
     }
 
@@ -255,7 +260,11 @@ mod tests {
         ));
         let lua = runtime::create_lua().unwrap();
         let globals = lua.globals();
-        let game = api::build_game_api(players, input.draw_power_cards.clone());
+        let game = api::build_game_api(
+            players,
+            input.draw_power_cards.clone(),
+            input.current_trump,
+        );
         let card = api::build_power_card(&input);
         let mercenary = api::build_mercenary(&passive_input(
             player,
@@ -432,6 +441,36 @@ mod tests {
         .unwrap();
 
         assert_eq!(output.lifes.get(&player), Some(&51));
+    }
+
+    #[test]
+    fn round_ended_event_exposes_winner_and_card() {
+        let player = PlayerId(Arc::from("P1"));
+        let output = run_passive_script(
+            r#"
+            return {
+                base_life = 50,
+                initial_mana = 2,
+                on_round_ended = function(game, event, mercenary)
+                    assert(event.winner == "P1")
+                    assert(event.card.rank == "Three")
+                    assert(event.card.suit == "Clubs")
+                    assert(game.get_current_trump() == "Four")
+                end,
+            }
+            "#,
+            passive_input(
+                player.clone(),
+                PassiveGameEvent::RoundEnded {
+                    winner: player.clone(),
+                    card: Card::new(Rank::Three, Suit::Clubs),
+                },
+                HashMap::from([(player, script_player(50))]),
+            ),
+        )
+        .unwrap();
+
+        assert!(output.lifes.is_empty());
     }
 
     #[test]

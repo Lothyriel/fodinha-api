@@ -140,7 +140,11 @@ pub fn run_power_card_script(
     let players = shared_players(&input.players);
     let lua = create_lua()?;
     let globals = lua.globals();
-    let game = api::build_game_api(Rc::clone(&players), input.draw_power_cards.clone());
+    let game = api::build_game_api(
+        Rc::clone(&players),
+        input.draw_power_cards.clone(),
+        input.current_trump,
+    );
     let card = api::build_power_card(&input);
 
     globals.set("game", game.clone())?;
@@ -181,7 +185,11 @@ pub fn run_passive_script(
     let players = shared_players(&input.players);
     let lua = create_lua()?;
     let globals = lua.globals();
-    let game = api::build_game_api(Rc::clone(&players), input.draw_power_cards.clone());
+    let game = api::build_game_api(
+        Rc::clone(&players),
+        input.draw_power_cards.clone(),
+        input.current_trump,
+    );
     let event = api::build_event_table(&lua, &input.event)?;
     let mercenary = api::build_mercenary(&input);
 

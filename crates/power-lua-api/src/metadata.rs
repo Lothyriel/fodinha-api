@@ -43,6 +43,7 @@ pub struct LuaPassiveHandlerDefinition {
 }
 
 pub const GET_LIVES: &str = "get_lives";
+pub const GET_CURRENT_TRUMP: &str = "get_current_trump";
 pub const ADD_LIVES: &str = "add_lives";
 pub const SET_LIVES: &str = "set_lives";
 pub const GET_BID: &str = "get_bid";
@@ -212,6 +213,12 @@ pub const GAME_METHODS: &[LuaMethodDefinition] = &[
         ],
         returns: &["integer"],
         description: "Adds or removes lives from a player and returns the new total.",
+    },
+    LuaMethodDefinition {
+        name: GET_CURRENT_TRUMP,
+        params: &[],
+        returns: &["CardRank"],
+        description: "Returns the current trump rank, derived from the upcard.",
     },
     LuaMethodDefinition {
         name: SET_LIVES,
@@ -554,6 +561,14 @@ pub const ROUND_ENDED_EVENT_FIELDS: &[LuaFieldDefinition] = &[LuaFieldDefinition
     name: "type",
     lua_type: "\"round_ended\"",
     description: "Event discriminator.",
+}, LuaFieldDefinition {
+    name: "winner",
+    lua_type: "PlayerId",
+    description: "Player who won the round.",
+}, LuaFieldDefinition {
+    name: "card",
+    lua_type: "Card",
+    description: "Card that won the round.",
 }];
 
 pub const SET_STARTED_EVENT_FIELDS: &[LuaFieldDefinition] = &[LuaFieldDefinition {

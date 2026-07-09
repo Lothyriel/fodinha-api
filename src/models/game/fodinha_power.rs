@@ -1062,22 +1062,25 @@ impl Game {
         };
 
         let mut preview = self.clone();
-        let round_ended = matches!(
-            preview.apply_match_event(base_event),
+        let round_winner = match preview.apply_match_event(base_event) {
             AppliedGameChange::TurnPlayed {
-                state: DealState {
-                    outcome: fodinha_classic::GameOutcome::RoundEnded { .. }
-                        | fodinha_classic::GameOutcome::SetPending { .. },
-                    ..
-                },
+                state:
+                    DealState {
+                        outcome: fodinha_classic::GameOutcome::RoundEnded { next, .. },
+                        pile,
+                    },
                 ..
-            }
-        );
+            } => pile
+                .into_iter()
+                .find(|turn| turn.player_id == next)
+                .map(|turn| (next, turn.card)),
+            _ => None,
+        };
 
-        if round_ended {
+        if let Some((winner, card)) = round_winner {
             passive_effects.merge(
                 preview
-                    .passive_effects(PassiveGameEvent::RoundEnded)
+                    .passive_effects(PassiveGameEvent::RoundEnded { winner, card })
                     .map_err(|error| DealError::PowerScript(error.to_string()))?,
             );
         }
@@ -1762,6 +1765,7 @@ impl Game {
                 draw_power_cards,
                 event: None,
                 card_state: None,
+                current_trump: self.core.current_trump(),
             },
         )?)
     }
@@ -1784,6 +1788,7 @@ impl Game {
                 draw_power_cards: self.power_card_drawer(),
                 event: Some(event),
                 card_state: Some(card.into()),
+                current_trump: self.core.current_trump(),
             },
         )
     }
@@ -1816,6 +1821,7 @@ impl Game {
                     event: event.clone(),
                     players: preview.script_players(None),
                     draw_power_cards: preview.power_card_drawer(),
+                    current_trump: preview.core.current_trump(),
                 },
             )?;
 

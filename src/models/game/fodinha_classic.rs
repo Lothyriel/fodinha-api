@@ -5,7 +5,7 @@ use indexmap::IndexMap;
 use crate::services::{GameInfoDto, GameStageDto, PlayerInfoDto};
 
 use crate::models::{
-    BiddingError, Card, DealError, GameError, Turn, id::PlayerId, util::CyclicIterator,
+    BiddingError, Card, DealError, GameError, Rank, Turn, id::PlayerId, util::CyclicIterator,
 };
 
 const INITIAL_CARDS_COUNT: usize = 1;
@@ -555,6 +555,10 @@ impl Game {
         self.players
             .get(player_id)
             .is_some_and(|player| player.is_alive())
+    }
+
+    pub fn current_trump(&self) -> Rank {
+        self.upcard.rank.get_next()
     }
 
     pub fn get_bidding_player(&self) -> PlayerId {

@@ -23,16 +23,19 @@ pub trait LuaApiType {
 pub struct LuaGame {
     players: Rc<RefCell<HashMap<String, ScriptPlayerState>>>,
     draw_power_cards: DrawPowerCardsFn,
+    current_trump: Rank,
 }
 
 impl LuaGame {
     pub(crate) fn new(
         players: Rc<RefCell<HashMap<String, ScriptPlayerState>>>,
         draw_power_cards: DrawPowerCardsFn,
+        current_trump: Rank,
     ) -> Self {
         Self {
             players,
             draw_power_cards,
+            current_trump,
         }
     }
 
@@ -43,6 +46,10 @@ impl LuaGame {
         };
 
         Ok(player.lifes)
+    }
+
+    fn get_current_trump(&self) -> &'static str {
+        rank_to_str(self.current_trump)
     }
 
     fn add_lives(&self, player_id: &str, delta: i64) -> mlua::Result<usize> {
@@ -305,6 +312,9 @@ impl UserData for LuaGame {
         methods.add_method(metadata::GET_LIVES, |_, this, player_id: String| {
             this.get_lives(&player_id)
         });
+        methods.add_method(metadata::GET_CURRENT_TRUMP, |_, this, ()| {
+            Ok(this.get_current_trump())
+        });
         methods.add_method(
             metadata::ADD_LIVES,
             |_, this, (player_id, delta): (String, i64)| this.add_lives(&player_id, delta),
@@ -386,6 +396,9 @@ impl UserData for LuaGame {
     fn add_fields<F: UserDataFields<Self>>(fields: &mut F) {
         add_game_function_field(fields, metadata::GET_LIVES, 1, |_, this, args| {
             this.get_lives(&string_arg(&args, 0, "player_id")?)
+        });
+        add_game_function_field(fields, metadata::GET_CURRENT_TRUMP, 0, |_, this, _| {
+            Ok(this.get_current_trump())
         });
         add_game_function_field(fields, metadata::ADD_LIVES, 2, |_, this, args| {
             this.add_lives(
@@ -678,8 +691,9 @@ pub(crate) fn userdata_type_definitions() -> [LuaTypeDefinition; 5] {
 pub(crate) fn build_game_api(
     players: Rc<RefCell<HashMap<String, ScriptPlayerState>>>,
     draw_power_cards: DrawPowerCardsFn,
+    current_trump: Rank,
 ) -> LuaGame {
-    LuaGame::new(players, draw_power_cards)
+    LuaGame::new(players, draw_power_cards, current_trump)
 }
 
 pub(crate) fn build_power_card(input: &PowerScriptInput) -> LuaPowerCard {
@@ -713,8 +727,11 @@ pub(crate) fn build_event_table(lua: &Lua, event: &PassiveGameEvent) -> mlua::Re
     match event {
         PassiveGameEvent::MatchStarted
         | PassiveGameEvent::RoundStart
-        | PassiveGameEvent::RoundEnded
         | PassiveGameEvent::SetStarted => {}
+        PassiveGameEvent::RoundEnded { winner, card } => {
+            table.set("winner", winner.as_str())?;
+            table.set("card", LuaCard::from_card(*card))?;
+        }
         PassiveGameEvent::SetEnded { lost_players } => {
             table.set("lost_players", lost_players.iter().map(PlayerId::as_str).collect::<Vec<_>>())?;
         }
