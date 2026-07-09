@@ -1359,15 +1359,19 @@ impl Game {
                 } else {
                     Some(passive_mana)
                 };
-                let power_decks = if passive_power_decks.is_empty() {
+                let mut power_decks = if passive_power_decks.is_empty() {
                     None
                 } else {
                     Some(passive_power_decks.into_iter().collect::<IndexMap<_, _>>())
                 };
 
+                let mut mana = mana;
                 if is_set_end {
                     self.merge_effects_into_pending_resolution(&passive_effects);
                     if let (Some(next_set), Some(next_power_set)) = (next_set.clone(), next_power_set) {
+                        self.apply_power_set(&next_power_set);
+                        power_decks = Some(dto_decks(&self.power_decks));
+                        mana = Some(mana_to_dto(&self.mana));
                         self.pending_set_resolution = Some(PendingSetResolution {
                             next_set,
                             next_power_set,
@@ -3141,6 +3145,7 @@ return {
         let event = validate_current_turn(&game);
         game.apply_match_event(event);
 
+        finish_power_phase(&mut game);
         enter_power_phase(&mut game);
         finish_power_phase(&mut game);
         let event = validate_current_turn(&game);
