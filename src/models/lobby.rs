@@ -32,16 +32,22 @@ pub struct Lobby {
     pub state: LobbyState,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum LobbyInfoInternal {
-    NotStarted(HashMap<PlayerId, LobbyPlayerStatus>),
+    NotStarted(WaitingLobbySnapshotInternal),
     Playing(GameInfoDto),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum MatchSnapshotInternal {
-    Waiting(HashMap<PlayerId, LobbyPlayerStatus>),
+    Waiting(WaitingLobbySnapshotInternal),
     Playing(PlayingMatchSnapshotInternal),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct WaitingLobbySnapshotInternal {
+    pub players: HashMap<PlayerId, LobbyPlayerStatus>,
+    pub settings: GameSettings,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -95,14 +101,17 @@ impl Lobby {
 
     pub fn get_info(&self, player_id: &PlayerId) -> LobbyInfoInternal {
         match &self.state {
-            LobbyState::NotStarted(_) => {
+            LobbyState::NotStarted(settings) => {
                 let players = self
                     .players
                     .iter()
                     .map(|(id, p)| (id.clone(), p.clone()))
                     .collect();
 
-                LobbyInfoInternal::NotStarted(players)
+                LobbyInfoInternal::NotStarted(WaitingLobbySnapshotInternal {
+                    players,
+                    settings: settings.clone(),
+                })
             }
             LobbyState::Playing(game) => LobbyInfoInternal::Playing(game.get_game_info(player_id)),
         }
@@ -110,14 +119,17 @@ impl Lobby {
 
     pub fn get_snapshot(&self, player_id: &PlayerId) -> MatchSnapshotInternal {
         match &self.state {
-            LobbyState::NotStarted(_) => {
+            LobbyState::NotStarted(settings) => {
                 let players = self
                     .players
                     .iter()
                     .map(|(id, p)| (id.clone(), p.clone()))
                     .collect();
 
-                MatchSnapshotInternal::Waiting(players)
+                MatchSnapshotInternal::Waiting(WaitingLobbySnapshotInternal {
+                    players,
+                    settings: settings.clone(),
+                })
             }
             LobbyState::Playing(game) => {
                 let players = self

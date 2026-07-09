@@ -56,6 +56,7 @@ async fn create_lobby(
 struct CreateLobbyRequest {
     game_type: GameType,
     lifes: Option<usize>,
+    life_multiplier: Option<f64>,
     power_deck_id: Option<DeckId>,
 }
 
@@ -86,20 +87,11 @@ impl CreateLobbyRequest {
         let power_deck_id = self.power_deck_id.clone().ok_or_else(|| {
             LobbyError::InvalidSettings("power_deck_id is required for Fodinha Power".to_string())
         })?;
-
-        let lifes = if let Some(lifes) = self.lifes {
-            validate_lifes(
-                self.game_type,
-                lifes,
-                fodinha_power::MIN_INITIAL_LIFES,
-                fodinha_power::MAX_INITIAL_LIFES,
-            )?
-        } else {
-            fodinha_power::DEFAULT_INITIAL_LIFES
-        };
+        let life_multiplier = self.life_multiplier.unwrap_or(1.0);
+        validate_life_multiplier(life_multiplier)?;
 
         Ok(GameSettings::FodinhaPower(fodinha_power::GameSettings {
-            lifes,
+            life_multiplier,
             power_deck_id,
             player_mercenaries: Default::default(),
         }))
@@ -119,4 +111,14 @@ fn validate_lifes(
     }
 
     Ok(lifes)
+}
+
+fn validate_life_multiplier(life_multiplier: f64) -> Result<f64, LobbyError> {
+    if !life_multiplier.is_finite() || life_multiplier <= 0.0 {
+        return Err(LobbyError::InvalidSettings(
+            "life_multiplier for fodinha_power must be greater than 0".to_string(),
+        ));
+    }
+
+    Ok(life_multiplier)
 }

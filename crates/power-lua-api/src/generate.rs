@@ -52,6 +52,9 @@ pub fn render_definitions() -> String {
 pub fn render_power_card_template() -> &'static str {
     r#"---@type PowerCardScript
 return {
+    type = PowerCardType.Instant,
+    mana_cost = 1,
+    quantity = 1,
     effect = function(game, card)
     end,
 }
@@ -61,6 +64,8 @@ return {
 pub fn render_mercenary_passive_template() -> &'static str {
     r#"---@type MercenaryPassiveScript
 return {
+    base_life = 50,
+    initial_mana = 2,
     on_match_started = function(game, event, mercenary)
     end,
     on_round_start = function(game, event, mercenary)
@@ -140,10 +145,15 @@ fn write_method(out: &mut String, class_name: &str, method: &crate::metadata::Lu
 
 fn write_script_shapes(out: &mut String) {
     writeln!(out, "---@class PowerCardScript").unwrap();
+    writeln!(out, "---@field type PowerCardType").unwrap();
+    writeln!(out, "---@field mana_cost integer").unwrap();
+    writeln!(out, "---@field quantity integer").unwrap();
     writeln!(out, "---@field effect fun(game: Game, card: PowerCard)").unwrap();
     writeln!(out).unwrap();
 
     writeln!(out, "---@class MercenaryPassiveScript").unwrap();
+    writeln!(out, "---@field base_life integer").unwrap();
+    writeln!(out, "---@field initial_mana integer").unwrap();
     for handler in PASSIVE_HANDLERS {
         writeln!(out, "---{}", handler.description).unwrap();
         writeln!(
@@ -174,6 +184,18 @@ fn write_event_classes(out: &mut String) {
 }
 
 fn write_globals(out: &mut String) {
+    writeln!(out, "---@class PowerCardTypeEnum").unwrap();
+    writeln!(out, "---@field Instant PowerCardType").unwrap();
+    writeln!(out, "---@field Targetable PowerCardType").unwrap();
+    writeln!(out, "---@field Interactive PowerCardType").unwrap();
+    writeln!(out, "---@type PowerCardTypeEnum").unwrap();
+    writeln!(out, "PowerCardType = {{").unwrap();
+    writeln!(out, "    Instant = \"instant\",").unwrap();
+    writeln!(out, "    Targetable = \"targetable\",").unwrap();
+    writeln!(out, "    Interactive = \"interactive\",").unwrap();
+    writeln!(out, "}}").unwrap();
+    writeln!(out).unwrap();
+
     writeln!(out, "---@type Game").unwrap();
     writeln!(out, "game = nil").unwrap();
     writeln!(out).unwrap();

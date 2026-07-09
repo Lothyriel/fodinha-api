@@ -9,7 +9,6 @@ use std::collections::HashMap;
 use crate::{
     infra::{UserClaims, telemetry},
     models::{
-        game::fodinha_power::PowerCardType,
         id::{CardId, MercenaryId},
     },
     services::{
@@ -108,8 +107,6 @@ async fn create_card_from_asset(
                 kind: body.kind.unwrap_or(CardDefinitionKind::Community),
                 name: body.name,
                 description: body.description.unwrap_or_default(),
-                mana_cost: body.mana_cost.unwrap_or_default(),
-                card_type: body.card_type,
             },
         )
         .await?;
@@ -165,9 +162,6 @@ struct CreateCardFromAssetRequest {
     kind: Option<CardDefinitionKind>,
     name: String,
     description: Option<String>,
-    mana_cost: Option<usize>,
-    #[serde(rename = "type")]
-    card_type: PowerCardType,
 }
 
 async fn read_create_card_asset_input(
@@ -211,8 +205,6 @@ async fn read_create_card_input(
     let mut name = String::new();
     let mut description = String::new();
     let mut kind = CardDefinitionKind::Community;
-    let mut mana_cost = 0;
-    let mut card_type = None;
     let mut image = Vec::new();
     let mut script = Vec::new();
 
@@ -245,30 +237,6 @@ async fn read_create_card_input(
                     .parse::<CardDefinitionKind>()
                     .map_err(CardDefinitionError::Invalid)?;
             }
-            "mana_cost" => {
-                let value = field
-                    .text()
-                    .await
-                    .map_err(|error| CardDefinitionError::Invalid(error.to_string()))?;
-                let trimmed = value.trim();
-
-                if !trimmed.is_empty() {
-                    mana_cost = trimmed.parse::<usize>().map_err(|_| {
-                        CardDefinitionError::Invalid("mana_cost must be a number".to_string())
-                    })?;
-                }
-            }
-            "type" => {
-                let value = field
-                    .text()
-                    .await
-                    .map_err(|error| CardDefinitionError::Invalid(error.to_string()))?;
-                card_type = Some(
-                    value
-                        .parse::<PowerCardType>()
-                        .map_err(CardDefinitionError::Invalid)?,
-                );
-            }
             "image" => {
                 image = field_bytes(field, MAX_IMAGE_BYTES, "image").await?;
             }
@@ -291,9 +259,6 @@ async fn read_create_card_input(
         kind,
         name,
         description,
-        mana_cost,
-        card_type: card_type
-            .ok_or_else(|| CardDefinitionError::Invalid("type is required".to_string()))?,
         image,
         script,
     })
@@ -305,8 +270,6 @@ async fn read_update_card_input(
     let mut name = String::new();
     let mut description = String::new();
     let mut kind = None;
-    let mut mana_cost = 0;
-    let mut card_type = None;
     let mut image = None;
     let mut script = None;
 
@@ -341,30 +304,6 @@ async fn read_update_card_input(
                         .map_err(CardDefinitionError::Invalid)?,
                 );
             }
-            "mana_cost" => {
-                let value = field
-                    .text()
-                    .await
-                    .map_err(|error| CardDefinitionError::Invalid(error.to_string()))?;
-                let trimmed = value.trim();
-
-                if !trimmed.is_empty() {
-                    mana_cost = trimmed.parse::<usize>().map_err(|_| {
-                        CardDefinitionError::Invalid("mana_cost must be a number".to_string())
-                    })?;
-                }
-            }
-            "type" => {
-                let value = field
-                    .text()
-                    .await
-                    .map_err(|error| CardDefinitionError::Invalid(error.to_string()))?;
-                card_type = Some(
-                    value
-                        .parse::<PowerCardType>()
-                        .map_err(CardDefinitionError::Invalid)?,
-                );
-            }
             "image" => {
                 image = Some(field_bytes(field, MAX_IMAGE_BYTES, "image").await?);
             }
@@ -387,9 +326,6 @@ async fn read_update_card_input(
         kind,
         name,
         description,
-        mana_cost,
-        card_type: card_type
-            .ok_or_else(|| CardDefinitionError::Invalid("type is required".to_string()))?,
         image,
         script,
     })

@@ -29,7 +29,6 @@ const POWER_CARDS_PER_PLAYER: usize = 1;
 const GENERIC_POWER_CARDS_PER_PLAYER: usize = 1;
 const MERCENARY_POWER_CARDS_PER_PLAYER: usize = 1;
 const INITIAL_MANA_POOL: usize = 2;
-const MANA_POOL_GAIN_PER_SET: usize = 1;
 const MANA_REGEN_PER_BIDDING_TURN: usize = 1;
 
 pub const DEFAULT_INITIAL_LIFES: usize = 50;
@@ -60,11 +59,16 @@ enum PowerGameStage {
     Dealing,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct GameSettings {
-    pub lifes: usize,
+    #[serde(default = "default_life_multiplier")]
+    pub life_multiplier: f64,
     pub power_deck_id: DeckId,
     pub player_mercenaries: HashMap<PlayerId, MercenaryId>,
+}
+
+fn default_life_multiplier() -> f64 {
+    1.0
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -82,10 +86,11 @@ pub struct PlayerMana {
 
 impl PlayerMana {
     fn initial() -> Self {
-        Self {
-            current: INITIAL_MANA_POOL,
-            max: INITIAL_MANA_POOL,
-        }
+        Self::with_max(INITIAL_MANA_POOL)
+    }
+
+    fn with_max(max: usize) -> Self {
+        Self { current: max, max }
     }
 
     fn regenerate(&mut self) {
@@ -93,11 +98,6 @@ impl PlayerMana {
             .current
             .saturating_add(MANA_REGEN_PER_BIDDING_TURN)
             .min(self.max);
-    }
-
-    fn increase_pool_for_set(&mut self) {
-        self.max = self.max.saturating_add(MANA_POOL_GAIN_PER_SET);
-        self.current = self.max;
     }
 
     fn to_dto(&self) -> PlayerManaDto {
@@ -338,6 +338,8 @@ pub enum PowerCardError {
 pub enum PowerCardDefinitionError {
     #[error("no FodinhaPower card definitions were loaded for this deck")]
     MissingDefinitions,
+    #[error("missing mercenary definition `{mercenary_id}`")]
+    MissingMercenaryDefinition { mercenary_id: String },
     #[error("invalid FodinhaPower card definition {path}: {message}")]
     InvalidDefinition { path: String, message: String },
     #[error("duplicate FodinhaPower card id `{id}` in {path}")]
@@ -350,6 +352,7 @@ pub struct PowerCardDefinitionInput {
     pub name: String,
     pub description: String,
     pub mana_cost: usize,
+    pub quantity: usize,
     pub card_type: PowerCardType,
     pub image_url: Option<String>,
     pub script: String,
@@ -368,6 +371,8 @@ pub struct PowerDeckDefinitionInput {
 pub struct MercenaryDefinitionInput {
     pub id: MercenaryId,
     pub name: String,
+    pub base_life: usize,
+    pub initial_mana: usize,
     pub passive_script: String,
     pub passive_source: String,
 }
@@ -378,6 +383,7 @@ struct PowerCardDefinition {
     name: String,
     description: String,
     mana_cost: usize,
+    quantity: usize,
     card_type: PowerCardType,
     image_url: Option<String>,
     script: String,
@@ -386,7 +392,11 @@ struct PowerCardDefinition {
 
 impl PowerCardDefinition {
     fn from_input(input: PowerCardDefinitionInput) -> Result<Self, PowerCardDefinitionError> {
-        super::power_lua::validate_power_card_script(&input.script, &input.source).map_err(
+        let script_definition = super::power_lua::parse_power_card_script_definition(
+            &input.script,
+            &input.source,
+        )
+        .map_err(
             |error| PowerCardDefinitionError::InvalidDefinition {
                 path: input.source.clone(),
                 message: error.to_string(),
@@ -397,8 +407,9 @@ impl PowerCardDefinition {
             id: input.id,
             name: input.name,
             description: input.description,
-            mana_cost: input.mana_cost,
-            card_type: input.card_type,
+            mana_cost: script_definition.mana_cost,
+            quantity: script_definition.quantity,
+            card_type: script_definition.card_type,
             image_url: input.image_url,
             script: input.script,
             source: input.source,
@@ -483,13 +494,15 @@ impl PowerDeckDefinition {
 #[derive(Debug, Clone)]
 struct MercenaryDefinition {
     id: MercenaryId,
+    base_life: usize,
+    initial_mana: usize,
     passive_script: String,
     passive_source: String,
 }
 
 impl MercenaryDefinition {
     fn from_input(input: MercenaryDefinitionInput) -> Result<Self, PowerCardDefinitionError> {
-        super::power_lua::validate_mercenary_passive_script(
+        let passive_definition = super::power_lua::parse_mercenary_passive_definition(
             &input.passive_script,
             &input.passive_source,
         )
@@ -500,6 +513,8 @@ impl MercenaryDefinition {
 
         Ok(Self {
             id: input.id,
+            base_life: passive_definition.base_life,
+            initial_mana: passive_definition.initial_mana,
             passive_script: input.passive_script,
             passive_source: input.passive_source,
         })
@@ -687,7 +702,7 @@ impl PowerCardRegistry {
         player_id: &PlayerId,
     ) -> Result<Vec<PowerCardDefinition>, PowerCardDefinitionError> {
         if !deck_definition.is_partitioned() {
-            return self.power_card_definitions_from_ids(&deck_definition.card_ids);
+            return self.weighted_power_card_definitions_from_ids(&deck_definition.card_ids);
         }
 
         let mut card_ids = deck_definition.generic_card_ids.clone();
@@ -697,7 +712,28 @@ impl PowerCardRegistry {
             card_ids.extend(mercenary_card_ids.iter().cloned());
         }
 
-        self.power_card_definitions_from_ids(&card_ids)
+        self.weighted_power_card_definitions_from_ids(&card_ids)
+    }
+
+    fn weighted_power_card_definitions_from_ids(
+        &self,
+        card_ids: &[CardId],
+    ) -> Result<Vec<PowerCardDefinition>, PowerCardDefinitionError> {
+        let definitions = self.power_card_definitions_from_ids(card_ids)?;
+        let definitions = definitions
+            .into_iter()
+            .flat_map(|definition| {
+                let quantity = definition.quantity.max(1);
+
+                std::iter::repeat_n(definition, quantity)
+            })
+            .collect::<Vec<_>>();
+
+        if definitions.is_empty() {
+            return Err(PowerCardDefinitionError::MissingDefinitions);
+        }
+
+        Ok(definitions)
     }
 }
 
@@ -862,7 +898,7 @@ impl Game {
             0,
             &settings.power_deck_id,
             &settings.player_mercenaries,
-            Self::initial_mana(players),
+            Self::initial_mana(players, &settings.player_mercenaries, registry)?,
             registry,
         )?;
         let game = Self::from_started(
@@ -911,12 +947,12 @@ impl Game {
         )?;
 
         let mana = if power_set.mana.is_empty() {
-            Self::initial_mana(players)
+            Self::initial_mana(players, &settings.player_mercenaries, &registry)?
         } else {
             power_set.mana
         };
 
-        Ok(Self {
+        let mut game = Self {
             core: classic,
             stage: PowerGameStage::Bidding,
             power_decks: power_set.decks,
@@ -927,7 +963,11 @@ impl Game {
             power_seed: power_set.shuffle.seed,
             draw_seed,
             next_power_shuffle_sequence: power_set.shuffle.sequence.wrapping_add(1),
-        })
+        };
+        let initial_lifes = game.initial_lifes(players, settings.life_multiplier)?;
+        game.core.apply_life_totals(&initial_lifes);
+
+        Ok(game)
     }
 
     pub fn validate_bid(
@@ -1406,6 +1446,8 @@ impl Game {
                 PassiveScriptInput {
                     mercenary_id: definition.id,
                     owner_id: player_id.clone(),
+                    base_life: definition.base_life,
+                    initial_mana: definition.initial_mana,
                     event: event.clone(),
                     players: self.script_players(None),
                     draw_power_cards: self.power_card_drawer(),
@@ -1595,9 +1637,9 @@ impl Game {
         }
     }
 
-    fn classic_settings(settings: &GameSettings) -> fodinha_classic::GameSettings {
+    fn classic_settings(_settings: &GameSettings) -> fodinha_classic::GameSettings {
         fodinha_classic::GameSettings {
-            lifes: settings.lifes,
+            lifes: DEFAULT_INITIAL_LIFES,
         }
     }
 
@@ -1781,7 +1823,7 @@ impl Game {
         sequence: i64,
         registry: &PowerCardRegistry,
     ) -> Result<IndexMap<PlayerId, Vec<PowerCard>>, PowerCardDefinitionError> {
-        let definitions = registry.power_card_definitions_from_ids(&deck_definition.card_ids)?;
+        let definitions = registry.weighted_power_card_definitions_from_ids(&deck_definition.card_ids)?;
         let needed_cards = players.len().saturating_mul(POWER_CARDS_PER_PLAYER);
         let mut deck = (0..needed_cards)
             .map(|idx| definitions[idx % definitions.len()].to_card())
@@ -1809,8 +1851,8 @@ impl Game {
         sequence: i64,
         registry: &PowerCardRegistry,
     ) -> Result<IndexMap<PlayerId, Vec<PowerCard>>, PowerCardDefinitionError> {
-        let generic_cards =
-            registry.power_card_definitions_from_ids(&deck_definition.generic_card_ids)?;
+        let generic_cards = registry
+            .weighted_power_card_definitions_from_ids(&deck_definition.generic_card_ids)?;
         let mut generic_deck = (0..players.len().saturating_mul(GENERIC_POWER_CARDS_PER_PLAYER))
             .map(|idx| generic_cards[idx % generic_cards.len()].to_card())
             .collect::<Vec<_>>();
@@ -1826,7 +1868,7 @@ impl Game {
             if let Some(mercenary_id) = player_mercenaries.get(player_id)
                 && let Some(card_ids) = deck_definition.mercenary_card_ids.get(mercenary_id)
             {
-                let mercenary_cards = registry.power_card_definitions_from_ids(card_ids)?;
+                let mercenary_cards = registry.weighted_power_card_definitions_from_ids(card_ids)?;
                 let mut mercenary_deck = (0..MERCENARY_POWER_CARDS_PER_PLAYER)
                     .map(|idx| mercenary_cards[idx % mercenary_cards.len()].to_card())
                     .collect::<Vec<_>>();
@@ -1847,10 +1889,29 @@ impl Game {
         Ok(decks)
     }
 
-    fn initial_mana(players: &[PlayerId]) -> IndexMap<PlayerId, PlayerMana> {
+    fn initial_mana(
+        players: &[PlayerId],
+        player_mercenaries: &HashMap<PlayerId, MercenaryId>,
+        registry: &PowerCardRegistry,
+    ) -> Result<IndexMap<PlayerId, PlayerMana>, PowerCardDefinitionError> {
         players
             .iter()
-            .map(|player_id| (player_id.clone(), PlayerMana::initial()))
+            .map(|player_id| {
+                let mana = match player_mercenaries.get(player_id) {
+                    Some(mercenary_id) => {
+                        let definition = registry
+                            .mercenary_definition(mercenary_id)
+                            .ok_or_else(|| PowerCardDefinitionError::MissingMercenaryDefinition {
+                                mercenary_id: mercenary_id.to_string(),
+                            })?;
+
+                        PlayerMana::with_max(definition.initial_mana)
+                    }
+                    None => PlayerMana::initial(),
+                };
+
+                Ok((player_id.clone(), mana))
+            })
             .collect()
     }
 
@@ -1858,14 +1919,38 @@ impl Game {
         players
             .iter()
             .map(|player_id| {
-                let mut mana = self
+                let mana = self
                     .mana
                     .get(player_id)
                     .cloned()
                     .unwrap_or_else(PlayerMana::initial);
-                mana.increase_pool_for_set();
 
                 (player_id.clone(), mana)
+            })
+            .collect()
+    }
+
+    fn initial_lifes(
+        &self,
+        players: &[PlayerId],
+        life_multiplier: f64,
+    ) -> Result<HashMap<PlayerId, usize>, PowerCardDefinitionError> {
+        players
+            .iter()
+            .map(|player_id| {
+                let base_lifes = match self.player_mercenaries.get(player_id) {
+                    Some(mercenary_id) => self
+                        .registry
+                        .mercenary_definition(mercenary_id)
+                        .ok_or_else(|| PowerCardDefinitionError::MissingMercenaryDefinition {
+                            mercenary_id: mercenary_id.to_string(),
+                        })?
+                        .base_life,
+                    None => DEFAULT_INITIAL_LIFES,
+                };
+                let lifes = scaled_life_total(base_lifes, life_multiplier);
+
+                Ok((player_id.clone(), lifes))
             })
             .collect()
     }
@@ -1899,6 +1984,10 @@ impl Game {
             HashMap::from([(next, mana)])
         }
     }
+}
+
+fn scaled_life_total(base_lifes: usize, life_multiplier: f64) -> usize {
+    ((base_lifes as f64) * life_multiplier).round().max(1.0) as usize
 }
 
 fn dto_decks(decks: &IndexMap<PlayerId, Vec<PowerCard>>) -> IndexMap<PlayerId, Vec<PowerCardDto>> {
@@ -1961,6 +2050,9 @@ mod tests {
 
     const HEAL_10_SCRIPT: &str = r#"
 return {
+    type = PowerCardType.Instant,
+    mana_cost = 2,
+    quantity = 1,
     effect = function(game, card)
         game.add_lives(card.owner_id, 10)
     end,
@@ -1969,6 +2061,9 @@ return {
 
     const STRIKE_10_SCRIPT: &str = r#"
 return {
+    type = PowerCardType.Targetable,
+    mana_cost = 3,
+    quantity = 1,
     effect = function(game, card)
         game.add_lives(card.target_player_id, -10)
     end,
@@ -1977,6 +2072,9 @@ return {
 
     const NOOP_POWER_SCRIPT: &str = r#"
 return {
+    type = PowerCardType.Instant,
+    mana_cost = 0,
+    quantity = 1,
     effect = function(game, card)
     end,
 }
@@ -1984,6 +2082,8 @@ return {
 
     const BID_HEAL_PASSIVE_SCRIPT: &str = r#"
 return {
+    base_life = 50,
+    initial_mana = 2,
     on_bid_placed = function(game, event, mercenary)
         if event.player_id == mercenary.owner_id then
             game.add_lives(mercenary.owner_id, 1)
@@ -1994,6 +2094,8 @@ return {
 
     const MATCH_STARTED_HEAL_PASSIVE_SCRIPT: &str = r#"
 return {
+    base_life = 50,
+    initial_mana = 2,
     on_match_started = function(game, event, mercenary)
         game.add_lives(mercenary.owner_id, 2)
     end,
@@ -2002,6 +2104,8 @@ return {
 
     const ROUND_START_HEAL_PASSIVE_SCRIPT: &str = r#"
 return {
+    base_life = 50,
+    initial_mana = 2,
     on_round_start = function(game, event, mercenary)
         game.add_lives(mercenary.owner_id, 1)
     end,
@@ -2010,6 +2114,8 @@ return {
 
     const ROUND_ENDED_HEAL_PASSIVE_SCRIPT: &str = r#"
 return {
+    base_life = 50,
+    initial_mana = 2,
     on_round_ended = function(game, event, mercenary)
         game.add_lives(mercenary.owner_id, 1)
     end,
@@ -2037,6 +2143,7 @@ return {
                 name: "Heal 10".to_string(),
                 description: "Restore 10 lives to yourself.".to_string(),
                 mana_cost: 2,
+                quantity: 1,
                 card_type: PowerCardType::Instant,
                 image_url: None,
                 script: HEAL_10_SCRIPT.to_string(),
@@ -2047,6 +2154,7 @@ return {
                 name: "Strike 10".to_string(),
                 description: "Remove 10 lives from a target player.".to_string(),
                 mana_cost: 3,
+                quantity: 1,
                 card_type: PowerCardType::Targetable,
                 image_url: None,
                 script: STRIKE_10_SCRIPT.to_string(),
@@ -2068,6 +2176,7 @@ return {
             name: id.clone(),
             description: "Test card".to_string(),
             mana_cost: 0,
+            quantity: 1,
             card_type: PowerCardType::Instant,
             image_url: None,
             script: NOOP_POWER_SCRIPT.to_string(),
@@ -2098,6 +2207,22 @@ return {
                 }],
             )
             .expect("valid partitioned deck");
+        registry
+            .replace_mercenary_definitions(vec![MercenaryDefinitionInput {
+                id: mercenary_id("artemis"),
+                name: "Artemis".to_string(),
+                base_life: 50,
+                initial_mana: 2,
+                passive_script: r#"
+                    return {
+                        base_life = 50,
+                        initial_mana = 2,
+                    }
+                "#
+                .to_string(),
+                passive_source: "test/artemis_passive.lua".to_string(),
+            }])
+            .expect("valid partitioned mercenary");
 
         registry
     }
@@ -2109,10 +2234,14 @@ return {
             name: "Draw Eight".to_string(),
             description: "Draws eight power cards.".to_string(),
             mana_cost: 0,
+            quantity: 1,
             card_type: PowerCardType::Instant,
             image_url: None,
             script: r#"
                 return {
+                    type = PowerCardType.Instant,
+                    mana_cost = 0,
+                    quantity = 1,
                     effect = function(game, card)
                         game:draw_power_cards(card.owner_id, 8)
                     end,
@@ -2127,6 +2256,7 @@ return {
             name: format!("Drawn {idx}"),
             description: "Can be drawn.".to_string(),
             mana_cost: 0,
+            quantity: 1,
             card_type: PowerCardType::Instant,
             image_url: None,
             script: NOOP_POWER_SCRIPT.to_string(),
@@ -2148,6 +2278,8 @@ return {
             .replace_mercenary_definitions(vec![MercenaryDefinitionInput {
                 id: mercenary_id("artemis"),
                 name: "Artemis".to_string(),
+                base_life: 50,
+                initial_mana: 2,
                 passive_script: script.to_string(),
                 passive_source: "test/artemis_passive.lua".to_string(),
             }])
@@ -2173,7 +2305,7 @@ return {
 
     fn test_settings() -> GameSettings {
         GameSettings {
-            lifes: DEFAULT_INITIAL_LIFES,
+            life_multiplier: 1.0,
             power_deck_id: test_deck_id(),
             player_mercenaries: HashMap::new(),
         }
@@ -2317,6 +2449,60 @@ return {
     }
 
     #[test]
+    fn mercenary_defines_base_life_and_initial_mana() {
+        let registry = test_registry_with_mercenary_passive(
+            r#"
+                return {
+                    base_life = 123,
+                    initial_mana = 7,
+                }
+            "#,
+        );
+        let [player1, player2] = test_players();
+        let players = [player1.clone(), player2.clone()];
+        let settings = GameSettings {
+            life_multiplier: 1.0,
+            power_deck_id: test_deck_id(),
+            player_mercenaries: HashMap::from([
+                (player1.clone(), mercenary_id("artemis")),
+                (player2.clone(), mercenary_id("artemis")),
+            ]),
+        };
+        let game = Game::new_with_seed(&players, settings, 42, registry).unwrap();
+
+        assert_eq!(game.core.get_lifes().get(&player1), Some(&123));
+        assert_eq!(game.core.get_lifes().get(&player2), Some(&123));
+        assert_eq!(game.mana.get(&player1), Some(&PlayerMana { current: 7, max: 7 }));
+        assert_eq!(game.mana.get(&player2), Some(&PlayerMana { current: 7, max: 7 }));
+    }
+
+    #[test]
+    fn life_multiplier_scales_mercenary_base_life() {
+        let registry = test_registry_with_mercenary_passive(
+            r#"
+                return {
+                    base_life = 50,
+                    initial_mana = 2,
+                }
+            "#,
+        );
+        let [player1, player2] = test_players();
+        let players = [player1.clone(), player2.clone()];
+        let settings = GameSettings {
+            life_multiplier: 0.2,
+            power_deck_id: test_deck_id(),
+            player_mercenaries: HashMap::from([
+                (player1.clone(), mercenary_id("artemis")),
+                (player2.clone(), mercenary_id("artemis")),
+            ]),
+        };
+        let game = Game::new_with_seed(&players, settings, 42, registry).unwrap();
+
+        assert_eq!(game.core.get_lifes().get(&player1), Some(&10));
+        assert_eq!(game.core.get_lifes().get(&player2), Some(&10));
+    }
+
+    #[test]
     fn game_started_event_persists_draw_seed() {
         let registry = test_registry();
         let players = test_players();
@@ -2329,6 +2515,64 @@ return {
         };
 
         assert_eq!(draw_seed, 77);
+    }
+
+    #[test]
+    fn card_quantity_controls_draw_pool_distribution() {
+        let heavy_id = card_id("heavy");
+        let light_id = card_id("light");
+        let registry = registry_with_power_card_definitions(vec![
+            PowerCardDefinitionInput {
+                id: heavy_id.clone(),
+                name: "Heavy".to_string(),
+                description: "Appears more often.".to_string(),
+                mana_cost: 1,
+                quantity: 3,
+                card_type: PowerCardType::Instant,
+                image_url: None,
+                script: r#"
+                    return {
+                        type = PowerCardType.Instant,
+                        mana_cost = 1,
+                        quantity = 3,
+                        effect = function(game, card)
+                        end,
+                    }
+                "#
+                .to_string(),
+                source: "test/heavy.lua".to_string(),
+            },
+            PowerCardDefinitionInput {
+                id: light_id.clone(),
+                name: "Light".to_string(),
+                description: "Appears less often.".to_string(),
+                mana_cost: 1,
+                quantity: 1,
+                card_type: PowerCardType::Instant,
+                image_url: None,
+                script: r#"
+                    return {
+                        type = PowerCardType.Instant,
+                        mana_cost = 1,
+                        quantity = 1,
+                        effect = function(game, card)
+                        end,
+                    }
+                "#
+                .to_string(),
+                source: "test/light.lua".to_string(),
+            },
+        ]);
+        let player = PlayerId(Arc::from("P1"));
+        let drawn = registry
+            .draw_power_cards_for_player(&test_deck_id(), &HashMap::new(), &player, 4, (42, 0), 0)
+            .unwrap();
+        let heavy_count = drawn.iter().filter(|card| card.id == heavy_id).count();
+        let light_count = drawn.iter().filter(|card| card.id == light_id).count();
+
+        assert_eq!(drawn.len(), 4);
+        assert_eq!(heavy_count, 3);
+        assert_eq!(light_count, 1);
     }
 
     #[test]
@@ -2351,7 +2595,7 @@ return {
         let [player1, player2] = test_players();
         let players = [player1.clone(), player2.clone()];
         let settings = GameSettings {
-            lifes: DEFAULT_INITIAL_LIFES,
+            life_multiplier: 1.0,
             power_deck_id: test_deck_id(),
             player_mercenaries: HashMap::from([
                 (player1.clone(), mercenary_id("artemis")),
@@ -2388,7 +2632,7 @@ return {
         let [player1, player2] = test_players();
         let players = [player1.clone(), player2.clone()];
         let settings = GameSettings {
-            lifes: DEFAULT_INITIAL_LIFES,
+            life_multiplier: 1.0,
             power_deck_id: test_deck_id(),
             player_mercenaries: HashMap::from([(player1.clone(), mercenary_id("artemis"))]),
         };
@@ -2415,7 +2659,7 @@ return {
         let [player1, player2] = test_players();
         let players = [player1.clone(), player2.clone()];
         let settings = GameSettings {
-            lifes: DEFAULT_INITIAL_LIFES,
+            life_multiplier: 1.0,
             power_deck_id: test_deck_id(),
             player_mercenaries: HashMap::from([(player1.clone(), mercenary_id("artemis"))]),
         };
@@ -2442,7 +2686,7 @@ return {
         let [player1, player2] = test_players();
         let players = [player1.clone(), player2.clone()];
         let settings = GameSettings {
-            lifes: DEFAULT_INITIAL_LIFES,
+            life_multiplier: 1.0,
             power_deck_id: test_deck_id(),
             player_mercenaries: HashMap::from([(player1.clone(), mercenary_id("artemis"))]),
         };
@@ -2475,7 +2719,7 @@ return {
         let [player1, player2] = test_players();
         let players = [player1.clone(), player2.clone()];
         let settings = GameSettings {
-            lifes: DEFAULT_INITIAL_LIFES,
+            life_multiplier: 1.0,
             power_deck_id: test_deck_id(),
             player_mercenaries: HashMap::from([(player1.clone(), mercenary_id("artemis"))]),
         };
@@ -2621,10 +2865,14 @@ return {
             name: "Discounted".to_string(),
             description: "Costs less while resolving.".to_string(),
             mana_cost: 3,
+            quantity: 1,
             card_type: PowerCardType::Instant,
             image_url: None,
             script: r#"
                     return {
+                        type = PowerCardType.Instant,
+                        mana_cost = 3,
+                        quantity = 1,
                         effect = function(game, card)
                             card:add_mana_cost(-2)
                         end,
@@ -2671,10 +2919,14 @@ return {
             name: "Refund".to_string(),
             description: "Regenerates mana while resolving.".to_string(),
             mana_cost: 2,
+            quantity: 1,
             card_type: PowerCardType::Instant,
             image_url: None,
             script: r#"
                     return {
+                        type = PowerCardType.Instant,
+                        mana_cost = 2,
+                        quantity = 1,
                         effect = function(game, card)
                             card:add_mana_cost(-4)
                         end,
@@ -2721,10 +2973,14 @@ return {
             name: "Surcharge".to_string(),
             description: "Costs more while resolving.".to_string(),
             mana_cost: 2,
+            quantity: 1,
             card_type: PowerCardType::Instant,
             image_url: None,
             script: r#"
                     return {
+                        type = PowerCardType.Instant,
+                        mana_cost = 2,
+                        quantity = 1,
                         effect = function(game, card)
                             card:add_mana_cost(2)
                         end,
@@ -2771,10 +3027,14 @@ return {
             name: "Too Expensive".to_string(),
             description: "Costs too much while resolving.".to_string(),
             mana_cost: 2,
+            quantity: 1,
             card_type: PowerCardType::Instant,
             image_url: None,
             script: r#"
                     return {
+                        type = PowerCardType.Instant,
+                        mana_cost = 2,
+                        quantity = 1,
                         effect = function(game, card)
                             card:add_mana_cost(3)
                         end,
@@ -2818,10 +3078,14 @@ return {
                 name: "Draw Two".to_string(),
                 description: "Draws two power cards.".to_string(),
                 mana_cost: 0,
+                quantity: 1,
                 card_type: PowerCardType::Instant,
                 image_url: None,
                 script: r#"
                         return {
+                            type = PowerCardType.Instant,
+                            mana_cost = 0,
+                            quantity = 1,
                             effect = function(game, card)
                                 game:draw_power_cards(card.owner_id, 2)
                             end,
@@ -2835,6 +3099,7 @@ return {
                 name: "Drawn One".to_string(),
                 description: "Can be drawn.".to_string(),
                 mana_cost: 0,
+                quantity: 1,
                 card_type: PowerCardType::Instant,
                 image_url: None,
                 script: NOOP_POWER_SCRIPT.to_string(),
@@ -2845,6 +3110,7 @@ return {
                 name: "Drawn Two".to_string(),
                 description: "Can be drawn.".to_string(),
                 mana_cost: 0,
+                quantity: 1,
                 card_type: PowerCardType::Instant,
                 image_url: None,
                 script: NOOP_POWER_SCRIPT.to_string(),
@@ -2926,7 +3192,7 @@ return {
         let player2 = PlayerId(Arc::from("P2"));
         let players = [player1.clone(), player2.clone()];
         let settings = GameSettings {
-            lifes: DEFAULT_INITIAL_LIFES,
+            life_multiplier: 1.0,
             power_deck_id: custom_deck_id,
             player_mercenaries: HashMap::new(),
         };
@@ -3154,16 +3420,16 @@ return {
 
         assert_eq!(
             mana.get(&player1),
-            Some(&PlayerManaDto { current: 3, max: 3 })
+            Some(&PlayerManaDto { current: 1, max: 2 })
         );
         assert_eq!(
             mana.get(&player2),
-            Some(&PlayerManaDto { current: 3, max: 3 })
+            Some(&PlayerManaDto { current: 2, max: 2 })
         );
-        assert_eq!(game.mana[&player1].current, 3);
-        assert_eq!(game.mana[&player1].max, 3);
-        assert_eq!(game.mana[&player2].current, 3);
-        assert_eq!(game.mana[&player2].max, 3);
+        assert_eq!(game.mana[&player1].current, 1);
+        assert_eq!(game.mana[&player1].max, 2);
+        assert_eq!(game.mana[&player2].current, 2);
+        assert_eq!(game.mana[&player2].max, 2);
     }
 
     #[test]
@@ -3182,13 +3448,7 @@ return {
 
         let mana = game.next_set_mana(&players);
 
-        assert_eq!(
-            mana.get(&player1),
-            Some(&PlayerMana {
-                current: 11,
-                max: 11,
-            })
-        );
+        assert_eq!(mana.get(&player1), Some(&PlayerMana { current: 4, max: 10 }));
     }
 
     #[test]

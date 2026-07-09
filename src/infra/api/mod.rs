@@ -269,6 +269,9 @@ mod tests {
 
     const TEST_HEAL_10_SCRIPT: &str = r#"
 return {
+    type = PowerCardType.Instant,
+    mana_cost = 2,
+    quantity = 1,
     effect = function(game, card)
         game.add_lives(card.owner_id, 10)
     end,
@@ -277,9 +280,18 @@ return {
 
     const TEST_STRIKE_10_SCRIPT: &str = r#"
 return {
+    type = PowerCardType.Targetable,
+    mana_cost = 2,
+    quantity = 1,
     effect = function(game, card)
         game.add_lives(card.target_player_id, -10)
     end,
+}
+"#;
+    const TEST_MERCENARY_PASSIVE_SCRIPT: &str = r#"
+return {
+    base_life = 50,
+    initial_mana = 2,
 }
 "#;
     const TEST_POWER_DECK_ID: &str = "test_deck";
@@ -382,6 +394,7 @@ return {
             insert_test_power_deck(&database).await;
 
             install_test_power_card_definitions(&manager.power_card_registry());
+            install_test_mercenary_definitions(&manager.power_card_registry());
 
             let server_manager = manager.clone();
             let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
@@ -536,6 +549,7 @@ return {
                         name: "Heal 10".to_string(),
                         description: "Restore 10 lives to yourself.".to_string(),
                         mana_cost: 2,
+                        quantity: 1,
                         card_type: fodinha_power::PowerCardType::Instant,
                         image_url: None,
                         script: TEST_HEAL_10_SCRIPT.to_string(),
@@ -546,6 +560,7 @@ return {
                         name: "Strike 10".to_string(),
                         description: "Remove 10 lives from a target player.".to_string(),
                         mana_cost: 2,
+                        quantity: 1,
                         card_type: fodinha_power::PowerCardType::Targetable,
                         image_url: None,
                         script: TEST_STRIKE_10_SCRIPT.to_string(),
@@ -554,6 +569,25 @@ return {
                 ],
             )
             .expect("valid test power card definitions");
+    }
+
+    fn install_test_mercenary_definitions(
+        power_card_registry: &fodinha_power::PowerCardRegistryStore,
+    ) {
+        power_card_registry
+            .replace_mercenary_definitions(
+                (0..8)
+                    .map(|idx| fodinha_power::MercenaryDefinitionInput {
+                        id: MercenaryId(format!("test_mercenary_{idx}").into()),
+                        name: format!("Test Mercenary {idx}"),
+                        base_life: 50,
+                        initial_mana: 2,
+                        passive_script: TEST_MERCENARY_PASSIVE_SCRIPT.to_string(),
+                        passive_source: format!("test/test_mercenary_{idx}.lua"),
+                    })
+                    .collect(),
+            )
+            .expect("valid test mercenary definitions");
     }
 
     async fn insert_test_power_deck(database: &Database) {
@@ -875,8 +909,8 @@ return {
             get_snapshot(&mut second_connection)
         );
 
-        assert!(matches!(first_snapshot, MatchSnapshot::Waiting(players) if players.len() == 2));
-        assert!(matches!(second_snapshot, MatchSnapshot::Waiting(players) if players.len() == 2));
+        assert!(matches!(first_snapshot, MatchSnapshot::Waiting(waiting) if waiting.players.len() == 2));
+        assert!(matches!(second_snapshot, MatchSnapshot::Waiting(waiting) if waiting.players.len() == 2));
         assert_eq!(server.manager.registry.matches.len(), 1);
         assert_eq!(server.active_player_route_count(), 2);
 
@@ -966,7 +1000,7 @@ return {
 
         let lobby = join_lobby_http(&client, &server, &tokens[0], &lobby_id).await;
         assert!(
-            matches!(lobby, LobbyInfo::NotStarted(players) if players.len() == 2),
+            matches!(lobby, LobbyInfo::NotStarted(waiting) if waiting.players.len() == 2),
             "Rejoined lobby should still have 2 players"
         );
 
@@ -1096,10 +1130,10 @@ return {
         let mut second_connection = connect_ws(&server, &tokens[1]).await;
 
         assert!(
-            matches!(get_snapshot(&mut first_connection).await, MatchSnapshot::Waiting(players) if players.len() == 2)
+            matches!(get_snapshot(&mut first_connection).await, MatchSnapshot::Waiting(waiting) if waiting.players.len() == 2)
         );
         assert!(
-            matches!(get_snapshot(&mut second_connection).await, MatchSnapshot::Waiting(players) if players.len() == 2)
+            matches!(get_snapshot(&mut second_connection).await, MatchSnapshot::Waiting(waiting) if waiting.players.len() == 2)
         );
 
         second_connection.close(None).await.unwrap();
@@ -1133,7 +1167,7 @@ return {
         let snapshot = get_snapshot(&mut reconnected).await;
 
         assert!(
-            matches!(snapshot, MatchSnapshot::Waiting(players) if players.len() == 1 && players.contains_key(&creator_player_id))
+            matches!(snapshot, MatchSnapshot::Waiting(waiting) if waiting.players.len() == 1 && waiting.players.contains_key(&creator_player_id))
         );
 
         drop(reconnected);
@@ -1165,10 +1199,10 @@ return {
         let mut second_connection = connect_ws(&server, &tokens[1]).await;
 
         assert!(
-            matches!(get_snapshot(&mut creator_connection).await, MatchSnapshot::Waiting(players) if players.len() == 2)
+            matches!(get_snapshot(&mut creator_connection).await, MatchSnapshot::Waiting(waiting) if waiting.players.len() == 2)
         );
         assert!(
-            matches!(get_snapshot(&mut second_connection).await, MatchSnapshot::Waiting(players) if players.len() == 2)
+            matches!(get_snapshot(&mut second_connection).await, MatchSnapshot::Waiting(waiting) if waiting.players.len() == 2)
         );
 
         creator_connection.close(None).await.unwrap();
@@ -1198,7 +1232,7 @@ return {
         let snapshot = get_snapshot(&mut reconnected).await;
 
         assert!(
-            matches!(snapshot, MatchSnapshot::Waiting(players) if players.len() == 1 && players.contains_key(&second_player_id))
+            matches!(snapshot, MatchSnapshot::Waiting(waiting) if waiting.players.len() == 1 && waiting.players.contains_key(&second_player_id))
         );
 
         drop(reconnected);
@@ -1225,10 +1259,10 @@ return {
         let mut second_connection = connect_ws(&server, &tokens[1]).await;
 
         assert!(
-            matches!(get_snapshot(&mut creator_connection).await, MatchSnapshot::Waiting(players) if players.len() == 2)
+            matches!(get_snapshot(&mut creator_connection).await, MatchSnapshot::Waiting(waiting) if waiting.players.len() == 2)
         );
         assert!(
-            matches!(get_snapshot(&mut second_connection).await, MatchSnapshot::Waiting(players) if players.len() == 2)
+            matches!(get_snapshot(&mut second_connection).await, MatchSnapshot::Waiting(waiting) if waiting.players.len() == 2)
         );
 
         creator_connection.close(None).await.unwrap();
@@ -1294,7 +1328,7 @@ return {
         let mut connection = connect_ws(&server, &tokens[0]).await;
 
         assert!(
-            matches!(get_snapshot(&mut connection).await, MatchSnapshot::Waiting(players) if players.len() == 1)
+            matches!(get_snapshot(&mut connection).await, MatchSnapshot::Waiting(waiting) if waiting.players.len() == 1)
         );
 
         let msg = timeout(WS_TIMEOUT, connection.next())
@@ -1325,7 +1359,7 @@ return {
 
         for (i, token) in tokens.iter().enumerate() {
             let lobby = join_lobby_http(&client, &server, token, &lobby_id).await;
-            assert!(matches!(lobby, LobbyInfo::NotStarted(players) if players.len() == i + 1));
+            assert!(matches!(lobby, LobbyInfo::NotStarted(waiting) if waiting.players.len() == i + 1));
         }
 
         let mut player_data = connect_players(&server, tokens.clone()).await;
@@ -1375,7 +1409,7 @@ return {
     }
 
     #[tokio::test]
-    async fn test_create_lobby_validates_lifes_ranges_by_game_type() {
+    async fn test_create_lobby_validates_ranges_by_game_type() {
         let server = TestServer::start().await;
 
         let client = http_client();
@@ -1392,18 +1426,10 @@ return {
             (
                 serde_json::json!({
                     "game_type": "fodinha_power",
-                    "lifes": 5,
+                    "life_multiplier": 0,
                     "power_deck_id": TEST_POWER_DECK_ID,
                 }),
-                "between 10 and 100",
-            ),
-            (
-                serde_json::json!({
-                    "game_type": "fodinha_power",
-                    "lifes": 110,
-                    "power_deck_id": TEST_POWER_DECK_ID,
-                }),
-                "between 10 and 100",
+                "greater than 0",
             ),
         ];
 
@@ -1430,7 +1456,7 @@ return {
             .bearer_auth(&tokens[0])
             .json(&serde_json::json!({
                 "game_type": "fodinha_power",
-                "lifes": 15,
+                "life_multiplier": 0.2,
                 "power_deck_id": TEST_POWER_DECK_ID,
             }))
             .send()
@@ -1441,8 +1467,40 @@ return {
 
         assert!(
             status.is_success(),
-            "Expected power lobby creation with 15 lifes to succeed, got {status}: {body}"
+            "Expected power lobby creation with 0.2x multiplier to succeed, got {status}: {body}"
         );
+
+        server.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn test_power_waiting_lobby_exposes_life_multiplier() {
+        let server = TestServer::start().await;
+
+        let client = http_client();
+        let tokens = get_players(&client, &server, 2).await;
+        let response = client
+            .post(server.url("/lobby"))
+            .bearer_auth(&tokens[0])
+            .json(&serde_json::json!({
+                "game_type": "fodinha_power",
+                "life_multiplier": 2.5,
+                "power_deck_id": TEST_POWER_DECK_ID,
+            }))
+            .send()
+            .await
+            .unwrap();
+        let created: CreateLobbyResponse = response.json().await.unwrap();
+
+        let lobby = join_lobby_http(&client, &server, &tokens[1], &created.lobby_id).await;
+
+        match lobby {
+            LobbyInfo::NotStarted(waiting) => {
+                assert_eq!(waiting.settings.game_type, GameType::FodinhaPower);
+                assert_eq!(waiting.settings.life_multiplier, Some(2.5));
+            }
+            other => panic!("expected waiting lobby info, got {other:?}"),
+        }
 
         server.shutdown().await;
     }
@@ -1457,7 +1515,7 @@ return {
 
         for (i, token) in tokens.iter().enumerate() {
             let lobby = join_lobby_http(&client, &server, token, &lobby_id).await;
-            assert!(matches!(lobby, LobbyInfo::NotStarted(players) if players.len() == i + 1));
+            assert!(matches!(lobby, LobbyInfo::NotStarted(waiting) if waiting.players.len() == i + 1));
         }
 
         let mut player_data = connect_players(&server, tokens).await;
@@ -1769,7 +1827,7 @@ return {
 
         for (i, p) in tokens.iter().enumerate() {
             let lobby = join_lobby_http(client, server, p, &lobby_id).await;
-            assert!(matches!(lobby, LobbyInfo::NotStarted(players) if players.len() == i + 1));
+            assert!(matches!(lobby, LobbyInfo::NotStarted(waiting) if waiting.players.len() == i + 1));
         }
 
         connect_players(server, tokens).await
@@ -1789,7 +1847,7 @@ return {
             let snapshot = get_snapshot(&mut connection).await;
 
             assert!(
-                matches!(snapshot, MatchSnapshot::Waiting(players) if players.len() == player_count)
+                matches!(snapshot, MatchSnapshot::Waiting(waiting) if waiting.players.len() == player_count)
             );
 
             let data = TestPlayerData {

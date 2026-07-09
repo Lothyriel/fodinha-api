@@ -5,7 +5,7 @@ use crate::{
     models::{
         Card, Turn,
         game::{GameCommand, GameType},
-        id::{LobbyId, MercenaryId, PlayerId},
+        id::{DeckId, LobbyId, MercenaryId, PlayerId},
     },
     services::{GameInfoDto, PlayerManaDto, PowerCardDto},
 };
@@ -31,17 +31,32 @@ pub struct PlayerStatus {
     pub mercenary_id: Option<MercenaryId>,
 }
 
-#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, Clone)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Clone)]
 pub enum LobbyInfo {
-    NotStarted(HashMap<PlayerId, PlayerStatus>),
+    NotStarted(WaitingLobbySnapshot),
     Playing(GameInfoDto),
 }
 
-#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, Clone)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Clone)]
 #[serde(tag = "type", content = "data")]
 pub enum MatchSnapshot {
-    Waiting(HashMap<PlayerId, PlayerStatus>),
+    Waiting(WaitingLobbySnapshot),
     Playing(PlayingMatchSnapshot),
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Clone)]
+pub struct WaitingLobbySnapshot {
+    pub players: HashMap<PlayerId, PlayerStatus>,
+    pub settings: WaitingLobbySettingsDto,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Clone)]
+pub struct WaitingLobbySettingsDto {
+    pub game_type: GameType,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub power_deck_id: Option<DeckId>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub life_multiplier: Option<f64>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, Clone)]
@@ -61,7 +76,7 @@ pub enum ClientCommand {
     SelectMercenary { mercenary_id: MercenaryId },
 }
 
-#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, Clone)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Clone)]
 #[serde(tag = "type", content = "data")]
 pub enum ServerMessage {
     PlayerTurn {

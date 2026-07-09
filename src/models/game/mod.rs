@@ -115,7 +115,7 @@ impl std::fmt::Display for GameType {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(tag = "game_type", content = "settings", rename_all = "snake_case")]
 pub enum GameSettings {
     FodinhaClassic(fodinha_classic::GameSettings),
@@ -588,9 +588,9 @@ mod tests {
     }
 
     #[test]
-    fn fodinha_power_settings_serializes_lifes_and_power_deck() {
+    fn fodinha_power_settings_serializes_multiplier_and_power_deck() {
         let settings = GameSettings::FodinhaPower(fodinha_power::GameSettings {
-            lifes: 50,
+            life_multiplier: 2.0,
             power_deck_id: crate::models::id::DeckId(Arc::from("test_deck")),
             player_mercenaries: HashMap::new(),
         });
@@ -600,7 +600,7 @@ mod tests {
 
         assert_eq!(document.get_str("game_type"), Ok("fodinha_power"));
         assert_eq!(inner.len(), 3);
-        assert_eq!(inner.get_i64("lifes"), Ok(50));
+        assert_eq!(inner.get_f64("life_multiplier"), Ok(2.0));
         assert_eq!(inner.get_str("power_deck_id"), Ok("test_deck"));
         assert_eq!(inner.get_document("player_mercenaries").unwrap().len(), 0);
     }

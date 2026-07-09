@@ -417,7 +417,7 @@ impl MatchesRepository {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct MatchMetadataDto {
     pub match_id: String,
     pub status: MatchMetadataStatus,

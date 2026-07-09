@@ -47,8 +47,6 @@ pub struct CreateCardDefinitionInput {
     pub kind: CardDefinitionKind,
     pub name: String,
     pub description: String,
-    pub mana_cost: usize,
-    pub card_type: PowerCardType,
     pub image: Vec<u8>,
     pub script: Vec<u8>,
 }
@@ -65,8 +63,6 @@ pub struct CreateCardDefinitionFromAssetInput {
     pub kind: CardDefinitionKind,
     pub name: String,
     pub description: String,
-    pub mana_cost: usize,
-    pub card_type: PowerCardType,
 }
 
 #[derive(Debug)]
@@ -74,8 +70,6 @@ pub struct UpdateCardDefinitionInput {
     pub kind: Option<CardDefinitionKind>,
     pub name: String,
     pub description: String,
-    pub mana_cost: usize,
-    pub card_type: PowerCardType,
     pub image: Option<Vec<u8>>,
     pub script: Option<Vec<u8>>,
 }
@@ -99,6 +93,7 @@ pub struct CardDefinitionResponse {
     pub description: String,
     pub life: Option<i32>,
     pub mana_cost: usize,
+    pub quantity: usize,
     #[serde(rename = "type")]
     pub card_type: PowerCardType,
     pub creator_id: PlayerId,
@@ -175,7 +170,7 @@ impl CardDefinitionsService {
             let script = String::from_utf8(script)
                 .map_err(|error| CardDefinitionError::Script(error.to_string()))?;
 
-            definitions.push(self.definition_input(&card, script));
+            definitions.push(self.definition_input(&card, script)?);
         }
 
         let count = definitions.len();
@@ -274,15 +269,16 @@ impl CardDefinitionsService {
         let image_object_key = card_image_object_key(&card_id);
         let script_object_key = card_script_object_key(&card_id);
 
-        power_lua::validate_power_card_script(&script, &script_object_key)
+        let script_definition = power_lua::parse_power_card_script_definition(&script, &script_object_key)
             .map_err(|error| CardDefinitionError::Script(error.to_string()))?;
 
         let definition = PowerCardDefinitionInput {
             id: card_id.clone(),
             name: name.to_string(),
             description: description.to_string(),
-            mana_cost: input.mana_cost,
-            card_type: input.card_type,
+            mana_cost: script_definition.mana_cost,
+            card_type: script_definition.card_type,
+            quantity: script_definition.quantity,
             image_url: self.storage.public_url(&image_object_key),
             script: script.clone(),
             source: script_object_key.clone(),
@@ -304,8 +300,8 @@ impl CardDefinitionsService {
             name: name.to_string(),
             description: description.to_string(),
             life: None,
-            mana_cost: input.mana_cost,
-            card_type: input.card_type,
+            mana_cost: script_definition.mana_cost,
+            card_type: script_definition.card_type,
             creator_id: creator_id.clone(),
             image_object_key: Some(image_object_key),
             script_object_key,
@@ -341,7 +337,7 @@ impl CardDefinitionsService {
         let script = String::from_utf8(input.script)
             .map_err(|error| CardDefinitionError::Script(error.to_string()))?;
 
-        power_lua::validate_power_card_script(&script, &script_object_key)
+        power_lua::parse_power_card_script_definition(&script, &script_object_key)
             .map_err(|error| CardDefinitionError::Script(error.to_string()))?;
 
         tokio::try_join!(
@@ -394,15 +390,16 @@ impl CardDefinitionsService {
         let script = String::from_utf8(script)
             .map_err(|error| CardDefinitionError::Script(error.to_string()))?;
 
-        power_lua::validate_power_card_script(&script, &script_object_key)
+        let script_definition = power_lua::parse_power_card_script_definition(&script, &script_object_key)
             .map_err(|error| CardDefinitionError::Script(error.to_string()))?;
 
         let definition = PowerCardDefinitionInput {
             id: card_id.clone(),
             name: name.to_string(),
             description: description.to_string(),
-            mana_cost: input.mana_cost,
-            card_type: input.card_type,
+            mana_cost: script_definition.mana_cost,
+            card_type: script_definition.card_type,
+            quantity: script_definition.quantity,
             image_url: self.storage.public_url(&image_object_key),
             script: script.clone(),
             source: script_object_key.clone(),
@@ -414,8 +411,8 @@ impl CardDefinitionsService {
             name: name.to_string(),
             description: description.to_string(),
             life: None,
-            mana_cost: input.mana_cost,
-            card_type: input.card_type,
+            mana_cost: script_definition.mana_cost,
+            card_type: script_definition.card_type,
             creator_id: creator_id.clone(),
             image_object_key: Some(image_object_key),
             script_object_key,
@@ -491,7 +488,7 @@ impl CardDefinitionsService {
             }
         };
 
-        power_lua::validate_power_card_script(&script, &script_object_key)
+        let script_definition = power_lua::parse_power_card_script_definition(&script, &script_object_key)
             .map_err(|error| CardDefinitionError::Script(error.to_string()))?;
 
         if let Some(image) = input.image {
@@ -518,13 +515,13 @@ impl CardDefinitionsService {
         card.name = name.to_string();
         card.description = description.to_string();
         card.life = None;
-        card.mana_cost = input.mana_cost;
-        card.card_type = input.card_type;
+        card.mana_cost = script_definition.mana_cost;
+        card.card_type = script_definition.card_type;
         card.image_object_key = Some(image_object_key);
         card.image_content_type = Some(IMAGE_OBJECT_CONTENT_TYPE.to_string());
         card.updated_at = Utc::now().timestamp();
 
-        let definition = self.definition_input(&card, script.clone());
+        let definition = self.definition_input(&card, script.clone())?;
 
         self.cards.replace(card.clone()).await?;
         self.power_card_registry
@@ -735,14 +732,21 @@ impl CardDefinitionsService {
         card: CardDefinitionDto,
         script: String,
     ) -> Result<CardDefinitionResponse, CardDefinitionError> {
+        let script_definition = power_lua::parse_power_card_script_definition(
+            &script,
+            &card.script_object_key,
+        )
+        .map_err(|error| CardDefinitionError::Script(error.to_string()))?;
+
         Ok(CardDefinitionResponse {
             id: card.card_id,
             kind: card.kind,
             name: card.name,
             description: card.description,
             life: card.life,
-            mana_cost: card.mana_cost,
-            card_type: card.card_type,
+            mana_cost: script_definition.mana_cost,
+            quantity: script_definition.quantity,
+            card_type: script_definition.card_type,
             creator_id: card.creator_id.clone(),
             image_url: card
                 .image_object_key
@@ -830,20 +834,27 @@ impl CardDefinitionsService {
         &self,
         card: &CardDefinitionDto,
         script: String,
-    ) -> PowerCardDefinitionInput {
-        PowerCardDefinitionInput {
+    ) -> Result<PowerCardDefinitionInput, CardDefinitionError> {
+        let script_definition = power_lua::parse_power_card_script_definition(
+            &script,
+            &card.script_object_key,
+        )
+        .map_err(|error| CardDefinitionError::Script(error.to_string()))?;
+
+        Ok(PowerCardDefinitionInput {
             id: card.card_id.clone(),
             name: card.name.clone(),
             description: card.description.clone(),
-            mana_cost: card.mana_cost,
-            card_type: card.card_type,
+            mana_cost: script_definition.mana_cost,
+            card_type: script_definition.card_type,
+            quantity: script_definition.quantity,
             image_url: card
                 .image_object_key
                 .as_deref()
                 .and_then(|key| self.storage.public_url(key)),
             script,
             source: card.script_object_key.clone(),
-        }
+        })
     }
 }
 

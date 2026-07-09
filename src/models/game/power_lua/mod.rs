@@ -8,8 +8,9 @@ use std::{collections::HashMap, rc::Rc};
 pub use definitions::{FODINHA_LUA_DEFINITIONS, MERCENARY_PASSIVE_TEMPLATE, POWER_CARD_TEMPLATE};
 use power_lua_api::metadata;
 pub use runtime::{
-    run_passive_script, run_power_card_script, validate_mercenary_passive_script,
-    validate_power_card_script,
+    parse_mercenary_passive_definition, parse_power_card_script_definition, run_passive_script,
+    run_power_card_script,
+    validate_mercenary_passive_script, validate_power_card_script,
 };
 
 pub fn lua_api_type_definitions() -> [power_lua_api::LuaTypeDefinition; 5] {
@@ -74,9 +75,24 @@ impl std::fmt::Debug for PowerScriptInput {
 pub struct PassiveScriptInput {
     pub mercenary_id: MercenaryId,
     pub owner_id: PlayerId,
+    pub base_life: usize,
+    pub initial_mana: usize,
     pub event: PassiveGameEvent,
     pub players: HashMap<PlayerId, ScriptPlayerState>,
     pub draw_power_cards: DrawPowerCardsFn,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PowerCardScriptDefinition {
+    pub mana_cost: usize,
+    pub card_type: PowerCardType,
+    pub quantity: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MercenaryPassiveDefinition {
+    pub base_life: usize,
+    pub initial_mana: usize,
 }
 
 pub type DrawPowerCardsFn = Rc<dyn Fn(&str, usize) -> Result<Vec<ScriptPowerCardState>, String>>;
@@ -206,6 +222,8 @@ mod tests {
         PassiveScriptInput {
             mercenary_id: crate::models::id::MercenaryId(Arc::from("artemis")),
             owner_id,
+            base_life: 50,
+            initial_mana: 2,
             event,
             players,
             draw_power_cards: no_power_card_draws(),
@@ -310,6 +328,8 @@ mod tests {
     fn passive_script_rejects_unknown_handlers() {
         let source = r#"
             return {
+                base_life = 50,
+                initial_mana = 2,
                 on_unknown = function(game, event, mercenary)
                 end,
             }
@@ -330,6 +350,8 @@ mod tests {
         let output = run_passive_script(
             r#"
             return {
+                base_life = 50,
+                initial_mana = 2,
                 on_bid_placed = function(game, event, mercenary)
                     if event.player_id == mercenary.owner_id then
                         game.add_lives(mercenary.owner_id, event.bid)
@@ -357,6 +379,8 @@ mod tests {
         let output = run_passive_script(
             r#"
             return {
+                base_life = 50,
+                initial_mana = 2,
                 on_round_start = function(game, event, mercenary)
                     game.add_lives(mercenary.owner_id, 3)
                 end,
@@ -374,12 +398,53 @@ mod tests {
     }
 
     #[test]
+    fn power_card_script_definition_is_extracted_from_lua() {
+        let definition = parse_power_card_script_definition(
+            r#"
+                return {
+                    type = PowerCardType.Interactive,
+                    mana_cost = 7,
+                    quantity = 4,
+                    effect = function(game, card)
+                    end,
+                }
+            "#,
+            "power.lua",
+        )
+        .unwrap();
+
+        assert_eq!(definition.card_type, PowerCardType::Interactive);
+        assert_eq!(definition.mana_cost, 7);
+        assert_eq!(definition.quantity, 4);
+    }
+
+    #[test]
+    fn mercenary_passive_definition_is_extracted_from_lua() {
+        let definition = parse_mercenary_passive_definition(
+            r#"
+                return {
+                    base_life = 120,
+                    initial_mana = 9,
+                }
+            "#,
+            "mercenary.lua",
+        )
+        .unwrap();
+
+        assert_eq!(definition.base_life, 120);
+        assert_eq!(definition.initial_mana, 9);
+    }
+
+    #[test]
     fn script_can_change_lives_through_limited_api() {
         let player1 = PlayerId(Arc::from("P1"));
         let player2 = PlayerId(Arc::from("P2"));
         let output = run_power_card_script(
             r#"
             return {
+                type = PowerCardType.Targetable,
+                mana_cost = 2,
+                quantity = 1,
                 effect = function(game, card)
                     game.add_lives(card.target_player_id, -10)
                 end,
@@ -405,6 +470,9 @@ mod tests {
         let output = run_power_card_script(
             r#"
             return {
+                type = PowerCardType.Instant,
+                mana_cost = 2,
+                quantity = 1,
                 effect = function(game, card)
                     game:add_lives(card.owner_id, 5)
                 end,
@@ -427,6 +495,9 @@ mod tests {
         let source = r#"
             return {
                 name = "Heal 10",
+                type = PowerCardType.Instant,
+                mana_cost = 2,
+                quantity = 1,
                 effect = function(game, card)
                     game.add_lives(card.owner_id, 10)
                 end,
@@ -434,11 +505,14 @@ mod tests {
         "#;
 
         let error = validate_power_card_script(source, "test.lua").unwrap_err();
-        assert!(error.to_string().contains("only contain the effect field"));
+        assert!(error.to_string().contains("type, mana_cost, quantity, and effect fields"));
 
         let output = run_power_card_script(
             r#"
             return {
+                type = PowerCardType.Instant,
+                mana_cost = 2,
+                quantity = 1,
                 effect = function(game, card)
                     game.add_lives(card.owner_id, 10)
                 end,
@@ -461,6 +535,9 @@ mod tests {
         let output = run_power_card_script(
             r#"
             return {
+                type = PowerCardType.Instant,
+                mana_cost = 2,
+                quantity = 1,
                 effect = function(game, card)
                     game.add_lives(card.owner_id, 1000)
                     game.set_lives(card.owner_id, 777)
@@ -484,6 +561,9 @@ mod tests {
         let output = run_power_card_script(
             r#"
             return {
+                type = PowerCardType.Instant,
+                mana_cost = 2,
+                quantity = 1,
                 effect = function(game, card)
                     local mana = game.get_mana(card.owner_id)
                     game.set_mana(card.owner_id, mana - 3)
@@ -514,6 +594,9 @@ mod tests {
         let output = run_power_card_script(
             r#"
             return {
+                type = PowerCardType.Instant,
+                mana_cost = 2,
+                quantity = 1,
                 effect = function(game, card)
                     card:add_mana_cost(3)
                     card.add_mana_cost(-1)
@@ -537,6 +620,9 @@ mod tests {
         let output = run_power_card_script(
             r#"
             return {
+                type = PowerCardType.Instant,
+                mana_cost = 2,
+                quantity = 1,
                 effect = function(game, card)
                     card:add_mana_cost(-5)
                     if card.mana_cost ~= -3 then
@@ -580,6 +666,9 @@ mod tests {
         let output = run_power_card_script(
             r#"
             return {
+                type = PowerCardType.Instant,
+                mana_cost = 2,
+                quantity = 1,
                 effect = function(game, card)
                     local drawn = game.draw_power_cards(card.owner_id, 2)
                     game.add_mana(card.owner_id, #drawn)
@@ -609,6 +698,9 @@ mod tests {
         let output = run_power_card_script(
             r#"
             return {
+                type = PowerCardType.Targetable,
+                mana_cost = 2,
+                quantity = 1,
                 effect = function(game, card)
                     local mine = game.get_cards(card.owner_id)[1]
                     local theirs = game.get_cards(card.target_player_id)[1]
@@ -648,6 +740,9 @@ mod tests {
         let output = run_power_card_script(
             r#"
             return {
+                type = PowerCardType.Targetable,
+                mana_cost = 2,
+                quantity = 1,
                 effect = function(game, card)
                     local cards = game.get_power_cards(card.target_player_id)
                     game.steal_power_card(card.target_player_id, cards[1].id, card.owner_id)
@@ -675,6 +770,9 @@ mod tests {
         let error = run_power_card_script(
             r#"
             return {
+                type = PowerCardType.Instant,
+                mana_cost = 2,
+                quantity = 1,
                 effect = function(game, card)
                     os.execute('true')
                 end,
@@ -697,6 +795,9 @@ mod tests {
         let error = run_power_card_script(
             r#"
             return {
+                type = PowerCardType.Instant,
+                mana_cost = 2,
+                quantity = 1,
                 effect = function(game, card)
                     while true do end
                 end,

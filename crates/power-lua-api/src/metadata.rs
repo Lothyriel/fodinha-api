@@ -137,6 +137,16 @@ pub const MERCENARY_FIELDS: &[LuaFieldDefinition] = &[
         lua_type: "PlayerId",
         description: "Player that owns the mercenary.",
     },
+    LuaFieldDefinition {
+        name: "base_life",
+        lua_type: "integer",
+        description: "Configured base life total for this mercenary.",
+    },
+    LuaFieldDefinition {
+        name: "initial_mana",
+        lua_type: "integer",
+        description: "Configured initial mana pool size for this mercenary.",
+    },
 ];
 
 pub const POWER_CARD_STATE_FIELDS: &[LuaFieldDefinition] = &[

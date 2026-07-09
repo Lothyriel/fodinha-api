@@ -50,6 +50,8 @@ pub struct MercenaryResponse {
     pub temper: String,
     pub creator_id: PlayerId,
     pub banner_url: Option<String>,
+    pub base_life: usize,
+    pub initial_mana: usize,
     pub passive_script: String,
     pub created_at: i64,
 }
@@ -95,7 +97,7 @@ impl MercenariesService {
             let script = String::from_utf8(script)
                 .map_err(|error| MercenaryError::Script(error.to_string()))?;
 
-            definitions.push(mercenary_definition_input(&mercenary, script));
+            definitions.push(mercenary_definition_input(&mercenary, script)?);
         }
 
         let count = definitions.len();
@@ -161,7 +163,7 @@ impl MercenariesService {
 
         self.mercenaries.insert(mercenary.clone()).await?;
         self.power_card_registry
-            .upsert_mercenary_definition(mercenary_definition_input(&mercenary, script.clone()))
+            .upsert_mercenary_definition(mercenary_definition_input(&mercenary, script.clone())?)
             .map_err(|error| MercenaryError::Script(error.to_string()))?;
 
         self.response(mercenary, script)
@@ -239,7 +241,7 @@ impl MercenariesService {
 
         self.mercenaries.replace(mercenary.clone()).await?;
         self.power_card_registry
-            .upsert_mercenary_definition(mercenary_definition_input(&mercenary, script.clone()))
+            .upsert_mercenary_definition(mercenary_definition_input(&mercenary, script.clone())?)
             .map_err(|error| MercenaryError::Script(error.to_string()))?;
 
         self.response(mercenary, script)
@@ -270,6 +272,12 @@ impl MercenariesService {
         mercenary: MercenaryDto,
         script: String,
     ) -> Result<MercenaryResponse, MercenaryError> {
+        let passive_definition = power_lua::parse_mercenary_passive_definition(
+            &script,
+            &mercenary.passive_script_object_key,
+        )
+        .map_err(|error| MercenaryError::Script(error.to_string()))?;
+
         Ok(MercenaryResponse {
             id: mercenary.mercenary_id,
             name: mercenary.name,
@@ -283,6 +291,8 @@ impl MercenariesService {
                 .banner_object_key
                 .as_deref()
                 .and_then(|key| self.storage.public_url(key)),
+            base_life: passive_definition.base_life,
+            initial_mana: passive_definition.initial_mana,
             passive_script: script,
             created_at: mercenary.created_at,
         })
@@ -306,13 +316,21 @@ impl MercenariesService {
 fn mercenary_definition_input(
     mercenary: &MercenaryDto,
     script: String,
-) -> fodinha_power::MercenaryDefinitionInput {
-    fodinha_power::MercenaryDefinitionInput {
+) -> Result<fodinha_power::MercenaryDefinitionInput, MercenaryError> {
+    let passive_definition = power_lua::parse_mercenary_passive_definition(
+        &script,
+        &mercenary.passive_script_object_key,
+    )
+    .map_err(|error| MercenaryError::Script(error.to_string()))?;
+
+    Ok(fodinha_power::MercenaryDefinitionInput {
         id: mercenary.mercenary_id.clone(),
         name: mercenary.name.clone(),
+        base_life: passive_definition.base_life,
+        initial_mana: passive_definition.initial_mana,
         passive_script: script,
         passive_source: mercenary.passive_script_object_key.clone(),
-    }
+    })
 }
 
 fn normalize_input(input: UpsertMercenaryInput) -> Result<UpsertMercenaryInput, MercenaryError> {

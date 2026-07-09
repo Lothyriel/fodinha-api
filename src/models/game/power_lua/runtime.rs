@@ -10,7 +10,8 @@ use power_lua_api::metadata;
 use crate::models::id::PlayerId;
 
 use super::{
-    PassiveScriptInput, PowerScriptError, PowerScriptInput, PowerScriptOutput, ScriptPlayerState,
+    MercenaryPassiveDefinition, PassiveScriptInput, PowerCardScriptDefinition, PowerScriptError,
+    PowerScriptInput, PowerScriptOutput, ScriptPlayerState,
     api,
 };
 
@@ -19,10 +20,24 @@ const LUA_HOOK_INSTRUCTION_INTERVAL: u32 = 1_000;
 const LUA_MAX_HOOK_TICKS: u32 = 100;
 
 pub fn validate_power_card_script(source: &str, path: &str) -> Result<(), mlua::Error> {
-    with_script_table(source, path, |table| validate_power_card_table(&table))
+    parse_power_card_script_definition(source, path).map(|_| ())
 }
 
 pub fn validate_mercenary_passive_script(source: &str, path: &str) -> Result<(), mlua::Error> {
+    parse_mercenary_passive_definition(source, path).map(|_| ())
+}
+
+pub fn parse_power_card_script_definition(
+    source: &str,
+    path: &str,
+) -> Result<PowerCardScriptDefinition, mlua::Error> {
+    with_script_table(source, path, |table| validate_power_card_table(&table))
+}
+
+pub fn parse_mercenary_passive_definition(
+    source: &str,
+    path: &str,
+) -> Result<MercenaryPassiveDefinition, mlua::Error> {
     with_script_table(source, path, |table| validate_passive_table(&table))
 }
 
@@ -37,8 +52,11 @@ fn with_script_table<T>(
     f(table)
 }
 
-fn validate_power_card_table(table: &mlua::Table) -> Result<(), mlua::Error> {
+fn validate_power_card_table(table: &mlua::Table) -> Result<PowerCardScriptDefinition, mlua::Error> {
     let effect: Value = table.get("effect")?;
+    let card_type = power_card_type_field(table, "type")?;
+    let mana_cost = non_negative_integer_field(table, "mana_cost")?;
+    let quantity = positive_integer_field(table, "quantity")?;
 
     if !matches!(effect, Value::Function(_)) {
         return Err(mlua::Error::external("card effect must be a function"));
@@ -48,31 +66,43 @@ fn validate_power_card_table(table: &mlua::Table) -> Result<(), mlua::Error> {
         let (key, _) = pair?;
         let Value::String(key) = key else {
             return Err(mlua::Error::external(
-                "card script table can only contain the effect field",
+                "card script table can only contain type, mana_cost, quantity, and effect fields",
             ));
         };
 
-        if key.to_str()? != "effect" {
-            return Err(mlua::Error::external(
-                "card script table can only contain the effect field",
-            ));
+        match key.to_str()?.as_ref() {
+            "effect" | "type" | "mana_cost" | "quantity" => {}
+            _ => {
+                return Err(mlua::Error::external(
+                    "card script table can only contain type, mana_cost, quantity, and effect fields",
+                ));
+            }
         }
     }
 
-    Ok(())
+    Ok(PowerCardScriptDefinition {
+        mana_cost,
+        card_type,
+        quantity,
+    })
 }
 
-fn validate_passive_table(table: &mlua::Table) -> Result<(), mlua::Error> {
-    let mut has_handler = false;
+fn validate_passive_table(table: &mlua::Table) -> Result<MercenaryPassiveDefinition, mlua::Error> {
+    let base_life = positive_integer_field(table, "base_life")?;
+    let initial_mana = non_negative_integer_field(table, "initial_mana")?;
 
     for pair in table.clone().pairs::<Value, Value>() {
         let (key, value) = pair?;
         let Value::String(key) = key else {
             return Err(mlua::Error::external(
-                "passive script table can only contain event handler fields",
+                "passive script table can only contain metadata and event handler fields",
             ));
         };
         let key = key.to_str()?;
+
+        if matches!(key.as_ref(), "base_life" | "initial_mana") {
+            continue;
+        }
 
         if !metadata::PASSIVE_EVENT_HANDLERS.contains(&key.as_ref()) {
             return Err(mlua::Error::external(format!(
@@ -81,21 +111,16 @@ fn validate_passive_table(table: &mlua::Table) -> Result<(), mlua::Error> {
         }
 
         if !matches!(value, Value::Function(_)) {
-            return Err(mlua::Error::external(format!(
-                "passive event handler {key} must be a function"
-            )));
+            return Err(mlua::Error::external(
+                format!("passive event handler {key} must be a function"),
+            ));
         }
-
-        has_handler = true;
     }
 
-    if !has_handler {
-        return Err(mlua::Error::external(
-            "passive script must define at least one event handler",
-        ));
-    }
-
-    Ok(())
+    Ok(MercenaryPassiveDefinition {
+        base_life,
+        initial_mana,
+    })
 }
 
 pub fn run_power_card_script(
@@ -155,9 +180,56 @@ pub(crate) fn create_lua() -> Result<Lua, mlua::Error> {
         LuaOptions::new(),
     )?;
 
+    register_power_card_type_enum(&lua)?;
     set_limits(&lua)?;
 
     Ok(lua)
+}
+
+fn register_power_card_type_enum(lua: &Lua) -> Result<(), mlua::Error> {
+    let enum_table = lua.create_table()?;
+    enum_table.set("Instant", metadata::POWER_CARD_TYPE_VALUES[0])?;
+    enum_table.set("Targetable", metadata::POWER_CARD_TYPE_VALUES[1])?;
+    enum_table.set("Interactive", metadata::POWER_CARD_TYPE_VALUES[2])?;
+    lua.globals().set("PowerCardType", enum_table)?;
+
+    Ok(())
+}
+
+fn power_card_type_field(table: &mlua::Table, name: &str) -> Result<crate::models::game::fodinha_power::PowerCardType, mlua::Error> {
+    let value: Value = table.get(name)?;
+    let Value::String(value) = value else {
+        return Err(mlua::Error::external(format!("{name} must be a PowerCardType value")));
+    };
+
+    value
+        .to_str()?
+        .parse()
+        .map_err(mlua::Error::external)
+}
+
+fn non_negative_integer_field(table: &mlua::Table, name: &str) -> Result<usize, mlua::Error> {
+    let value: Value = table.get(name)?;
+
+    match value {
+        Value::Integer(value) => usize::try_from(value)
+            .map_err(|_| mlua::Error::external(format!("{name} must be a non-negative integer"))),
+        Value::Number(value) if value.fract() == 0.0 && value >= 0.0 => {
+            usize::try_from(value as i64)
+                .map_err(|_| mlua::Error::external(format!("{name} must be a non-negative integer")))
+        }
+        _ => Err(mlua::Error::external(format!("{name} must be a non-negative integer"))),
+    }
+}
+
+fn positive_integer_field(table: &mlua::Table, name: &str) -> Result<usize, mlua::Error> {
+    let value = non_negative_integer_field(table, name)?;
+
+    if value == 0 {
+        return Err(mlua::Error::external(format!("{name} must be greater than zero")));
+    }
+
+    Ok(value)
 }
 
 fn shared_players(

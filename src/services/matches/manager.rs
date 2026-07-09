@@ -18,13 +18,14 @@ use crate::{
         Card,
         commands::{
             CreateLobbyResponse, GetLobbyDto, LobbyInfo, MatchSnapshot, PlayerStatus,
-            PlayingMatchSnapshot, ServerMessage,
+            PlayingMatchSnapshot, ServerMessage, WaitingLobbySettingsDto,
+            WaitingLobbySnapshot,
         },
         game::{GameCommand, GameSettings, GameType, fodinha_classic, fodinha_power},
         id::{self, MatchId, MercenaryId, PlayerId},
         lobby::{
             LobbyInfoInternal, LobbyPlayerStatus, MatchSnapshotInternal,
-            PlayingMatchSnapshotInternal,
+            PlayingMatchSnapshotInternal, WaitingLobbySnapshotInternal,
         },
     },
     services::{
@@ -94,6 +95,21 @@ fn fallback_user_claims(player_id: &PlayerId) -> UserClaims {
         data: serde_json::json!({ "nickname": player_id.as_str() }),
         role: Default::default(),
     })
+}
+
+fn waiting_lobby_settings(settings: GameSettings) -> WaitingLobbySettingsDto {
+    match settings {
+        GameSettings::FodinhaClassic(_) => WaitingLobbySettingsDto {
+            game_type: GameType::FodinhaClassic,
+            power_deck_id: None,
+            life_multiplier: None,
+        },
+        GameSettings::FodinhaPower(settings) => WaitingLobbySettingsDto {
+            game_type: GameType::FodinhaPower,
+            power_deck_id: Some(settings.power_deck_id),
+            life_multiplier: Some(settings.life_multiplier),
+        },
+    }
 }
 
 pub struct PlayerConnectionContext {
@@ -658,8 +674,11 @@ impl ManagerHandle {
 
     async fn hydrate_lobby_info(&self, info: LobbyInfoInternal) -> Result<LobbyInfo, ManagerError> {
         match info {
-            LobbyInfoInternal::NotStarted(players) => {
-                Ok(LobbyInfo::NotStarted(self.hydrate_players(players).await?))
+            LobbyInfoInternal::NotStarted(WaitingLobbySnapshotInternal { players, settings }) => {
+                Ok(LobbyInfo::NotStarted(WaitingLobbySnapshot {
+                    players: self.hydrate_players(players).await?,
+                    settings: waiting_lobby_settings(settings),
+                }))
             }
             LobbyInfoInternal::Playing(game) => Ok(LobbyInfo::Playing(game)),
         }
@@ -670,8 +689,11 @@ impl ManagerHandle {
         snapshot: MatchSnapshotInternal,
     ) -> Result<MatchSnapshot, ManagerError> {
         match snapshot {
-            MatchSnapshotInternal::Waiting(players) => {
-                Ok(MatchSnapshot::Waiting(self.hydrate_players(players).await?))
+            MatchSnapshotInternal::Waiting(WaitingLobbySnapshotInternal { players, settings }) => {
+                Ok(MatchSnapshot::Waiting(WaitingLobbySnapshot {
+                    players: self.hydrate_players(players).await?,
+                    settings: waiting_lobby_settings(settings),
+                }))
             }
             MatchSnapshotInternal::Playing(PlayingMatchSnapshotInternal { players, game }) => {
                 Ok(MatchSnapshot::Playing(PlayingMatchSnapshot {

@@ -526,12 +526,16 @@ impl LuaApiType for LuaPowerCard {
 pub struct LuaMercenary {
     pub id: String,
     pub owner_id: String,
+    pub base_life: usize,
+    pub initial_mana: usize,
 }
 
 impl UserData for LuaMercenary {
     fn add_fields<F: UserDataFields<Self>>(fields: &mut F) {
         fields.add_field_method_get("id", |_, this| Ok(this.id.clone()));
         fields.add_field_method_get("owner_id", |_, this| Ok(this.owner_id.clone()));
+        fields.add_field_method_get("base_life", |_, this| Ok(this.base_life));
+        fields.add_field_method_get("initial_mana", |_, this| Ok(this.initial_mana));
     }
 }
 
@@ -645,6 +649,8 @@ pub(crate) fn build_mercenary(input: &PassiveScriptInput) -> LuaMercenary {
     LuaMercenary {
         id: input.mercenary_id.as_str().to_string(),
         owner_id: input.owner_id.as_str().to_string(),
+        base_life: input.base_life,
+        initial_mana: input.initial_mana,
     }
 }
 
