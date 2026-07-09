@@ -822,6 +822,7 @@ impl MatchActor {
         };
 
         self.broadcast(msg).await;
+        self.refresh_power_hands().await;
     }
 
     async fn broadcast_turn(&self, turn: AppliedTurn) -> bool {
@@ -903,7 +904,10 @@ impl MatchActor {
             }
 
             for (player_id, deck) in power_decks.clone() {
-                self.send_to_player(&player_id, OutboundMessage::PlayerPowerCards(deck))
+                self.send_to_player(
+                    &player_id,
+                    OutboundMessage::PlayerPowerCards(self.authoritative_power_cards(&player_id, deck)),
+                )
                     .await;
             }
         }
@@ -936,6 +940,7 @@ impl MatchActor {
             self.broadcast(OutboundMessage::GameEnded { lifes }).await;
         } else if let Some(msg) = self.current_phase_message() {
             self.broadcast(msg).await;
+            self.refresh_power_hands().await;
         }
 
         outcome.ended
@@ -968,7 +973,10 @@ impl MatchActor {
             }
 
             for (player_id, deck) in power_decks.clone() {
-                self.send_to_player(&player_id, OutboundMessage::PlayerPowerCards(deck))
+                self.send_to_player(
+                    &player_id,
+                    OutboundMessage::PlayerPowerCards(self.authoritative_power_cards(&player_id, deck)),
+                )
                     .await;
             }
         }
@@ -1001,6 +1009,7 @@ impl MatchActor {
             self.broadcast(OutboundMessage::GameEnded { lifes }).await;
         } else if let Some(msg) = self.current_phase_message() {
             self.broadcast(msg).await;
+            self.refresh_power_hands().await;
         }
 
         outcome.ended
@@ -1039,7 +1048,10 @@ impl MatchActor {
 
         if let Some(power_decks) = power_decks {
             for (player, deck) in power_decks {
-                self.send_to_player(&player, OutboundMessage::PlayerPowerCards(deck))
+                self.send_to_player(
+                    &player,
+                    OutboundMessage::PlayerPowerCards(self.authoritative_power_cards(&player, deck)),
+                )
                     .await;
             }
         }
@@ -1127,6 +1139,16 @@ impl MatchActor {
 
             self.send_to_player(&player_id, OutboundMessage::Snapshot(snapshot))
                 .await;
+        }
+    }
+
+    async fn refresh_power_hands(&self) {
+        let Some(lobby) = self.lobby.as_ref() else { return };
+        let LobbyState::Playing(game) = &lobby.state else { return };
+        for player_id in self.connections.keys() {
+            if let Some(cards) = game.get_game_info(player_id).power_cards {
+                self.send_to_player(player_id, OutboundMessage::PlayerPowerCards(cards)).await;
+            }
         }
     }
 
@@ -1293,6 +1315,20 @@ impl MatchActor {
         self.lobby
             .as_ref()
             .ok_or_else(|| LobbyError::InvalidLobby.into())
+    }
+
+    fn authoritative_power_cards(
+        &self,
+        player_id: &PlayerId,
+        fallback: Vec<PowerCardDto>,
+    ) -> Vec<PowerCardDto> {
+        self.lobby
+            .as_ref()
+            .and_then(|lobby| match &lobby.state {
+                LobbyState::Playing(game) => game.get_game_info(player_id).power_cards,
+                LobbyState::NotStarted(_) => None,
+            })
+            .unwrap_or(fallback)
     }
 
     fn lobby_mut(&mut self) -> Result<&mut Lobby, ManagerError> {

@@ -220,7 +220,7 @@ impl LuaGame {
             return Err(unknown_player(player_id));
         };
 
-        power_cards_to_lua_table(lua, &player.power_cards)
+        power_cards_to_lua_table(lua, &player.power_cards, Rc::clone(&self.players), player_id)
     }
 
     fn steal_power_card(
@@ -273,11 +273,11 @@ impl LuaGame {
         }
 
         if count == 0 {
-            return power_cards_to_lua_table(lua, &[]);
+            return power_cards_to_lua_table(lua, &[], Rc::clone(&self.players), player_id);
         }
 
         let drawn = (self.draw_power_cards)(player_id, count).map_err(mlua::Error::external)?;
-        let table = power_cards_to_lua_table(lua, &drawn)?;
+        let table = power_cards_to_lua_table(lua, &drawn, Rc::clone(&self.players), player_id)?;
 
         self.players
             .borrow_mut()
@@ -584,6 +584,9 @@ pub struct LuaPowerCardState {
     pub mana_cost: usize,
     pub card_type: PowerCardType,
     pub image_url: Option<String>,
+    pub usable: bool,
+    players: Rc<RefCell<HashMap<String, ScriptPlayerState>>>,
+    owner_id: String,
 }
 
 impl From<&ScriptPowerCardState> for LuaPowerCardState {
@@ -595,6 +598,9 @@ impl From<&ScriptPowerCardState> for LuaPowerCardState {
             mana_cost: card.mana_cost,
             card_type: card.card_type,
             image_url: card.image_url.clone(),
+            usable: card.usable,
+            players: Rc::new(RefCell::new(HashMap::new())),
+            owner_id: String::new(),
         }
     }
 }
@@ -607,6 +613,51 @@ impl UserData for LuaPowerCardState {
         fields.add_field_method_get("mana_cost", |_, this| Ok(this.mana_cost));
         fields.add_field_method_get("type", |_, this| Ok(this.card_type.as_str()));
         fields.add_field_method_get("image_url", |_, this| Ok(this.image_url.clone()));
+        fields.add_field_method_get("usable", |_, this| Ok(this.usable));
+        fields.add_field_method_set("usable", |_, this, usable: bool| {
+            this.set_usable(usable);
+            Ok(())
+        });
+    }
+
+    fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
+        methods.add_method(metadata::SET_USABLE, |_, this, usable: bool| {
+            this.set_usable(usable);
+            Ok(())
+        });
+    }
+}
+
+impl LuaPowerCardState {
+    pub(crate) fn with_context(
+        card: &ScriptPowerCardState,
+        players: Rc<RefCell<HashMap<String, ScriptPlayerState>>>,
+        owner_id: &str,
+    ) -> Self {
+        Self {
+            id: card.id.clone(),
+            name: card.name.clone(),
+            description: card.description.clone(),
+            mana_cost: card.mana_cost,
+            card_type: card.card_type,
+            image_url: card.image_url.clone(),
+            usable: card.usable,
+            players,
+            owner_id: owner_id.to_string(),
+        }
+    }
+
+    fn set_usable(&self, usable: bool) {
+        if self.owner_id.is_empty() {
+            return;
+        }
+        if let Some(player) = self.players.borrow_mut().get_mut(&self.owner_id) {
+            for card in &mut player.power_cards {
+                if card.id == self.id {
+                    card.usable = usable;
+                }
+            }
+        }
     }
 }
 
@@ -803,11 +854,19 @@ fn card_from_lua_value(value: &Value) -> mlua::Result<Card> {
     }
 }
 
-fn power_cards_to_lua_table(lua: &Lua, cards: &[ScriptPowerCardState]) -> mlua::Result<Table> {
+fn power_cards_to_lua_table(
+    lua: &Lua,
+    cards: &[ScriptPowerCardState],
+    players: Rc<RefCell<HashMap<String, ScriptPlayerState>>>,
+    owner_id: &str,
+) -> mlua::Result<Table> {
     let table = lua.create_table()?;
 
     for (idx, card) in cards.iter().enumerate() {
-        table.set(idx + 1, LuaPowerCardState::from(card))?;
+        table.set(
+            idx + 1,
+            LuaPowerCardState::with_context(card, Rc::clone(&players), owner_id),
+        )?;
     }
 
     Ok(table)

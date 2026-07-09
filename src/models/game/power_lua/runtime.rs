@@ -62,6 +62,7 @@ fn validate_power_card_table(table: &mlua::Table) -> Result<PowerCardScriptDefin
         return Err(mlua::Error::external("card effect must be a function"));
     }
 
+    let mut event_handlers = Vec::new();
     for pair in table.clone().pairs::<Value, Value>() {
         let (key, _) = pair?;
         let Value::String(key) = key else {
@@ -72,9 +73,17 @@ fn validate_power_card_table(table: &mlua::Table) -> Result<PowerCardScriptDefin
 
         match key.to_str()?.as_ref() {
             "effect" | "type" | "mana_cost" | "quantity" => {}
+            key if metadata::PASSIVE_EVENT_HANDLERS.contains(&key) => {
+                if !matches!(table.get::<Value>(key)?, Value::Function(_)) {
+                    return Err(mlua::Error::external(format!(
+                        "power card event handler {key} must be a function"
+                    )));
+                }
+                event_handlers.push(key.to_string());
+            }
             _ => {
                 return Err(mlua::Error::external(
-                    "card script table can only contain type, mana_cost, quantity, and effect fields",
+                "card script table can only contain type, mana_cost, quantity, and effect fields; supported event handler fields are also allowed",
                 ));
             }
         }
@@ -84,6 +93,7 @@ fn validate_power_card_table(table: &mlua::Table) -> Result<PowerCardScriptDefin
         mana_cost,
         card_type,
         quantity,
+        event_handlers,
     })
 }
 
@@ -137,8 +147,24 @@ pub fn run_power_card_script(
     globals.set("card", card.clone())?;
 
     if let Value::Table(table) = lua.load(script).set_name("power_card").eval()? {
-        let effect: mlua::Function = table.get("effect")?;
-        effect.call::<()>((game, card.clone()))?;
+        if let Some(event) = input.event.as_ref() {
+            let handler: Value = table.get(event.handler_name())?;
+            if let Value::Function(handler) = handler {
+                let state = input.card_state.as_ref().ok_or_else(|| {
+                    mlua::Error::external("power card event handler requires card state")
+                })?;
+                let card_state = api::LuaPowerCardState::with_context(
+                    state,
+                    Rc::clone(&players),
+                    input.owner_id.as_str(),
+                );
+                let event_table = api::build_event_table(&lua, event)?;
+                handler.call::<()>((game, event_table, card_state))?;
+            }
+        } else {
+            let effect: mlua::Function = table.get("effect")?;
+            effect.call::<()>((game, card.clone()))?;
+        }
     }
 
     Ok(output_from_players(

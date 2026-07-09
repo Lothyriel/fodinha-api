@@ -21,7 +21,7 @@ use crate::{
         id::{CardId, DeckId, MercenaryId, PlayerId},
         util::DeterministicRng,
     },
-    services::{GameInfoDto, GameStageDto, PlayerManaDto, PowerCardDto},
+    services::{GameInfoDto, GameStageDto, PlayerManaDto, PowerCardDto, PowerCardStateDto},
 };
 
 const LIFE_LOSS_PER_BID_DIFFERENCE: usize = 10;
@@ -191,7 +191,11 @@ pub struct PowerCard {
     pub card_type: PowerCardType,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub image_url: Option<String>,
+    #[serde(default = "default_power_card_usable")]
+    pub usable: bool,
 }
+
+fn default_power_card_usable() -> bool { true }
 
 impl PowerCard {
     pub fn to_dto(&self) -> PowerCardDto {
@@ -202,6 +206,7 @@ impl PowerCard {
             mana_cost: self.mana_cost,
             card_type: self.card_type,
             image_url: self.image_url.clone(),
+            state: None,
         }
     }
 }
@@ -352,6 +357,8 @@ pub enum PowerCardError {
     TargetRequired,
     #[error("invalid power card")]
     InvalidPowerCard,
+    #[error("power card is disabled")]
+    CardDisabled,
     #[error("not enough mana")]
     NotEnoughMana,
     #[error("power card script failed: {0}")]
@@ -414,6 +421,7 @@ struct PowerCardDefinition {
     image_url: Option<String>,
     script: String,
     source: String,
+    event_handlers: Vec<String>,
 }
 
 impl PowerCardDefinition {
@@ -439,6 +447,7 @@ impl PowerCardDefinition {
             image_url: input.image_url,
             script: input.script,
             source: input.source,
+            event_handlers: script_definition.event_handlers,
         })
     }
 
@@ -450,6 +459,7 @@ impl PowerCardDefinition {
             mana_cost: self.mana_cost,
             card_type: self.card_type,
             image_url: self.image_url.clone(),
+            usable: true,
         }
     }
 }
@@ -463,6 +473,7 @@ impl From<ScriptPowerCardState> for PowerCard {
             mana_cost: card.mana_cost,
             card_type: card.card_type,
             image_url: card.image_url,
+            usable: card.usable,
         }
     }
 }
@@ -476,6 +487,7 @@ impl From<&PowerCard> for ScriptPowerCardState {
             mana_cost: card.mana_cost,
             card_type: card.card_type,
             image_url: card.image_url.clone(),
+            usable: card.usable,
         }
     }
 }
@@ -938,12 +950,12 @@ impl Game {
         let mut preview = game.clone();
         let mut passive_effects = preview
             .passive_effects(PassiveGameEvent::MatchStarted)
-            .unwrap_or_default();
+            .map_err(|error| GameError::PowerScript(error.to_string()))?;
         preview.apply_effects(&passive_effects);
         passive_effects.merge(
             preview
                 .passive_effects(PassiveGameEvent::SetStarted)
-                .unwrap_or_default(),
+                .map_err(|error| GameError::PowerScript(error.to_string()))?,
         );
 
         Ok(MatchEvent::GameStarted {
@@ -1008,7 +1020,7 @@ impl Game {
                 player_id: player_id.clone(),
                 bid,
             })
-            .unwrap_or_default();
+            .map_err(|error| BiddingError::PowerScript(error.to_string()))?;
 
         Ok(MatchEvent::BidPlaced {
             player_id: player_id.clone(),
@@ -1037,7 +1049,7 @@ impl Game {
                 player_id: turn.player_id.clone(),
                 card: turn.card,
             })
-            .unwrap_or_default();
+            .map_err(|error| DealError::PowerScript(error.to_string()))?;
 
         let base_event = MatchEvent::TurnPlayed {
             turn: turn.clone(),
@@ -1064,7 +1076,7 @@ impl Game {
             passive_effects.merge(
                 preview
                     .passive_effects(PassiveGameEvent::RoundEnded)
-                    .unwrap_or_default(),
+                    .map_err(|error| DealError::PowerScript(error.to_string()))?,
             );
         }
 
@@ -1103,6 +1115,10 @@ impl Game {
             .and_then(|deck| deck.iter().find(|card| &card.id == card_id))
             .cloned()
             .ok_or(PowerCardError::InvalidPowerCard)?;
+
+        if !card.usable {
+            return Err(PowerCardError::CardDisabled);
+        }
 
         let definition = self
             .registry
@@ -1144,7 +1160,7 @@ impl Game {
                 card_id: definition.id.as_str().to_string(),
                 target_player_id: target_player_id.clone(),
             })
-            .unwrap_or_default(),
+            .map_err(PowerCardError::Script)?,
         );
 
         let finalizing_set = matches!(
@@ -1154,7 +1170,6 @@ impl Game {
                 ref pending_players,
             } if pending_players.len() == 1
         );
-        let mut effects = PowerCardEffects::default();
         let (next_set, next_power_set) = if finalizing_set {
             match &self.pending_set_resolution {
                 Some(pending) => (Some(pending.next_set.clone()), Some(pending.next_power_set.clone())),
@@ -1175,7 +1190,7 @@ impl Game {
             effects.merge(
                 set_preview
                     .passive_effects(PassiveGameEvent::SetEnded)
-                    .unwrap_or_default(),
+                    .map_err(PowerCardError::Script)?,
             );
         }
 
@@ -1194,14 +1209,14 @@ impl Game {
             effects.merge(
                 preview
                     .passive_effects(PassiveGameEvent::RoundStart)
-                    .unwrap_or_default(),
+                    .map_err(PowerCardError::Script)?,
             );
         }
 
         let next_set_passive_effects = if finalizing_set && !preview.is_finished() {
             preview
                 .passive_effects(PassiveGameEvent::SetStarted)
-                .unwrap_or_default()
+                .map_err(PowerCardError::Script)?
         } else {
             PowerCardEffects::default()
         };
@@ -1256,7 +1271,7 @@ impl Game {
             effects.merge(
                 set_preview
                     .passive_effects(PassiveGameEvent::SetEnded)
-                    .unwrap_or_default(),
+                    .map_err(PowerCardError::Script)?,
             );
         }
 
@@ -1269,18 +1284,18 @@ impl Game {
             next_set_passive_effects: PowerCardEffects::default(),
         });
 
-        let effects = if matches!(preview.stage, PowerGameStage::Dealing) && !preview.is_finished() {
-            preview
-                .passive_effects(PassiveGameEvent::RoundStart)
-                .unwrap_or_default()
-        } else {
-            PowerCardEffects::default()
-        };
+        if matches!(preview.stage, PowerGameStage::Dealing) && !preview.is_finished() {
+            effects.merge(
+                preview
+                    .passive_effects(PassiveGameEvent::RoundStart)
+                    .map_err(PowerCardError::Script)?,
+            );
+        }
 
         let next_set_passive_effects = if finalizing_set && !preview.is_finished() {
             preview
                 .passive_effects(PassiveGameEvent::SetStarted)
-                .unwrap_or_default()
+                .map_err(PowerCardError::Script)?
         } else {
             PowerCardEffects::default()
         };
@@ -1421,7 +1436,7 @@ impl Game {
                                 .map(|(player_id, deck)| {
                                     (
                                         player_id.clone(),
-                                        deck.iter().map(PowerCard::to_dto).collect(),
+                                        deck.iter().map(|card| self.to_hand_dto(player_id, card)).collect(),
                                     )
                                 })
                                 .collect(),
@@ -1455,7 +1470,7 @@ impl Game {
                             .map(|(player_id, deck)| {
                                 (
                                     player_id.clone(),
-                                    deck.iter().map(PowerCard::to_dto).collect(),
+                                    deck.iter().map(|card| self.to_hand_dto(player_id, card)).collect(),
                                 )
                             })
                             .collect(),
@@ -1523,7 +1538,7 @@ impl Game {
                                 .map(|(player_id, deck)| {
                                     (
                                         player_id.clone(),
-                                        deck.iter().map(PowerCard::to_dto).collect(),
+                                        deck.iter().map(|card| self.to_hand_dto(player_id, card)).collect(),
                                     )
                                 })
                                 .collect(),
@@ -1556,7 +1571,7 @@ impl Game {
                             .map(|(player_id, deck)| {
                                 (
                                     player_id.clone(),
-                                    deck.iter().map(PowerCard::to_dto).collect(),
+                                    deck.iter().map(|card| self.to_hand_dto(player_id, card)).collect(),
                                 )
                             })
                             .collect(),
@@ -1634,11 +1649,35 @@ impl Game {
         info.power_cards = Some(
             self.power_decks
                 .get(player_id)
-                .map(|deck| deck.iter().map(PowerCard::to_dto).collect())
+                .map(|deck| deck.iter().map(|card| self.to_hand_dto(player_id, card)).collect())
                 .unwrap_or_default(),
         );
 
         info
+    }
+
+    fn to_hand_dto(&self, player_id: &PlayerId, card: &PowerCard) -> PowerCardDto {
+        let reason = if !card.usable {
+            Some("disabled")
+        } else if !matches!(self.stage, PowerGameStage::Power { .. }) {
+            Some("not_power_phase")
+        } else if self.current_player().as_ref() != Some(player_id) {
+            Some("not_your_turn")
+        } else if self
+            .mana
+            .get(player_id)
+            .is_none_or(|mana| mana.current < card.mana_cost)
+        {
+            Some("insufficient_mana")
+        } else {
+            None
+        };
+        let mut dto = card.to_dto();
+        dto.state = Some(PowerCardStateDto {
+            ready: reason.is_none(),
+            reason: reason.map(str::to_string),
+        });
+        dto
     }
 
     pub fn get_bidding_player(&self) -> PlayerId {
@@ -1677,8 +1716,32 @@ impl Game {
                 target_player_id,
                 players,
                 draw_power_cards,
+                event: None,
+                card_state: None,
             },
         )?)
+    }
+
+    fn run_power_card_event(
+        &self,
+        definition: &PowerCardDefinition,
+        owner_id: &PlayerId,
+        card: &PowerCard,
+        event: PassiveGameEvent,
+    ) -> Result<PowerScriptOutput, PowerScriptError> {
+        super::power_lua::run_power_card_script(
+            &definition.script,
+            PowerScriptInput {
+                card_id: definition.id.as_str().to_string(),
+                mana_cost: definition.mana_cost,
+                owner_id: owner_id.clone(),
+                target_player_id: None,
+                players: self.script_players(None),
+                draw_power_cards: self.power_card_drawer(),
+                event: Some(event),
+                card_state: Some(card.into()),
+            },
+        )
     }
 
     fn passive_effects(
@@ -1715,6 +1778,52 @@ impl Game {
             let output_effects = Self::script_output_effects(output);
             preview.apply_effects(&output_effects);
             effects.merge(output_effects);
+        }
+
+        // Card handlers are opt-in: the runtime selects only the handler for
+        // `event`, and the first copy of a definition is sufficient because
+        // set_usable updates every matching copy in that player's hand.
+        for player_id in self.power_phase_order() {
+            let mut definition_ids = Vec::new();
+            if let Some(deck) = preview.power_decks.get(&player_id) {
+                for card in deck {
+                    if !definition_ids.contains(&card.id) {
+                        definition_ids.push(card.id.clone());
+                    }
+                }
+            }
+
+            for card_id in definition_ids {
+                let Some(card) = preview
+                    .power_decks
+                    .get(&player_id)
+                    .and_then(|deck| deck.iter().find(|card| card.id == card_id))
+                    .cloned()
+                else {
+                    continue;
+                };
+                let definition = preview
+                    .registry
+                    .power_card_definition(&preview.power_deck_id, &card.id)
+                    .map_err(|error| PowerScriptError::Lua(mlua::Error::external(error)))?
+                    .ok_or_else(|| {
+                        PowerScriptError::Lua(mlua::Error::external(format!(
+                            "missing power card definition {}",
+                            card.id
+                        )))
+                    })?;
+                if !definition
+                    .event_handlers
+                    .iter()
+                    .any(|handler| handler == event.handler_name())
+                {
+                    continue;
+                }
+                let output = preview.run_power_card_event(&definition, &player_id, &card, event.clone())?;
+                let output_effects = Self::script_output_effects(output);
+                preview.apply_effects(&output_effects);
+                effects.merge(output_effects);
+            }
         }
 
         Ok(effects)
@@ -1976,7 +2085,7 @@ impl Game {
             .map(|(player_id, deck)| {
                 (
                     player_id.clone(),
-                    deck.iter().map(PowerCard::to_dto).collect(),
+                    deck.iter().map(|card| self.to_hand_dto(player_id, card)).collect(),
                 )
             })
             .collect();

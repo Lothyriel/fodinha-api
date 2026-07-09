@@ -37,6 +37,14 @@ pub struct PowerCardDto {
     pub card_type: PowerCardType,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub image_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub state: Option<PowerCardStateDto>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, Clone)]
+pub struct PowerCardStateDto {
+    pub ready: bool,
+    pub reason: Option<String>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, Clone)]

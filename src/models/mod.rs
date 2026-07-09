@@ -135,6 +135,8 @@ pub enum GameError {
     InvalidBid(#[from] BiddingError),
     #[error("Invalid power cards | {0}")]
     InvalidPowerCards(#[from] game::fodinha_power::PowerCardDefinitionError),
+    #[error("Power card script failed | {0}")]
+    PowerScript(String),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -147,6 +149,8 @@ pub enum DealError {
     InvalidCard,
     #[error("Invalid player")]
     InvalidPlayer,
+    #[error("Power card script failed | {0}")]
+    PowerScript(String),
 }
 
 #[derive(Debug, thiserror::Error, Display, PartialEq, Eq)]
@@ -156,6 +160,7 @@ pub enum BiddingError {
     DealingStageActive,
     NotYourTurn,
     BidOutOfRange,
+    PowerScript(String),
 }
 
 #[cfg(test)]

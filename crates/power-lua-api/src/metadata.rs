@@ -61,6 +61,7 @@ pub const STEAL_POWER_CARD: &str = "steal_power_card";
 pub const DRAW_POWER_CARDS: &str = "draw_power_cards";
 pub const PLAYER_IDS: &str = "player_ids";
 pub const ADD_MANA_COST: &str = "add_mana_cost";
+pub const SET_USABLE: &str = "set_usable";
 
 pub const ON_MATCH_STARTED: &str = "on_match_started";
 pub const ON_BID_PLACED: &str = "on_bid_placed";
@@ -179,6 +180,11 @@ pub const POWER_CARD_STATE_FIELDS: &[LuaFieldDefinition] = &[
         name: "image_url",
         lua_type: "string?",
         description: "Public image URL, when the card has one.",
+    },
+    LuaFieldDefinition {
+        name: "usable",
+        lua_type: "boolean",
+        description: "Whether the card is currently enabled by its script.",
     },
 ];
 
@@ -420,6 +426,16 @@ pub const POWER_CARD_METHODS: &[LuaMethodDefinition] = &[LuaMethodDefinition {
     description: "Adds to the executing card's mana cost and returns the new effective cost. Negative effective costs regenerate mana.",
 }];
 
+pub const POWER_CARD_STATE_METHODS: &[LuaMethodDefinition] = &[LuaMethodDefinition {
+    name: SET_USABLE,
+    params: &[LuaParameterDefinition {
+        name: "usable",
+        lua_type: "boolean",
+    }],
+    returns: &[],
+    description: "Enables or disables every copy of this definition in the current player's hand.",
+}];
+
 pub const CARD_TYPE: LuaTypeDefinition = LuaTypeDefinition {
     name: "Card",
     description: "A normal visible playing card.",
@@ -445,7 +461,7 @@ pub const POWER_CARD_STATE_TYPE: LuaTypeDefinition = LuaTypeDefinition {
     name: "PowerCardState",
     description: "A visible power card in a player's hand.",
     fields: POWER_CARD_STATE_FIELDS,
-    methods: &[],
+    methods: POWER_CARD_STATE_METHODS,
 };
 
 pub const GAME_TYPE: LuaTypeDefinition = LuaTypeDefinition {

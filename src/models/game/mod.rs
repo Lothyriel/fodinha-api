@@ -714,6 +714,7 @@ mod tests {
                     mana_cost: 2,
                     card_type: fodinha_power::PowerCardType::Instant,
                     image_url: None,
+                    usable: true,
                 },
                 target_player_id: None,
                 effects: fodinha_power::PowerCardEffects {

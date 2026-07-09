@@ -47,6 +47,7 @@ pub struct ScriptPowerCardState {
     pub mana_cost: usize,
     pub card_type: PowerCardType,
     pub image_url: Option<String>,
+    pub usable: bool,
 }
 
 #[derive(Clone)]
@@ -57,6 +58,8 @@ pub struct PowerScriptInput {
     pub target_player_id: Option<PlayerId>,
     pub players: HashMap<PlayerId, ScriptPlayerState>,
     pub draw_power_cards: DrawPowerCardsFn,
+    pub event: Option<PassiveGameEvent>,
+    pub card_state: Option<ScriptPowerCardState>,
 }
 
 impl std::fmt::Debug for PowerScriptInput {
@@ -82,11 +85,12 @@ pub struct PassiveScriptInput {
     pub draw_power_cards: DrawPowerCardsFn,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PowerCardScriptDefinition {
     pub mana_cost: usize,
     pub card_type: PowerCardType,
     pub quantity: usize,
+    pub event_handlers: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -211,6 +215,8 @@ mod tests {
             target_player_id,
             players,
             draw_power_cards: no_power_card_draws(),
+            event: None,
+            card_state: None,
         }
     }
 
@@ -659,6 +665,7 @@ mod tests {
                     mana_cost: idx,
                     card_type: PowerCardType::Instant,
                     image_url: None,
+                    usable: true,
                 })
                 .collect())
         });
@@ -736,6 +743,7 @@ mod tests {
             mana_cost: 1,
             card_type: PowerCardType::Instant,
             image_url: None,
+            usable: true,
         }];
         let output = run_power_card_script(
             r#"
