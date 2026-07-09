@@ -714,8 +714,10 @@ pub(crate) fn build_event_table(lua: &Lua, event: &PassiveGameEvent) -> mlua::Re
         PassiveGameEvent::MatchStarted
         | PassiveGameEvent::RoundStart
         | PassiveGameEvent::RoundEnded
-        | PassiveGameEvent::SetStarted
-        | PassiveGameEvent::SetEnded => {}
+        | PassiveGameEvent::SetStarted => {}
+        PassiveGameEvent::SetEnded { lost_players } => {
+            table.set("lost_players", lost_players.iter().map(PlayerId::as_str).collect::<Vec<_>>())?;
+        }
         PassiveGameEvent::BidPlaced { player_id, bid } => {
             table.set("player_id", player_id.as_str())?;
             table.set("bid", *bid)?;

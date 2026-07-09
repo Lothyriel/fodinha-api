@@ -266,6 +266,7 @@ pub enum MatchEvent {
         card: PowerCard,
         target_player_id: Option<PlayerId>,
         effects: PowerCardEffects,
+        set_ended_effects: PowerCardEffects,
         next_set: Option<NewSet>,
         next_power_set: Option<PowerSet>,
         next_set_passive_effects: PowerCardEffects,
@@ -273,6 +274,7 @@ pub enum MatchEvent {
     PowerPhaseSkipped {
         player_id: PlayerId,
         effects: PowerCardEffects,
+        set_ended_effects: PowerCardEffects,
         next_set: Option<NewSet>,
         next_power_set: Option<PowerSet>,
         next_set_passive_effects: PowerCardEffects,
@@ -1179,6 +1181,7 @@ impl Game {
             (None, None)
         };
 
+        let mut set_ended_effects = PowerCardEffects::default();
         if finalizing_set {
             let mut set_preview = self.clone();
             if let Some(deck) = set_preview.power_decks.get_mut(player_id) {
@@ -1187,11 +1190,25 @@ impl Game {
                 }
             }
             set_preview.apply_effects(&effects);
-            effects.merge(
-                set_preview
-                    .passive_effects(PassiveGameEvent::SetEnded)
-                    .map_err(PowerCardError::Script)?,
-            );
+            let before = set_preview.core.get_lifes();
+            let player_ids: Vec<_> = set_preview
+                .core
+                .get_player_snapshots()
+                .keys()
+                .cloned()
+                .collect();
+            set_preview.core.finalize_pending_set(next_set.as_ref());
+            let lost_players = player_ids
+                .into_iter()
+                .filter_map(|player_id| {
+                    let lives = before[&player_id];
+                    (set_preview.core.get_lifes().get(&player_id).copied().unwrap_or(lives) < lives)
+                        .then_some(player_id)
+                })
+                .collect();
+            set_ended_effects = set_preview
+                .passive_effects(PassiveGameEvent::SetEnded { lost_players })
+                .map_err(PowerCardError::Script)?;
         }
 
         let mut preview = self.clone();
@@ -1200,6 +1217,7 @@ impl Game {
             card: card.clone(),
             target_player_id: target_player_id.clone(),
             effects: effects.clone(),
+            set_ended_effects: set_ended_effects.clone(),
             next_set: next_set.clone(),
             next_power_set: next_power_set.clone(),
             next_set_passive_effects: PowerCardEffects::default(),
@@ -1226,6 +1244,7 @@ impl Game {
             card,
             target_player_id,
             effects,
+            set_ended_effects,
             next_set,
             next_power_set,
             next_set_passive_effects,
@@ -1264,21 +1283,37 @@ impl Game {
             (None, None)
         };
         let mut effects = PowerCardEffects::default();
+        let mut set_ended_effects = PowerCardEffects::default();
 
         if finalizing_set {
             let mut set_preview = self.clone();
             set_preview.apply_effects(&effects);
-            effects.merge(
-                set_preview
-                    .passive_effects(PassiveGameEvent::SetEnded)
-                    .map_err(PowerCardError::Script)?,
-            );
+            let before = set_preview.core.get_lifes();
+            let player_ids: Vec<_> = set_preview
+                .core
+                .get_player_snapshots()
+                .keys()
+                .cloned()
+                .collect();
+            set_preview.core.finalize_pending_set(next_set.as_ref());
+            let lost_players = player_ids
+                .into_iter()
+                .filter_map(|player_id| {
+                    let lives = before[&player_id];
+                    (set_preview.core.get_lifes().get(&player_id).copied().unwrap_or(lives) < lives)
+                        .then_some(player_id)
+                })
+                .collect();
+            set_ended_effects = set_preview
+                .passive_effects(PassiveGameEvent::SetEnded { lost_players })
+                .map_err(PowerCardError::Script)?;
         }
 
         let mut preview = self.clone();
         preview.apply_match_event(MatchEvent::PowerPhaseSkipped {
             player_id: player_id.clone(),
-            effects: PowerCardEffects::default(),
+            effects: effects.clone(),
+            set_ended_effects: set_ended_effects.clone(),
             next_set: next_set.clone(),
             next_power_set: next_power_set.clone(),
             next_set_passive_effects: PowerCardEffects::default(),
@@ -1303,6 +1338,7 @@ impl Game {
         Ok(MatchEvent::PowerPhaseSkipped {
             player_id: player_id.clone(),
             effects,
+            set_ended_effects,
             next_set,
             next_power_set,
             next_set_passive_effects,
@@ -1397,6 +1433,7 @@ impl Game {
                 card,
                 target_player_id,
                 effects,
+                set_ended_effects,
                 next_set,
                 next_power_set,
                 next_set_passive_effects,
@@ -1421,6 +1458,7 @@ impl Game {
                     };
 
                     let _ = self.core.finalize_pending_set(Some(&next_set));
+                    let _ = self.apply_effects(&set_ended_effects);
                     if self.core.is_finished() {
                         return AppliedGameChange::PowerCardPlayed(PowerCardOutcome {
                             player_id,
@@ -1506,6 +1544,7 @@ impl Game {
             MatchEvent::PowerPhaseSkipped {
                 player_id,
                 effects,
+                set_ended_effects,
                 next_set,
                 next_power_set,
                 next_set_passive_effects,
@@ -1524,6 +1563,7 @@ impl Game {
                     };
 
                     let _ = self.core.finalize_pending_set(Some(&next_set));
+                    let _ = self.apply_effects(&set_ended_effects);
                     if self.core.is_finished() {
                         return AppliedGameChange::PowerPhaseSkipped(PowerPhaseSkipOutcome {
                             player_id,
@@ -3688,6 +3728,7 @@ return {
                     decks: HashMap::new(),
                     power_decks: HashMap::new(),
                 },
+                set_ended_effects: PowerCardEffects::default(),
                 next_set: None,
                 next_power_set: None,
                 next_set_passive_effects: PowerCardEffects::default(),

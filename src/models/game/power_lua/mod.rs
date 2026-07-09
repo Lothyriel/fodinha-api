@@ -131,7 +131,9 @@ pub enum PassiveGameEvent {
     },
     RoundEnded,
     SetStarted,
-    SetEnded,
+    SetEnded {
+        lost_players: Vec<PlayerId>,
+    },
 }
 
 impl PassiveGameEvent {
@@ -144,7 +146,7 @@ impl PassiveGameEvent {
             Self::TurnPlayed { .. } => metadata::ON_TURN_PLAYED,
             Self::RoundEnded => metadata::ON_ROUND_ENDED,
             Self::SetStarted => metadata::ON_SET_STARTED,
-            Self::SetEnded => metadata::ON_SET_ENDED,
+            Self::SetEnded { .. } => metadata::ON_SET_ENDED,
         }
     }
 
@@ -157,7 +159,7 @@ impl PassiveGameEvent {
             Self::TurnPlayed { .. } => "turn_played",
             Self::RoundEnded => "round_ended",
             Self::SetStarted => "set_started",
-            Self::SetEnded => "set_ended",
+            Self::SetEnded { .. } => "set_ended",
         }
     }
 }
@@ -401,6 +403,35 @@ mod tests {
         .unwrap();
 
         assert_eq!(output.lifes.get(&player), Some(&53));
+    }
+
+    #[test]
+    fn set_ended_event_exposes_lost_players_and_current_lives() {
+        let player = PlayerId(Arc::from("P1"));
+        let lost_player = PlayerId(Arc::from("P2"));
+        let output = run_passive_script(
+            r#"
+            return {
+                base_life = 50,
+                initial_mana = 2,
+                on_set_ended = function(game, event, mercenary)
+                    assert(event.lost_players[1] == "P2")
+                    assert(game.get_lives("P2") == 0)
+                    game.add_lives(mercenary.owner_id, 1)
+                end,
+            }
+            "#,
+            passive_input(
+                player.clone(),
+                PassiveGameEvent::SetEnded {
+                    lost_players: vec![lost_player.clone()],
+                },
+                HashMap::from([(player.clone(), script_player(50)), (lost_player, script_player(0))]),
+            ),
+        )
+        .unwrap();
+
+        assert_eq!(output.lifes.get(&player), Some(&51));
     }
 
     #[test]
