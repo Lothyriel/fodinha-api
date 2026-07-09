@@ -164,6 +164,9 @@ pub enum MatchEvent {
 
 #[derive(Debug, Clone)]
 pub enum GameOutcome {
+    SetPending {
+        next: PlayerId,
+    },
     SetEnded {
         lifes: HashMap<PlayerId, usize>,
         upcard: Card,
@@ -374,7 +377,7 @@ impl Game {
                 }
             }
             MatchEvent::TurnPlayed { turn, next_set } => {
-                AppliedGameChange::TurnPlayed(self.apply_turn(turn, next_set))
+                AppliedGameChange::TurnPlayed(self.apply_turn(turn, next_set, true))
             }
             _ => unreachable!("only game play events can be applied to Game"),
         }
@@ -400,6 +403,36 @@ impl Game {
 
     pub fn is_finished(&self) -> bool {
         self.alive_players().count() <= 1
+    }
+
+    pub(crate) fn finalize_pending_set(&mut self, next_set: Option<&NewSet>) -> GameOutcome {
+        self.remove_lifes();
+
+        if self.is_finished() {
+            return GameOutcome::Ended {
+                lifes: self.get_lifes(),
+            };
+        }
+
+        if let Some(set) = next_set {
+            self.apply_new_set(set);
+
+            return GameOutcome::SetEnded {
+                lifes: self.get_lifes(),
+                upcard: set.upcard,
+                decks: set.decks.clone(),
+                next: self.get_bidding_player(),
+                possible: self.get_possible_bids(),
+            };
+        }
+
+        GameOutcome::SetEnded {
+            lifes: self.get_lifes(),
+            upcard: self.upcard,
+            decks: IndexMap::new(),
+            next: self.get_bidding_player(),
+            possible: self.get_possible_bids(),
+        }
     }
 
     pub fn get_game_info(&self, player_id: &PlayerId) -> GameInfoDto {
@@ -572,7 +605,12 @@ impl Game {
         }
     }
 
-    fn apply_turn(&mut self, turn: Turn, next_set: Option<NewSet>) -> DealState {
+    pub(crate) fn apply_turn(
+        &mut self,
+        turn: Turn,
+        next_set: Option<NewSet>,
+        resolve_set_end: bool,
+    ) -> DealState {
         let player = self
             .players
             .get_mut(&turn.player_id)
@@ -594,7 +632,7 @@ impl Game {
 
             let outcome = match (players_alive, next_set) {
                 (0 | 1, _) => GameOutcome::Ended { lifes },
-                (_, Some(set)) => {
+                (_, Some(set)) if resolve_set_end => {
                     self.apply_new_set(&set);
 
                     GameOutcome::SetEnded {
@@ -605,12 +643,8 @@ impl Game {
                         possible: self.get_possible_bids(),
                     }
                 }
-                _ => GameOutcome::SetEnded {
-                    lifes,
-                    upcard: self.upcard,
-                    decks: IndexMap::new(),
+                (_, Some(_)) | (_, None) => GameOutcome::SetPending {
                     next: self.get_bidding_player(),
-                    possible: Vec::new(),
                 },
             };
 
@@ -647,10 +681,10 @@ impl Game {
 
     fn next_set_after_turn(&self, turn: &Turn) -> Option<NewSet> {
         let mut next = self.clone();
-        let state = next.apply_turn(turn.clone(), None);
+        let state = next.apply_turn(turn.clone(), None, true);
 
         match state.outcome {
-            GameOutcome::SetEnded { .. } => {
+            GameOutcome::SetEnded { .. } | GameOutcome::SetPending { .. } => {
                 let (mode, count) = next
                     .dealing_mode
                     .get_next(next.cards_count, next.alive_players().count());

@@ -48,15 +48,29 @@ pub struct Game {
     power_seed: i64,
     draw_seed: i64,
     next_power_shuffle_sequence: i64,
+    pending_set_resolution: Option<PendingSetResolution>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum PowerGameStage {
     Bidding,
     Power {
+        phase: PowerPhase,
         pending_players: Vec<PlayerId>,
     },
     Dealing,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PowerPhase {
+    First,
+    Second,
+}
+
+#[derive(Debug, Clone)]
+struct PendingSetResolution {
+    next_set: NewSet,
+    next_power_set: PowerSet,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -247,10 +261,16 @@ pub enum MatchEvent {
         card: PowerCard,
         target_player_id: Option<PlayerId>,
         effects: PowerCardEffects,
+        next_set: Option<NewSet>,
+        next_power_set: Option<PowerSet>,
+        next_set_passive_effects: PowerCardEffects,
     },
     PowerPhaseSkipped {
         player_id: PlayerId,
         effects: PowerCardEffects,
+        next_set: Option<NewSet>,
+        next_power_set: Option<PowerSet>,
+        next_set_passive_effects: PowerCardEffects,
     },
 }
 
@@ -299,6 +319,9 @@ pub struct PowerCardOutcome {
     pub decks: HashMap<PlayerId, Vec<Card>>,
     pub power_decks: HashMap<PlayerId, Vec<PowerCardDto>>,
     pub ended: bool,
+    pub next_set: Option<NewSet>,
+    pub next_power_set: Option<PowerSet>,
+    pub next_set_passive_effects: PowerCardEffects,
 }
 
 #[derive(Debug, Clone)]
@@ -310,6 +333,9 @@ pub struct PowerPhaseSkipOutcome {
     pub decks: HashMap<PlayerId, Vec<Card>>,
     pub power_decks: HashMap<PlayerId, Vec<PowerCardDto>>,
     pub ended: bool,
+    pub next_set: Option<NewSet>,
+    pub next_power_set: Option<PowerSet>,
+    pub next_set_passive_effects: PowerCardEffects,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -963,6 +989,7 @@ impl Game {
             power_seed: power_set.shuffle.seed,
             draw_seed,
             next_power_shuffle_sequence: power_set.shuffle.sequence.wrapping_add(1),
+            pending_set_resolution: None,
         };
         let initial_lifes = game.initial_lifes(players, settings.life_multiplier)?;
         game.core.apply_life_totals(&initial_lifes);
@@ -1012,13 +1039,6 @@ impl Game {
             })
             .unwrap_or_default();
 
-        if next_set.is_some() {
-            passive_effects.merge(
-                self.passive_effects(PassiveGameEvent::SetEnded)
-                    .unwrap_or_default(),
-            );
-        }
-
         let base_event = MatchEvent::TurnPlayed {
             turn: turn.clone(),
             next_set: next_set.clone(),
@@ -1032,7 +1052,8 @@ impl Game {
             preview.apply_match_event(base_event),
             AppliedGameChange::TurnPlayed {
                 state: DealState {
-                    outcome: fodinha_classic::GameOutcome::RoundEnded { .. },
+                    outcome: fodinha_classic::GameOutcome::RoundEnded { .. }
+                        | fodinha_classic::GameOutcome::SetPending { .. },
                     ..
                 },
                 ..
@@ -1047,13 +1068,7 @@ impl Game {
             );
         }
 
-        let next_set_passive_effects = if next_set.is_some() && !preview.is_finished() {
-            preview
-                .passive_effects(PassiveGameEvent::SetStarted)
-                .unwrap_or_default()
-        } else {
-            PowerCardEffects::default()
-        };
+        let next_set_passive_effects = PowerCardEffects::default();
 
         Ok(MatchEvent::TurnPlayed {
             turn,
@@ -1132,12 +1147,47 @@ impl Game {
             .unwrap_or_default(),
         );
 
+        let finalizing_set = matches!(
+            self.stage,
+            PowerGameStage::Power {
+                phase: PowerPhase::Second,
+                ref pending_players,
+            } if pending_players.len() == 1
+        );
+        let mut effects = PowerCardEffects::default();
+        let (next_set, next_power_set) = if finalizing_set {
+            match &self.pending_set_resolution {
+                Some(pending) => (Some(pending.next_set.clone()), Some(pending.next_power_set.clone())),
+                None => (None, None),
+            }
+        } else {
+            (None, None)
+        };
+
+        if finalizing_set {
+            let mut set_preview = self.clone();
+            if let Some(deck) = set_preview.power_decks.get_mut(player_id) {
+                if let Some(idx) = deck.iter().position(|held| held.id == card.id) {
+                    deck.remove(idx);
+                }
+            }
+            set_preview.apply_effects(&effects);
+            effects.merge(
+                set_preview
+                    .passive_effects(PassiveGameEvent::SetEnded)
+                    .unwrap_or_default(),
+            );
+        }
+
         let mut preview = self.clone();
         preview.apply_match_event(MatchEvent::PowerCardPlayed {
             player_id: player_id.clone(),
             card: card.clone(),
             target_player_id: target_player_id.clone(),
             effects: effects.clone(),
+            next_set: next_set.clone(),
+            next_power_set: next_power_set.clone(),
+            next_set_passive_effects: PowerCardEffects::default(),
         });
 
         if matches!(preview.stage, PowerGameStage::Dealing) && !preview.is_finished() {
@@ -1148,11 +1198,22 @@ impl Game {
             );
         }
 
+        let next_set_passive_effects = if finalizing_set && !preview.is_finished() {
+            preview
+                .passive_effects(PassiveGameEvent::SetStarted)
+                .unwrap_or_default()
+        } else {
+            PowerCardEffects::default()
+        };
+
         Ok(MatchEvent::PowerCardPlayed {
             player_id: player_id.clone(),
             card,
             target_player_id,
             effects,
+            next_set,
+            next_power_set,
+            next_set_passive_effects,
         })
     }
 
@@ -1172,10 +1233,40 @@ impl Game {
             return Err(PowerCardError::InvalidPlayer);
         }
 
+        let finalizing_set = matches!(
+            self.stage,
+            PowerGameStage::Power {
+                phase: PowerPhase::Second,
+                ref pending_players,
+            } if pending_players.len() == 1
+        );
+        let (next_set, next_power_set) = if finalizing_set {
+            match &self.pending_set_resolution {
+                Some(pending) => (Some(pending.next_set.clone()), Some(pending.next_power_set.clone())),
+                None => (None, None),
+            }
+        } else {
+            (None, None)
+        };
+        let mut effects = PowerCardEffects::default();
+
+        if finalizing_set {
+            let mut set_preview = self.clone();
+            set_preview.apply_effects(&effects);
+            effects.merge(
+                set_preview
+                    .passive_effects(PassiveGameEvent::SetEnded)
+                    .unwrap_or_default(),
+            );
+        }
+
         let mut preview = self.clone();
         preview.apply_match_event(MatchEvent::PowerPhaseSkipped {
             player_id: player_id.clone(),
             effects: PowerCardEffects::default(),
+            next_set: next_set.clone(),
+            next_power_set: next_power_set.clone(),
+            next_set_passive_effects: PowerCardEffects::default(),
         });
 
         let effects = if matches!(preview.stage, PowerGameStage::Dealing) && !preview.is_finished() {
@@ -1186,9 +1277,20 @@ impl Game {
             PowerCardEffects::default()
         };
 
+        let next_set_passive_effects = if finalizing_set && !preview.is_finished() {
+            preview
+                .passive_effects(PassiveGameEvent::SetStarted)
+                .unwrap_or_default()
+        } else {
+            PowerCardEffects::default()
+        };
+
         Ok(MatchEvent::PowerPhaseSkipped {
             player_id: player_id.clone(),
             effects,
+            next_set,
+            next_power_set,
+            next_set_passive_effects,
         })
     }
 
@@ -1229,68 +1331,44 @@ impl Game {
                 next_set,
                 next_power_set,
                 passive_effects,
-                next_set_passive_effects,
+                next_set_passive_effects: _,
             } => {
-                let mut state = match self
+                let is_set_end = next_set.is_some();
+                let state = self
                     .core
-                    .apply_match_event(fodinha_classic::MatchEvent::TurnPlayed { turn, next_set })
-                {
-                    fodinha_classic::AppliedGameChange::TurnPlayed(state) => state,
-                    _ => unreachable!("turn event applies as turn change"),
-                };
-                let power_decks = next_power_set.as_ref().map(|set| {
-                    self.apply_power_set(set);
-                    dto_decks(&set.decks)
-                });
-                let mana = next_power_set.as_ref().map(|set| mana_to_dto(&set.mana));
+                    .apply_turn(turn, next_set.clone(), !is_set_end);
+
                 let (passive_mana, passive_power_decks) = self.apply_effects(&passive_effects);
-                Self::sync_turn_outcome_lifes(&mut state.outcome, self.core.get_lifes());
-                let (next_set_passive_mana, next_set_passive_power_decks) =
-                    self.apply_effects(&next_set_passive_effects);
-                let lifes = (!next_set_passive_effects.lifes.is_empty())
-                    .then(|| next_set_passive_effects.lifes.clone());
-                Self::merge_next_set_decks(&mut state.outcome, &next_set_passive_effects.decks);
                 let mana = if passive_mana.is_empty() {
-                    mana
+                    None
                 } else {
-                    let mut mana = mana.unwrap_or_default();
-                    mana.extend(passive_mana);
-                    Some(mana)
-                };
-                let mana = if next_set_passive_mana.is_empty() {
-                    mana
-                } else {
-                    let mut mana = mana.unwrap_or_default();
-                    mana.extend(next_set_passive_mana);
-                    Some(mana)
+                    Some(passive_mana)
                 };
                 let power_decks = if passive_power_decks.is_empty() {
-                    power_decks
+                    None
                 } else {
-                    let mut power_decks = power_decks.unwrap_or_default();
-                    power_decks.extend(passive_power_decks);
-                    Some(power_decks)
-                };
-                let power_decks = if next_set_passive_power_decks.is_empty() {
-                    power_decks
-                } else {
-                    let mut power_decks = power_decks.unwrap_or_default();
-                    power_decks.extend(next_set_passive_power_decks);
-                    Some(power_decks)
+                    Some(passive_power_decks.into_iter().collect::<IndexMap<_, _>>())
                 };
 
-                self.stage = if matches!(
-                    &state.outcome,
-                    fodinha_classic::GameOutcome::SetEnded { .. }
-                ) {
-                    PowerGameStage::Bidding
+                if is_set_end {
+                    self.merge_effects_into_pending_resolution(&passive_effects);
+                    if let (Some(next_set), Some(next_power_set)) = (next_set.clone(), next_power_set) {
+                        self.pending_set_resolution = Some(PendingSetResolution {
+                            next_set,
+                            next_power_set,
+                        });
+                        self.stage = PowerGameStage::Power {
+                            phase: PowerPhase::Second,
+                            pending_players: self.power_phase_order(),
+                        };
+                    }
                 } else {
-                    PowerGameStage::Dealing
-                };
+                    self.stage = PowerGameStage::Dealing;
+                }
 
                 AppliedGameChange::TurnPlayed {
                     state,
-                    lifes,
+                    lifes: None,
                     power_decks,
                     mana,
                 }
@@ -1300,6 +1378,9 @@ impl Game {
                 card,
                 target_player_id,
                 effects,
+                next_set,
+                next_power_set,
+                next_set_passive_effects,
             } => {
                 if let Some(deck) = self.power_decks.get_mut(&player_id)
                     && let Some(idx) = deck.iter().position(|held| held.id == card.id)
@@ -1308,7 +1389,86 @@ impl Game {
                 }
 
                 let (mana, power_decks) = self.apply_effects(&effects);
-                self.advance_power_phase(&player_id);
+                let completed_phase = self.advance_power_phase(&player_id);
+
+                if next_set.is_some() {
+                    self.merge_effects_into_pending_resolution(&effects);
+
+                    let Some(next_set) = next_set else {
+                        unreachable!("next_set should be present when finalizing a set")
+                    };
+                    let Some(next_power_set) = next_power_set else {
+                        unreachable!("next_power_set should be present when finalizing a set")
+                    };
+
+                    let _ = self.core.finalize_pending_set(Some(&next_set));
+                    if self.core.is_finished() {
+                        return AppliedGameChange::PowerCardPlayed(PowerCardOutcome {
+                            player_id,
+                            card: card.to_dto(),
+                            target_player_id,
+                            lifes: self.core.get_lifes(),
+                            mana: mana_to_dto(&self.mana),
+                            decks: self
+                                .core
+                                .get_player_snapshots()
+                                .into_iter()
+                                .map(|(player_id, snapshot)| (player_id, snapshot.deck))
+                                .collect(),
+                            power_decks: self
+                                .power_decks
+                                .iter()
+                                .map(|(player_id, deck)| {
+                                    (
+                                        player_id.clone(),
+                                        deck.iter().map(PowerCard::to_dto).collect(),
+                                    )
+                                })
+                                .collect(),
+                            ended: true,
+                            next_set: None,
+                            next_power_set: None,
+                            next_set_passive_effects: PowerCardEffects::default(),
+                        });
+                    }
+
+                    self.apply_power_set(&next_power_set);
+
+                    let _ = self.apply_effects(&next_set_passive_effects);
+                    self.stage = PowerGameStage::Bidding;
+
+                    return AppliedGameChange::PowerCardPlayed(PowerCardOutcome {
+                        player_id,
+                        card: card.to_dto(),
+                        target_player_id,
+                        lifes: self.core.get_lifes(),
+                        mana: mana_to_dto(&self.mana),
+                        decks: self
+                            .core
+                            .get_player_snapshots()
+                            .into_iter()
+                            .map(|(player_id, snapshot)| (player_id, snapshot.deck))
+                            .collect(),
+                        power_decks: self
+                            .power_decks
+                            .iter()
+                            .map(|(player_id, deck)| {
+                                (
+                                    player_id.clone(),
+                                    deck.iter().map(PowerCard::to_dto).collect(),
+                                )
+                            })
+                            .collect(),
+                        ended: self.core.is_finished(),
+                        next_set: Some(next_set),
+                        next_power_set: Some(next_power_set),
+                        next_set_passive_effects,
+                    });
+                }
+
+                if matches!(completed_phase, Some(PowerPhase::First)) {
+                    self.stage = PowerGameStage::Dealing;
+                }
 
                 AppliedGameChange::PowerCardPlayed(PowerCardOutcome {
                     player_id,
@@ -1319,11 +1479,97 @@ impl Game {
                     decks: effects.decks,
                     power_decks,
                     ended: self.core.is_finished(),
+                    next_set: None,
+                    next_power_set: None,
+                    next_set_passive_effects: PowerCardEffects::default(),
                 })
             }
-            MatchEvent::PowerPhaseSkipped { player_id, effects } => {
+            MatchEvent::PowerPhaseSkipped {
+                player_id,
+                effects,
+                next_set,
+                next_power_set,
+                next_set_passive_effects,
+            } => {
                 let (mana, power_decks) = self.apply_effects(&effects);
-                self.advance_power_phase(&player_id);
+                let completed_phase = self.advance_power_phase(&player_id);
+
+                if next_set.is_some() {
+                    self.merge_effects_into_pending_resolution(&effects);
+
+                    let Some(next_set) = next_set else {
+                        unreachable!("next_set should be present when finalizing a set")
+                    };
+                    let Some(next_power_set) = next_power_set else {
+                        unreachable!("next_power_set should be present when finalizing a set")
+                    };
+
+                    let _ = self.core.finalize_pending_set(Some(&next_set));
+                    if self.core.is_finished() {
+                        return AppliedGameChange::PowerPhaseSkipped(PowerPhaseSkipOutcome {
+                            player_id,
+                            lifes: self.core.get_lifes(),
+                            changed_lifes: effects.lifes.clone(),
+                            mana: mana_to_dto(&self.mana),
+                            decks: self
+                                .core
+                                .get_player_snapshots()
+                                .into_iter()
+                                .map(|(player_id, snapshot)| (player_id, snapshot.deck))
+                                .collect(),
+                            power_decks: self
+                                .power_decks
+                                .iter()
+                                .map(|(player_id, deck)| {
+                                    (
+                                        player_id.clone(),
+                                        deck.iter().map(PowerCard::to_dto).collect(),
+                                    )
+                                })
+                                .collect(),
+                            ended: true,
+                            next_set: None,
+                            next_power_set: None,
+                            next_set_passive_effects: PowerCardEffects::default(),
+                        });
+                    }
+
+                    self.apply_power_set(&next_power_set);
+
+                    let _ = self.apply_effects(&next_set_passive_effects);
+                    self.stage = PowerGameStage::Bidding;
+
+                    return AppliedGameChange::PowerPhaseSkipped(PowerPhaseSkipOutcome {
+                        player_id,
+                        lifes: self.core.get_lifes(),
+                        changed_lifes: effects.lifes.clone(),
+                        mana: mana_to_dto(&self.mana),
+                        decks: self
+                            .core
+                            .get_player_snapshots()
+                            .into_iter()
+                            .map(|(player_id, snapshot)| (player_id, snapshot.deck))
+                            .collect(),
+                        power_decks: self
+                            .power_decks
+                            .iter()
+                            .map(|(player_id, deck)| {
+                                (
+                                    player_id.clone(),
+                                    deck.iter().map(PowerCard::to_dto).collect(),
+                                )
+                            })
+                            .collect(),
+                        ended: self.core.is_finished(),
+                        next_set: Some(next_set),
+                        next_power_set: Some(next_power_set),
+                        next_set_passive_effects,
+                    });
+                }
+
+                if matches!(completed_phase, Some(PowerPhase::First)) {
+                    self.stage = PowerGameStage::Dealing;
+                }
 
                 AppliedGameChange::PowerPhaseSkipped(PowerPhaseSkipOutcome {
                     player_id,
@@ -1333,6 +1579,9 @@ impl Game {
                     decks: effects.decks,
                     power_decks,
                     ended: self.core.is_finished(),
+                    next_set: None,
+                    next_power_set: None,
+                    next_set_passive_effects: PowerCardEffects::default(),
                 })
             }
             MatchEvent::GameStarted { .. } => unreachable!("GameStarted is applied by facade"),
@@ -1350,7 +1599,7 @@ impl Game {
     pub fn current_player(&self) -> Option<PlayerId> {
         match &self.stage {
             PowerGameStage::Bidding | PowerGameStage::Dealing => self.core.current_player(),
-            PowerGameStage::Power { pending_players } => pending_players
+            PowerGameStage::Power { pending_players, .. } => pending_players
                 .iter()
                 .find(|player_id| self.core.is_player_alive(player_id))
                 .cloned(),
@@ -1362,7 +1611,12 @@ impl Game {
             PowerGameStage::Bidding => GameStageDto::Bidding {
                 possible_bids: self.core.get_possible_bids(),
             },
-            PowerGameStage::Power { .. } => GameStageDto::Power,
+            PowerGameStage::Power { phase, .. } => GameStageDto::Power {
+                phase: match phase {
+                    PowerPhase::First => crate::services::PowerPhaseDto::First,
+                    PowerPhase::Second => crate::services::PowerPhaseDto::Second,
+                },
+            },
             PowerGameStage::Dealing => GameStageDto::Dealing,
         }
     }
@@ -1432,12 +1686,16 @@ impl Game {
         event: PassiveGameEvent,
     ) -> Result<PowerCardEffects, PowerScriptError> {
         let mut effects = PowerCardEffects::default();
+        let mut preview = self.clone();
 
-        for (player_id, mercenary_id) in &self.player_mercenaries {
-            if !self.core.is_player_alive(player_id) {
+        for player_id in self.power_phase_order() {
+            if !preview.core.is_player_alive(&player_id) {
                 continue;
             }
 
+            let Some(mercenary_id) = preview.player_mercenaries.get(&player_id) else {
+                continue;
+            };
             let Some(definition) = self.registry.mercenary_definition(mercenary_id) else {
                 continue;
             };
@@ -1449,12 +1707,14 @@ impl Game {
                     base_life: definition.base_life,
                     initial_mana: definition.initial_mana,
                     event: event.clone(),
-                    players: self.script_players(None),
-                    draw_power_cards: self.power_card_drawer(),
+                    players: preview.script_players(None),
+                    draw_power_cards: preview.power_card_drawer(),
                 },
             )?;
 
-            effects.merge(Self::script_output_effects(output));
+            let output_effects = Self::script_output_effects(output);
+            preview.apply_effects(&output_effects);
+            effects.merge(output_effects);
         }
 
         Ok(effects)
@@ -1652,6 +1912,30 @@ impl Game {
         self.next_power_shuffle_sequence = set.shuffle.sequence.wrapping_add(1);
     }
 
+    fn merge_effects_into_pending_resolution(&mut self, effects: &PowerCardEffects) {
+        let Some(pending) = self.pending_set_resolution.as_mut() else {
+            return;
+        };
+
+        for (player_id, deck) in &effects.decks {
+            pending.next_set.decks.insert(player_id.clone(), deck.clone());
+        }
+
+        for (player_id, deck) in &effects.power_decks {
+            pending
+                .next_power_set
+                .decks
+                .insert(player_id.clone(), deck.clone());
+        }
+
+        for (player_id, mana) in &effects.mana {
+            pending
+                .next_power_set
+                .mana
+                .insert(player_id.clone(), mana.clone());
+        }
+    }
+
     fn apply_mana_totals(
         &mut self,
         mana: &HashMap<PlayerId, PlayerMana>,
@@ -1704,12 +1988,13 @@ impl Game {
         self.stage = match state {
             BiddingState::Active { .. } => PowerGameStage::Bidding,
             BiddingState::Ended { .. } => PowerGameStage::Power {
+                phase: PowerPhase::First,
                 pending_players: self.power_phase_order(),
             },
         };
     }
 
-    fn advance_power_phase(&mut self, player_id: &PlayerId) {
+    fn advance_power_phase(&mut self, player_id: &PlayerId) -> Option<PowerPhase> {
         let alive_players = self
             .core
             .get_player_snapshots()
@@ -1717,8 +2002,11 @@ impl Game {
             .filter(|(_, player)| player.lifes > 0)
             .map(|(player_id, _)| player_id)
             .collect::<Vec<_>>();
-        let PowerGameStage::Power { pending_players } = &mut self.stage else {
-            return;
+        let PowerGameStage::Power {
+            phase,
+            pending_players,
+        } = &mut self.stage else {
+            return None;
         };
 
         pending_players.retain(|pending_player| {
@@ -1726,8 +2014,19 @@ impl Game {
         });
 
         if pending_players.is_empty() {
-            self.stage = PowerGameStage::Dealing;
+            let phase = *phase;
+            self.stage = match phase {
+                PowerPhase::First => PowerGameStage::Dealing,
+                PowerPhase::Second => PowerGameStage::Power {
+                    phase: PowerPhase::Second,
+                    pending_players: Vec::new(),
+                },
+            };
+
+            return Some(phase);
         }
+
+        None
     }
 
     fn power_phase_order(&self) -> Vec<PlayerId> {
@@ -2352,6 +2651,7 @@ return {
 
     fn set_power_phase(game: &mut Game, players: &[PlayerId]) {
         game.stage = PowerGameStage::Power {
+            phase: PowerPhase::First,
             pending_players: players.to_vec(),
         };
     }
@@ -3274,6 +3574,9 @@ return {
                     decks: HashMap::new(),
                     power_decks: HashMap::new(),
                 },
+                next_set: None,
+                next_power_set: None,
+                next_set_passive_effects: PowerCardEffects::default(),
             })
         else {
             panic!("expected power card outcome");

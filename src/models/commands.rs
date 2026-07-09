@@ -97,6 +97,7 @@ pub enum ServerMessage {
     },
     PlayerPowerTurn {
         player_id: PlayerId,
+        phase: crate::services::PowerPhaseDto,
     },
     PlayerStatusChange {
         player_id: PlayerId,

@@ -599,8 +599,8 @@ impl ManagerHandle {
                 player_id,
                 possible_bids,
             }),
-            OutboundMessage::PlayerPowerTurn { player_id } => {
-                Ok(ServerMessage::PlayerPowerTurn { player_id })
+            OutboundMessage::PlayerPowerTurn { player_id, phase } => {
+                Ok(ServerMessage::PlayerPowerTurn { player_id, phase })
             }
             OutboundMessage::PlayerStatusChange { player_id, ready } => {
                 Ok(ServerMessage::PlayerStatusChange { player_id, ready })

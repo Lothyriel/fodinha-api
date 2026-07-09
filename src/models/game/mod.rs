@@ -722,6 +722,9 @@ mod tests {
                     decks: HashMap::new(),
                     power_decks: HashMap::new(),
                 },
+                next_set: None,
+                next_power_set: None,
+                next_set_passive_effects: fodinha_power::PowerCardEffects::default(),
             },
         ));
 

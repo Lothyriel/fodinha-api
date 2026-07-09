@@ -49,8 +49,15 @@ pub struct PlayerManaDto {
 #[serde(tag = "type", content = "data")]
 pub enum GameStageDto {
     Bidding { possible_bids: Vec<usize> },
-    Power,
+    Power { phase: PowerPhaseDto },
     Dealing,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, Clone, Copy)]
+#[serde(rename_all = "snake_case")]
+pub enum PowerPhaseDto {
+    First,
+    Second,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, Clone)]

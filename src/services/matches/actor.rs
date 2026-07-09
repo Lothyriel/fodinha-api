@@ -845,6 +845,13 @@ impl MatchActor {
 
                 false
             }
+            GameOutcome::SetPending { next: _ } => {
+                if let Some(msg) = self.current_phase_message() {
+                    self.broadcast(msg).await;
+                }
+
+                false
+            }
             GameOutcome::RoundEnded { rounds, next } => {
                 let msg = OutboundMessage::RoundEnded(rounds);
                 self.broadcast(msg).await;
@@ -870,8 +877,11 @@ impl MatchActor {
     }
 
     async fn broadcast_power_card(&self, outcome: fodinha_power::PowerCardOutcome) -> bool {
-        let ended = outcome.ended;
         let lifes = outcome.lifes.clone();
+        let next_set = outcome.next_set.clone();
+        let decks = outcome.decks.clone();
+        let power_decks = outcome.power_decks.clone();
+        let mana = outcome.mana.clone();
 
         self.broadcast(OutboundMessage::PowerCardPlayed {
             player_id: outcome.player_id,
@@ -881,64 +891,119 @@ impl MatchActor {
         })
         .await;
 
-        if !outcome.mana.is_empty() {
-            self.broadcast(OutboundMessage::PlayersManaChanged(outcome.mana))
-                .await;
+        if next_set.is_none() {
+            if !mana.is_empty() {
+                self.broadcast(OutboundMessage::PlayersManaChanged(mana.clone()))
+                    .await;
+            }
+
+            for (player_id, deck) in decks.clone() {
+                self.send_to_player(&player_id, OutboundMessage::PlayerDeck(deck))
+                    .await;
+            }
+
+            for (player_id, deck) in power_decks.clone() {
+                self.send_to_player(&player_id, OutboundMessage::PlayerPowerCards(deck))
+                    .await;
+            }
         }
 
-        for (player_id, deck) in outcome.decks {
-            self.send_to_player(&player_id, OutboundMessage::PlayerDeck(deck))
+        if next_set.is_some() {
+            self.broadcast(OutboundMessage::SetEnded { lifes: lifes.clone() })
                 .await;
-        }
 
-        for (player_id, deck) in outcome.power_decks {
-            self.send_to_player(&player_id, OutboundMessage::PlayerPowerCards(deck))
+            if let Some(OutboundMessage::PlayerBiddingTurn {
+                player_id: next,
+                possible_bids,
+            }) = self.current_phase_message()
+            {
+                self.init_set(
+                    decks
+                        .into_iter()
+                        .collect::<IndexMap<_, _>>(),
+                    Some(lifes),
+                    Some(power_decks.into_iter().collect::<IndexMap<_, _>>()),
+                    Some(mana),
+                    next_set
+                        .expect("resolved next set is required")
+                        .upcard,
+                    next,
+                    possible_bids,
+                )
                 .await;
-        }
-
-        if ended {
+            }
+        } else if outcome.ended {
             self.broadcast(OutboundMessage::GameEnded { lifes }).await;
         } else if let Some(msg) = self.current_phase_message() {
             self.broadcast(msg).await;
         }
 
-        ended
+        outcome.ended
     }
 
     async fn broadcast_power_phase_skip(
         &self,
         outcome: fodinha_power::PowerPhaseSkipOutcome,
     ) -> bool {
-        let ended = outcome.ended;
         let lifes = outcome.lifes.clone();
+        let next_set = outcome.next_set.clone();
+        let decks = outcome.decks.clone();
+        let power_decks = outcome.power_decks.clone();
+        let mana = outcome.mana.clone();
 
         if !outcome.changed_lifes.is_empty() {
-            self.broadcast(OutboundMessage::PlayersLifesChanged(outcome.changed_lifes))
+            self.broadcast(OutboundMessage::PlayersLifesChanged(outcome.changed_lifes.clone()))
                 .await;
         }
 
-        if !outcome.mana.is_empty() {
-            self.broadcast(OutboundMessage::PlayersManaChanged(outcome.mana))
-                .await;
+        if next_set.is_none() {
+            if !mana.is_empty() {
+                self.broadcast(OutboundMessage::PlayersManaChanged(mana.clone()))
+                    .await;
+            }
+
+            for (player_id, deck) in decks.clone() {
+                self.send_to_player(&player_id, OutboundMessage::PlayerDeck(deck))
+                    .await;
+            }
+
+            for (player_id, deck) in power_decks.clone() {
+                self.send_to_player(&player_id, OutboundMessage::PlayerPowerCards(deck))
+                    .await;
+            }
         }
 
-        for (player_id, deck) in outcome.decks {
-            self.send_to_player(&player_id, OutboundMessage::PlayerDeck(deck))
+        if next_set.is_some() {
+            self.broadcast(OutboundMessage::SetEnded { lifes: lifes.clone() })
                 .await;
-        }
 
-        for (player_id, deck) in outcome.power_decks {
-            self.send_to_player(&player_id, OutboundMessage::PlayerPowerCards(deck))
+            if let Some(OutboundMessage::PlayerBiddingTurn {
+                player_id: next,
+                possible_bids,
+            }) = self.current_phase_message()
+            {
+                self.init_set(
+                    decks
+                        .into_iter()
+                        .collect::<IndexMap<_, _>>(),
+                    Some(lifes),
+                    Some(power_decks.into_iter().collect::<IndexMap<_, _>>()),
+                    Some(mana),
+                    next_set
+                        .expect("resolved next set is required")
+                        .upcard,
+                    next,
+                    possible_bids,
+                )
                 .await;
-        }
-
-        if ended {
+            }
+        } else if outcome.ended {
             self.broadcast(OutboundMessage::GameEnded { lifes }).await;
         } else if let Some(msg) = self.current_phase_message() {
             self.broadcast(msg).await;
         }
 
-        ended
+        outcome.ended
     }
 
     async fn init_set(
@@ -1007,8 +1072,8 @@ impl MatchActor {
                     possible_bids,
                 })
             }
-            crate::services::GameStageDto::Power => {
-                Some(OutboundMessage::PlayerPowerTurn { player_id })
+            crate::services::GameStageDto::Power { phase } => {
+                Some(OutboundMessage::PlayerPowerTurn { player_id, phase })
             }
             crate::services::GameStageDto::Dealing => {
                 Some(OutboundMessage::PlayerTurn { player_id })

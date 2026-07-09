@@ -2073,7 +2073,7 @@ return {
     }
 
     fn validate_power_turn(m: &ServerMessage) -> bool {
-        matches!(m, ServerMessage::PlayerPowerTurn { player_id: _ })
+        matches!(m, ServerMessage::PlayerPowerTurn { player_id: _, phase: _ })
     }
 
     fn validate_player_bidded(m: &ServerMessage) -> bool {
@@ -2135,7 +2135,7 @@ return {
 
     async fn get_next_power_player(stream: &mut WebSocket) -> PlayerId {
         match assert_game_msg(stream, validate_power_turn).await {
-            ServerMessage::PlayerPowerTurn { player_id } => player_id,
+            ServerMessage::PlayerPowerTurn { player_id, phase: _ } => player_id,
             _ => panic!("Should be a PlayerPowerTurn message"),
         }
     }

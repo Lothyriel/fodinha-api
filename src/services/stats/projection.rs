@@ -96,6 +96,7 @@ pub(crate) fn project_match_stats(
 
                 match state.outcome {
                     GameOutcome::TurnPlayed { .. } => {}
+                    GameOutcome::SetPending { .. } => {}
                     GameOutcome::RoundEnded { next, .. } => {
                         record_round_win(
                             &mut stats,
