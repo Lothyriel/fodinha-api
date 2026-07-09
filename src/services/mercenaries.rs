@@ -32,10 +32,10 @@ pub struct UpsertMercenaryInput {
     pub name: String,
     pub subtitle: String,
     pub description: String,
-    pub deck: String,
     pub style: String,
     pub temper: String,
     pub banner: Option<Vec<u8>>,
+    pub icon: Option<Vec<u8>>,
     pub passive_script: Option<Vec<u8>>,
 }
 
@@ -45,11 +45,11 @@ pub struct MercenaryResponse {
     pub name: String,
     pub subtitle: String,
     pub description: String,
-    pub deck: String,
     pub style: String,
     pub temper: String,
     pub creator_id: PlayerId,
     pub banner_url: Option<String>,
+    pub icon_url: Option<String>,
     pub base_life: usize,
     pub initial_mana: usize,
     pub passive_script: String,
@@ -126,12 +126,16 @@ impl MercenariesService {
         let banner = normalized
             .banner
             .ok_or_else(|| MercenaryError::Invalid("banner image is required".to_string()))?;
+        let icon = normalized
+            .icon
+            .ok_or_else(|| MercenaryError::Invalid("icon image is required".to_string()))?;
         let passive_script = normalized
             .passive_script
             .ok_or_else(|| MercenaryError::Invalid("passive lua script is required".to_string()))?;
         let script = String::from_utf8(passive_script)
             .map_err(|error| MercenaryError::Script(error.to_string()))?;
         let banner_object_key = mercenary_banner_object_key(&normalized.mercenary_id);
+        let icon_object_key = mercenary_icon_object_key(&normalized.mercenary_id);
         let script_object_key = mercenary_passive_script_object_key(&normalized.mercenary_id);
 
         power_lua::validate_mercenary_passive_script(&script, &script_object_key)
@@ -145,6 +149,8 @@ impl MercenariesService {
             ),
             self.storage
                 .put(&banner_object_key, banner, IMAGE_OBJECT_CONTENT_TYPE),
+            self.storage
+                .put(&icon_object_key, icon, IMAGE_OBJECT_CONTENT_TYPE),
         )?;
 
         let mercenary = MercenaryDto::new(NewMercenary {
@@ -152,11 +158,12 @@ impl MercenariesService {
             name: normalized.name,
             subtitle: normalized.subtitle,
             description: normalized.description,
-            deck: normalized.deck,
             style: normalized.style,
             temper: normalized.temper,
             creator_id,
             banner_object_key: Some(banner_object_key),
+            icon_object_key: Some(icon_object_key),
+            icon_content_type: Some(IMAGE_OBJECT_CONTENT_TYPE.to_string()),
             passive_script_object_key: script_object_key,
             banner_content_type: Some(IMAGE_OBJECT_CONTENT_TYPE.to_string()),
         });
@@ -193,6 +200,7 @@ impl MercenariesService {
             .banner_object_key
             .clone()
             .unwrap_or_else(|| mercenary_banner_object_key(&mercenary_id));
+        let icon_object_key = mercenary.icon_object_key.clone();
         let script_object_key = mercenary.passive_script_object_key.clone();
 
         let script = match normalized.passive_script {
@@ -221,6 +229,23 @@ impl MercenariesService {
                 .await?;
         }
 
+        if let Some(icon) = normalized.icon {
+            if icon.is_empty() {
+                return Err(MercenaryError::Invalid(
+                    "icon image is required".to_string(),
+                ));
+            }
+
+            let icon_object_key = icon_object_key
+                .clone()
+                .unwrap_or_else(|| mercenary_icon_object_key(&mercenary_id));
+            self.storage
+                .put(&icon_object_key, icon, IMAGE_OBJECT_CONTENT_TYPE)
+                .await?;
+            mercenary.icon_object_key = Some(icon_object_key);
+            mercenary.icon_content_type = Some(IMAGE_OBJECT_CONTENT_TYPE.to_string());
+        }
+
         self.storage
             .put(
                 &script_object_key,
@@ -232,7 +257,6 @@ impl MercenariesService {
         mercenary.name = normalized.name;
         mercenary.subtitle = normalized.subtitle;
         mercenary.description = normalized.description;
-        mercenary.deck = normalized.deck;
         mercenary.style = normalized.style;
         mercenary.temper = normalized.temper;
         mercenary.banner_object_key = Some(banner_object_key);
@@ -283,12 +307,15 @@ impl MercenariesService {
             name: mercenary.name,
             subtitle: mercenary.subtitle,
             description: mercenary.description,
-            deck: mercenary.deck,
             style: mercenary.style,
             temper: mercenary.temper,
             creator_id: mercenary.creator_id,
             banner_url: mercenary
                 .banner_object_key
+                .as_deref()
+                .and_then(|key| self.storage.public_url(key)),
+            icon_url: mercenary
+                .icon_object_key
                 .as_deref()
                 .and_then(|key| self.storage.public_url(key)),
             base_life: passive_definition.base_life,
@@ -337,7 +364,6 @@ fn normalize_input(input: UpsertMercenaryInput) -> Result<UpsertMercenaryInput, 
     let name = input.name.trim().to_string();
     let subtitle = input.subtitle.trim().to_string();
     let description = input.description.trim().to_string();
-    let deck = input.deck.trim().to_string();
     let style = input.style.trim().to_string();
     let temper = input.temper.trim().to_string();
 
@@ -354,10 +380,10 @@ fn normalize_input(input: UpsertMercenaryInput) -> Result<UpsertMercenaryInput, 
         name,
         subtitle,
         description,
-        deck,
         style,
         temper,
         banner: input.banner,
+        icon: input.icon,
         passive_script: input.passive_script,
     })
 }
@@ -381,6 +407,10 @@ fn validate_mercenary_id(mercenary_id: &MercenaryId) -> Result<(), MercenaryErro
 
 fn mercenary_banner_object_key(mercenary_id: &MercenaryId) -> String {
     format!("mercenaries/{}/banner.png", mercenary_id.as_str())
+}
+
+fn mercenary_icon_object_key(mercenary_id: &MercenaryId) -> String {
+    format!("mercenaries/{}/icon.png", mercenary_id.as_str())
 }
 
 fn mercenary_passive_script_object_key(mercenary_id: &MercenaryId) -> String {

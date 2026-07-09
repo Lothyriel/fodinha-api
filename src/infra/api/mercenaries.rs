@@ -63,15 +63,15 @@ async fn read_upsert_mercenary_input(
     mut multipart: Multipart,
 ) -> Result<UpsertMercenaryInput, MercenaryError> {
     let has_path_mercenary_id = path_mercenary_id.is_some();
-    let mut mercenary_id =
+    let mercenary_id =
         path_mercenary_id.or_else(|| (!has_path_mercenary_id).then(gen_mercenaryid));
     let mut name = String::new();
     let mut subtitle = String::new();
     let mut description = String::new();
-    let mut deck = String::new();
     let mut style = String::new();
     let mut temper = String::new();
     let mut banner = None;
+    let mut icon = None;
     let mut passive_script = None;
 
     while let Some(field) = multipart
@@ -106,12 +106,6 @@ async fn read_upsert_mercenary_input(
                     .await
                     .map_err(|error| MercenaryError::Invalid(error.to_string()))?;
             }
-            "deck" => {
-                deck = field
-                    .text()
-                    .await
-                    .map_err(|error| MercenaryError::Invalid(error.to_string()))?;
-            }
             "style" => {
                 style = field
                     .text()
@@ -126,6 +120,9 @@ async fn read_upsert_mercenary_input(
             }
             "banner" => {
                 banner = Some(field_bytes(field, MAX_IMAGE_BYTES, "banner").await?);
+            }
+            "icon" => {
+                icon = Some(field_bytes(field, MAX_IMAGE_BYTES, "icon").await?);
             }
             "passive_script" | "script" => {
                 if let Some(file_name) = field.file_name()
@@ -149,10 +146,10 @@ async fn read_upsert_mercenary_input(
         name,
         subtitle,
         description,
-        deck,
         style,
         temper,
         banner,
+        icon,
         passive_script,
     })
 }
