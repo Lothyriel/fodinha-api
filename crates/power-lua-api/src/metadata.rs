@@ -557,19 +557,23 @@ pub const ROUND_START_EVENT_FIELDS: &[LuaFieldDefinition] = &[LuaFieldDefinition
     description: "Event discriminator.",
 }];
 
-pub const ROUND_ENDED_EVENT_FIELDS: &[LuaFieldDefinition] = &[LuaFieldDefinition {
-    name: "type",
-    lua_type: "\"round_ended\"",
-    description: "Event discriminator.",
-}, LuaFieldDefinition {
-    name: "winner",
-    lua_type: "PlayerId",
-    description: "Player who won the round.",
-}, LuaFieldDefinition {
-    name: "card",
-    lua_type: "Card",
-    description: "Card that won the round.",
-}];
+pub const ROUND_ENDED_EVENT_FIELDS: &[LuaFieldDefinition] = &[
+    LuaFieldDefinition {
+        name: "type",
+        lua_type: "\"round_ended\"",
+        description: "Event discriminator.",
+    },
+    LuaFieldDefinition {
+        name: "winner",
+        lua_type: "PlayerId",
+        description: "Player who won the round.",
+    },
+    LuaFieldDefinition {
+        name: "card",
+        lua_type: "Card",
+        description: "Card that won the round.",
+    },
+];
 
 pub const SET_STARTED_EVENT_FIELDS: &[LuaFieldDefinition] = &[LuaFieldDefinition {
     name: "type",
@@ -577,15 +581,18 @@ pub const SET_STARTED_EVENT_FIELDS: &[LuaFieldDefinition] = &[LuaFieldDefinition
     description: "Event discriminator.",
 }];
 
-pub const SET_ENDED_EVENT_FIELDS: &[LuaFieldDefinition] = &[LuaFieldDefinition {
-    name: "type",
-    lua_type: "\"set_ended\"",
-    description: "Event discriminator.",
-}, LuaFieldDefinition {
-    name: "lost_players",
-    lua_type: "table<PlayerId, integer>",
-    description: "Lives lost by each player during the set.",
-}];
+pub const SET_ENDED_EVENT_FIELDS: &[LuaFieldDefinition] = &[
+    LuaFieldDefinition {
+        name: "type",
+        lua_type: "\"set_ended\"",
+        description: "Event discriminator.",
+    },
+    LuaFieldDefinition {
+        name: "lost_players",
+        lua_type: "table<PlayerId, integer>",
+        description: "Lives lost by each player during the set.",
+    },
+];
 
 pub const EVENT_DEFINITIONS: &[LuaEventDefinition] = &[
     LuaEventDefinition {

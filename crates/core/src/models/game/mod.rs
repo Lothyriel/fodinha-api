@@ -267,9 +267,9 @@ impl InferredGameCommand {
                         target_player_id,
                     },
                 )),
-                Self::SkipPowerPhase => {
-                    Ok(GameCommand::FodinhaPower(fodinha_power::GameCommand::SkipPowerPhase))
-                }
+                Self::SkipPowerPhase => Ok(GameCommand::FodinhaPower(
+                    fodinha_power::GameCommand::SkipPowerPhase,
+                )),
             },
         }
     }

@@ -195,7 +195,9 @@ pub struct PowerCard {
     pub usable: bool,
 }
 
-fn default_power_card_usable() -> bool { true }
+fn default_power_card_usable() -> bool {
+    true
+}
 
 impl PowerCard {
     pub fn to_dto(&self) -> PowerCardDto {
@@ -427,16 +429,12 @@ struct PowerCardDefinition {
 
 impl PowerCardDefinition {
     fn from_input(input: PowerCardDefinitionInput) -> Result<Self, PowerCardDefinitionError> {
-        let script_definition = super::power_lua::parse_power_card_script_definition(
-            &input.script,
-            &input.source,
-        )
-        .map_err(
-            |error| PowerCardDefinitionError::InvalidDefinition {
-                path: input.source.clone(),
-                message: error.to_string(),
-            },
-        )?;
+        let script_definition =
+            super::power_lua::parse_power_card_script_definition(&input.script, &input.source)
+                .map_err(|error| PowerCardDefinitionError::InvalidDefinition {
+                    path: input.source.clone(),
+                    message: error.to_string(),
+                })?;
 
         Ok(Self {
             id: input.id,
@@ -1176,7 +1174,10 @@ impl Game {
         );
         let (next_set, next_power_set) = if finalizing_set {
             match &self.pending_set_resolution {
-                Some(pending) => (Some(pending.next_set.clone()), Some(pending.next_power_set.clone())),
+                Some(pending) => (
+                    Some(pending.next_set.clone()),
+                    Some(pending.next_power_set.clone()),
+                ),
                 None => (None, None),
             }
         } else {
@@ -1283,7 +1284,10 @@ impl Game {
         );
         let (next_set, next_power_set) = if finalizing_set {
             match &self.pending_set_resolution {
-                Some(pending) => (Some(pending.next_set.clone()), Some(pending.next_power_set.clone())),
+                Some(pending) => (
+                    Some(pending.next_set.clone()),
+                    Some(pending.next_power_set.clone()),
+                ),
                 None => (None, None),
             }
         } else {
@@ -1397,9 +1401,7 @@ impl Game {
                 next_set_passive_effects: _,
             } => {
                 let is_set_end = next_set.is_some();
-                let state = self
-                    .core
-                    .apply_turn(turn, next_set.clone(), !is_set_end);
+                let state = self.core.apply_turn(turn, next_set.clone(), !is_set_end);
 
                 let (passive_mana, passive_power_decks) = self.apply_effects(&passive_effects);
                 let mana = if passive_mana.is_empty() {
@@ -1416,7 +1418,9 @@ impl Game {
                 let mut mana = mana;
                 if is_set_end {
                     self.merge_effects_into_pending_resolution(&passive_effects);
-                    if let (Some(next_set), Some(next_power_set)) = (next_set.clone(), next_power_set) {
+                    if let (Some(next_set), Some(next_power_set)) =
+                        (next_set.clone(), next_power_set)
+                    {
                         self.apply_power_set(&next_power_set);
                         power_decks = Some(dto_decks(&self.power_decks));
                         mana = Some(mana_to_dto(&self.mana));
@@ -1490,7 +1494,9 @@ impl Game {
                                 .map(|(player_id, deck)| {
                                     (
                                         player_id.clone(),
-                                        deck.iter().map(|card| self.to_hand_dto(player_id, card)).collect(),
+                                        deck.iter()
+                                            .map(|card| self.to_hand_dto(player_id, card))
+                                            .collect(),
                                     )
                                 })
                                 .collect(),
@@ -1524,7 +1530,9 @@ impl Game {
                             .map(|(player_id, deck)| {
                                 (
                                     player_id.clone(),
-                                    deck.iter().map(|card| self.to_hand_dto(player_id, card)).collect(),
+                                    deck.iter()
+                                        .map(|card| self.to_hand_dto(player_id, card))
+                                        .collect(),
                                 )
                             })
                             .collect(),
@@ -1594,7 +1602,9 @@ impl Game {
                                 .map(|(player_id, deck)| {
                                     (
                                         player_id.clone(),
-                                        deck.iter().map(|card| self.to_hand_dto(player_id, card)).collect(),
+                                        deck.iter()
+                                            .map(|card| self.to_hand_dto(player_id, card))
+                                            .collect(),
                                     )
                                 })
                                 .collect(),
@@ -1627,7 +1637,9 @@ impl Game {
                             .map(|(player_id, deck)| {
                                 (
                                     player_id.clone(),
-                                    deck.iter().map(|card| self.to_hand_dto(player_id, card)).collect(),
+                                    deck.iter()
+                                        .map(|card| self.to_hand_dto(player_id, card))
+                                        .collect(),
                                 )
                             })
                             .collect(),
@@ -1670,7 +1682,9 @@ impl Game {
     pub fn current_player(&self) -> Option<PlayerId> {
         match &self.stage {
             PowerGameStage::Bidding | PowerGameStage::Dealing => self.core.current_player(),
-            PowerGameStage::Power { pending_players, .. } => pending_players
+            PowerGameStage::Power {
+                pending_players, ..
+            } => pending_players
                 .iter()
                 .find(|player_id| self.core.is_player_alive(player_id))
                 .cloned(),
@@ -1705,7 +1719,11 @@ impl Game {
         info.power_cards = Some(
             self.power_decks
                 .get(player_id)
-                .map(|deck| deck.iter().map(|card| self.to_hand_dto(player_id, card)).collect())
+                .map(|deck| {
+                    deck.iter()
+                        .map(|card| self.to_hand_dto(player_id, card))
+                        .collect()
+                })
                 .unwrap_or_default(),
         );
 
@@ -1878,7 +1896,8 @@ impl Game {
                 {
                     continue;
                 }
-                let output = preview.run_power_card_event(&definition, &player_id, &card, event.clone())?;
+                let output =
+                    preview.run_power_card_event(&definition, &player_id, &card, event.clone())?;
                 let output_effects = Self::script_output_effects(output);
                 preview.apply_effects(&output_effects);
                 effects.merge(output_effects);
@@ -2086,7 +2105,10 @@ impl Game {
         };
 
         for (player_id, deck) in &effects.decks {
-            pending.next_set.decks.insert(player_id.clone(), deck.clone());
+            pending
+                .next_set
+                .decks
+                .insert(player_id.clone(), deck.clone());
         }
 
         for (player_id, deck) in &effects.power_decks {
@@ -2144,7 +2166,9 @@ impl Game {
             .map(|(player_id, deck)| {
                 (
                     player_id.clone(),
-                    deck.iter().map(|card| self.to_hand_dto(player_id, card)).collect(),
+                    deck.iter()
+                        .map(|card| self.to_hand_dto(player_id, card))
+                        .collect(),
                 )
             })
             .collect();
@@ -2173,7 +2197,8 @@ impl Game {
         let PowerGameStage::Power {
             phase,
             pending_players,
-        } = &mut self.stage else {
+        } = &mut self.stage
+        else {
             return None;
         };
 
@@ -2324,7 +2349,8 @@ impl Game {
             if let Some(mercenary_id) = player_mercenaries.get(player_id)
                 && let Some(card_ids) = deck_definition.mercenary_card_ids.get(mercenary_id)
             {
-                let mercenary_cards = registry.weighted_power_card_definitions_from_ids(card_ids)?;
+                let mercenary_cards =
+                    registry.weighted_power_card_definitions_from_ids(card_ids)?;
                 let mut mercenary_deck = (0..MERCENARY_POWER_CARDS_PER_PLAYER)
                     .map(|idx| mercenary_cards[idx % mercenary_cards.len()].to_card())
                     .collect::<Vec<_>>();
@@ -2355,10 +2381,11 @@ impl Game {
             .map(|player_id| {
                 let mana = match player_mercenaries.get(player_id) {
                     Some(mercenary_id) => {
-                        let definition = registry
-                            .mercenary_definition(mercenary_id)
-                            .ok_or_else(|| PowerCardDefinitionError::MissingMercenaryDefinition {
-                                mercenary_id: mercenary_id.to_string(),
+                        let definition =
+                            registry.mercenary_definition(mercenary_id).ok_or_else(|| {
+                                PowerCardDefinitionError::MissingMercenaryDefinition {
+                                    mercenary_id: mercenary_id.to_string(),
+                                }
                             })?;
 
                         PlayerMana::with_max(definition.initial_mana)
@@ -2395,13 +2422,14 @@ impl Game {
             .iter()
             .map(|player_id| {
                 let base_lifes = match self.player_mercenaries.get(player_id) {
-                    Some(mercenary_id) => self
-                        .registry
-                        .mercenary_definition(mercenary_id)
-                        .ok_or_else(|| PowerCardDefinitionError::MissingMercenaryDefinition {
-                            mercenary_id: mercenary_id.to_string(),
-                        })?
-                        .base_life,
+                    Some(mercenary_id) => {
+                        self.registry
+                            .mercenary_definition(mercenary_id)
+                            .ok_or_else(|| PowerCardDefinitionError::MissingMercenaryDefinition {
+                                mercenary_id: mercenary_id.to_string(),
+                            })?
+                            .base_life
+                    }
                     None => DEFAULT_INITIAL_LIFES,
                 };
                 let lifes = scaled_life_total(base_lifes, life_multiplier);
@@ -2956,8 +2984,14 @@ return {
 
         assert_eq!(game.core.get_lifes().get(&player1), Some(&123));
         assert_eq!(game.core.get_lifes().get(&player2), Some(&123));
-        assert_eq!(game.mana.get(&player1), Some(&PlayerMana { current: 7, max: 7 }));
-        assert_eq!(game.mana.get(&player2), Some(&PlayerMana { current: 7, max: 7 }));
+        assert_eq!(
+            game.mana.get(&player1),
+            Some(&PlayerMana { current: 7, max: 7 })
+        );
+        assert_eq!(
+            game.mana.get(&player2),
+            Some(&PlayerMana { current: 7, max: 7 })
+        );
     }
 
     #[test]
@@ -3992,7 +4026,13 @@ return {
 
         let mana = game.next_set_mana(&players);
 
-        assert_eq!(mana.get(&player1), Some(&PlayerMana { current: 4, max: 10 }));
+        assert_eq!(
+            mana.get(&player1),
+            Some(&PlayerMana {
+                current: 4,
+                max: 10
+            })
+        );
     }
 
     #[test]

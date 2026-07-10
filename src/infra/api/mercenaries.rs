@@ -63,8 +63,7 @@ async fn read_upsert_mercenary_input(
     mut multipart: Multipart,
 ) -> Result<UpsertMercenaryInput, MercenaryError> {
     let has_path_mercenary_id = path_mercenary_id.is_some();
-    let mercenary_id =
-        path_mercenary_id.or_else(|| (!has_path_mercenary_id).then(gen_mercenaryid));
+    let mercenary_id = path_mercenary_id.or_else(|| (!has_path_mercenary_id).then(gen_mercenaryid));
     let mut name = String::new();
     let mut subtitle = String::new();
     let mut description = String::new();

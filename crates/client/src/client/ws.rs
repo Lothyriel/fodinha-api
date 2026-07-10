@@ -6,7 +6,7 @@ use tokio_tungstenite::{
     tungstenite::{Message, client::IntoClientRequest},
 };
 
-use crate::models::{
+use fodinha_core::models::{
     commands::{MatchSnapshot, ServerMessage},
     id::PlayerId,
 };
@@ -149,7 +149,9 @@ impl WsClient {
         }
     }
 
-    pub async fn get_deck(stream: &mut WebSocket) -> Result<Vec<crate::models::Card>, ClientError> {
+    pub async fn get_deck(
+        stream: &mut WebSocket,
+    ) -> Result<Vec<fodinha_core::models::Card>, ClientError> {
         match Self::assert_msg(stream, |m| matches!(m, ServerMessage::PlayerDeck(_))).await? {
             ServerMessage::PlayerDeck(c) => Ok(c),
             _ => Err(err!("Should be a PlayerDeck message")),

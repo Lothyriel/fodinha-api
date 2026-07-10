@@ -1,7 +1,7 @@
-pub mod client;
 pub mod infra;
-pub mod models;
 pub mod services;
+
+pub use fodinha_core::models;
 
 use config::{Config, ConfigError, Environment};
 

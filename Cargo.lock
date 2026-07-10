@@ -1123,6 +1123,92 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3f9eec918d3f24069decb9af1554cad7c880e2da24a9afd88aca000531ab82c1"
 
 [[package]]
+name = "fodinha-api"
+version = "0.1.0"
+dependencies = [
+ "aws-sdk-s3",
+ "axum",
+ "base64",
+ "chrono",
+ "config",
+ "dashmap",
+ "dotenv",
+ "flume",
+ "fodinha-core",
+ "futures",
+ "indexmap",
+ "jsonwebtoken",
+ "mlua",
+ "mongodb",
+ "nanoid",
+ "opentelemetry",
+ "opentelemetry-otlp",
+ "opentelemetry-prometheus",
+ "opentelemetry_sdk",
+ "power-lua-api",
+ "prometheus",
+ "rand 0.10.1",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "strum",
+ "strum_macros",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-tungstenite",
+ "tower-http 0.7.0",
+ "tracing",
+ "tracing-opentelemetry",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "fodinha-client"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "fodinha-core",
+ "futures",
+ "rand 0.10.1",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-tungstenite",
+]
+
+[[package]]
+name = "fodinha-core"
+version = "0.1.0"
+dependencies = [
+ "indexmap",
+ "mlua",
+ "mongodb",
+ "nanoid",
+ "power-lua-api",
+ "rand 0.10.1",
+ "serde",
+ "serde_json",
+ "strum",
+ "strum_macros",
+ "thiserror 2.0.18",
+ "tracing",
+]
+
+[[package]]
+name = "fodinha-loadtester"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "fodinha-client",
+ "fodinha-core",
+ "rand 0.10.1",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "foldhash"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2257,45 +2343,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "071dfc062690e90b734c0b2273ce72ad0ffa95f0c74596bc250dcfd960262841"
 dependencies = [
  "autocfg",
-]
-
-[[package]]
-name = "oh_hell"
-version = "0.1.0"
-dependencies = [
- "aws-sdk-s3",
- "axum",
- "base64",
- "chrono",
- "config",
- "dashmap",
- "dotenv",
- "flume",
- "futures",
- "indexmap",
- "jsonwebtoken",
- "mlua",
- "mongodb",
- "nanoid",
- "opentelemetry",
- "opentelemetry-otlp",
- "opentelemetry-prometheus",
- "opentelemetry_sdk",
- "power-lua-api",
- "prometheus",
- "rand 0.10.1",
- "reqwest",
- "serde",
- "serde_json",
- "strum",
- "strum_macros",
- "thiserror 2.0.18",
- "tokio",
- "tokio-tungstenite",
- "tower-http 0.7.0",
- "tracing",
- "tracing-opentelemetry",
- "tracing-subscriber",
 ]
 
 [[package]]

@@ -1,14 +1,15 @@
 [workspace]
-members = [".", "crates/power-lua-api"]
+members = [".", "crates/core", "crates/client", "crates/loadtester", "crates/power-lua-api"]
 resolver = "3"
 
 [package]
-name = "oh_hell"
+name = "fodinha-api"
 version = "0.1.0"
 edition = "2024"
-default-run = "oh_hell"
+default-run = "fodinha-api"
 
 [dependencies]
+fodinha-core = { path = "crates/core" }
 axum = { version = "0.8.9", features = ["ws", "multipart"] }
 tower-http = { version = "0.7.0", features = ["trace", "cors"] }
 aws-sdk-s3 = "1.115.0"
@@ -63,9 +64,5 @@ tokio-tungstenite = "0.29.0"
 power-lua-api = { path = "crates/power-lua-api" }
 
 [[bin]]
-name = "oh_hell"
+name = "fodinha-api"
 path = "src/main.rs"
-
-[[bin]]
-name = "loadtester"
-path = "src/bin/loadtester.rs"

@@ -581,7 +581,10 @@ impl Game {
     pub fn get_round_order(&self) -> Vec<PlayerId> {
         let mut round_iter = self.round_iter.clone();
 
-        round_iter.by_ref().map(|idx| self.get_player(idx)).collect()
+        round_iter
+            .by_ref()
+            .map(|idx| self.get_player(idx))
+            .collect()
     }
 
     fn apply_bid(&mut self, player_id: &PlayerId, bid: usize) -> BiddingState {

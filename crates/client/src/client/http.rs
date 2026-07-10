@@ -4,19 +4,25 @@ use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use reqwest::Client;
 use serde::de::DeserializeOwned;
 
-use crate::{
-    infra::api::models::Auth,
+use fodinha_core::{
     models::{
         commands::{CreateLobbyResponse, LobbyInfo},
         game::GameSettings,
         id::{LobbyId, PlayerId},
     },
-    services::stats::PlayerStatsResponse,
+    services::PlayerStatsResponse,
 };
 
 use super::ws::{ClientError, err};
 
 pub const HTTP_TIMEOUT: Duration = Duration::from_secs(10);
+
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct Auth {
+    pub token: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub refresh_token: Option<String>,
+}
 
 #[derive(Clone)]
 pub struct HttpClient {

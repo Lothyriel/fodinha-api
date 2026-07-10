@@ -17,9 +17,8 @@ use tower_http::cors::{Any, CorsLayer};
 use crate::{
     AppSettings,
     infra::telemetry,
-    models::GameError,
     services::{
-        LobbyError, ManagerError, card_definitions::CardDefinitionError, matches::ManagerHandle,
+        ManagerError, card_definitions::CardDefinitionError, matches::ManagerHandle,
         mercenaries::MercenaryError,
     },
 };
@@ -130,31 +129,6 @@ async fn readiness_handler(State(state): State<ApiState>) -> StatusCode {
     }
 }
 
-impl IntoResponse for LobbyError {
-    fn into_response(self) -> axum::response::Response {
-        let code = match &self {
-            LobbyError::InvalidLobby => StatusCode::NOT_FOUND,
-            LobbyError::InvalidSettings(_) => StatusCode::BAD_REQUEST,
-            LobbyError::GameAlreadyStarted => StatusCode::CONFLICT,
-            LobbyError::GameNotStarted => StatusCode::PRECONDITION_FAILED,
-            LobbyError::WrongLobby => StatusCode::FORBIDDEN,
-            LobbyError::PlayerNotInLobby => StatusCode::FORBIDDEN,
-            LobbyError::MercenaryRequired => StatusCode::BAD_REQUEST,
-            LobbyError::GameError(e) => match e {
-                GameError::NotEnoughPlayers => StatusCode::CONFLICT,
-                GameError::TooManyPlayers => StatusCode::CONFLICT,
-                GameError::InvalidDeal(_) => StatusCode::UNPROCESSABLE_ENTITY,
-                GameError::InvalidBid(_) => StatusCode::UNPROCESSABLE_ENTITY,
-                GameError::InvalidStage => StatusCode::UNPROCESSABLE_ENTITY,
-                GameError::InvalidPowerCards(_) => StatusCode::INTERNAL_SERVER_ERROR,
-                GameError::PowerScript(_) => StatusCode::INTERNAL_SERVER_ERROR,
-            },
-        };
-
-        (code, Json(serde_json::json!({"error": self.to_string()}))).into_response()
-    }
-}
-
 impl IntoResponse for ManagerError {
     fn into_response(self) -> axum::response::Response {
         let code = match self {
@@ -167,7 +141,27 @@ impl IntoResponse for ManagerError {
             ManagerError::Database(_) => StatusCode::INTERNAL_SERVER_ERROR,
             ManagerError::ReceiverDisposed => StatusCode::from_u16(499).expect("valid http code"),
             ManagerError::Unauthorized(e) => return e.into_response(),
-            ManagerError::Lobby(e) => return e.into_response(),
+            ManagerError::Lobby(e) => {
+                let code = match e {
+                    fodinha_core::services::LobbyError::InvalidLobby => StatusCode::NOT_FOUND,
+                    fodinha_core::services::LobbyError::InvalidSettings(_) => {
+                        StatusCode::BAD_REQUEST
+                    }
+                    fodinha_core::services::LobbyError::GameAlreadyStarted => StatusCode::CONFLICT,
+                    fodinha_core::services::LobbyError::GameNotStarted => {
+                        StatusCode::PRECONDITION_FAILED
+                    }
+                    fodinha_core::services::LobbyError::WrongLobby
+                    | fodinha_core::services::LobbyError::PlayerNotInLobby => StatusCode::FORBIDDEN,
+                    fodinha_core::services::LobbyError::MercenaryRequired => {
+                        StatusCode::BAD_REQUEST
+                    }
+                    fodinha_core::services::LobbyError::GameError(_) => {
+                        StatusCode::UNPROCESSABLE_ENTITY
+                    }
+                };
+                return (code, Json(serde_json::json!({"error": e.to_string()}))).into_response();
+            }
         };
 
         (code, Json(serde_json::json!({"error": self.to_string()}))).into_response()
@@ -909,8 +903,12 @@ return {
             get_snapshot(&mut second_connection)
         );
 
-        assert!(matches!(first_snapshot, MatchSnapshot::Waiting(waiting) if waiting.players.len() == 2));
-        assert!(matches!(second_snapshot, MatchSnapshot::Waiting(waiting) if waiting.players.len() == 2));
+        assert!(
+            matches!(first_snapshot, MatchSnapshot::Waiting(waiting) if waiting.players.len() == 2)
+        );
+        assert!(
+            matches!(second_snapshot, MatchSnapshot::Waiting(waiting) if waiting.players.len() == 2)
+        );
         assert_eq!(server.manager.registry.matches.len(), 1);
         assert_eq!(server.active_player_route_count(), 2);
 
@@ -1359,7 +1357,9 @@ return {
 
         for (i, token) in tokens.iter().enumerate() {
             let lobby = join_lobby_http(&client, &server, token, &lobby_id).await;
-            assert!(matches!(lobby, LobbyInfo::NotStarted(waiting) if waiting.players.len() == i + 1));
+            assert!(
+                matches!(lobby, LobbyInfo::NotStarted(waiting) if waiting.players.len() == i + 1)
+            );
         }
 
         let mut player_data = connect_players(&server, tokens.clone()).await;
@@ -1515,7 +1515,9 @@ return {
 
         for (i, token) in tokens.iter().enumerate() {
             let lobby = join_lobby_http(&client, &server, token, &lobby_id).await;
-            assert!(matches!(lobby, LobbyInfo::NotStarted(waiting) if waiting.players.len() == i + 1));
+            assert!(
+                matches!(lobby, LobbyInfo::NotStarted(waiting) if waiting.players.len() == i + 1)
+            );
         }
 
         let mut player_data = connect_players(&server, tokens).await;
@@ -1699,8 +1701,14 @@ return {
         let lifes = set_lifes.expect("expected SetEnded lifes");
         let life_values = lifes.values().copied().collect::<Vec<_>>();
 
-        assert!(life_values.contains(&40), "unexpected life totals: {life_values:?}");
-        assert!(life_values.contains(&30), "unexpected life totals: {life_values:?}");
+        assert!(
+            life_values.contains(&40),
+            "unexpected life totals: {life_values:?}"
+        );
+        assert!(
+            life_values.contains(&30),
+            "unexpected life totals: {life_values:?}"
+        );
 
         drop(player_data);
         server.shutdown().await;
@@ -1830,7 +1838,9 @@ return {
 
         for (i, p) in tokens.iter().enumerate() {
             let lobby = join_lobby_http(client, server, p, &lobby_id).await;
-            assert!(matches!(lobby, LobbyInfo::NotStarted(waiting) if waiting.players.len() == i + 1));
+            assert!(
+                matches!(lobby, LobbyInfo::NotStarted(waiting) if waiting.players.len() == i + 1)
+            );
         }
 
         connect_players(server, tokens).await
@@ -2080,7 +2090,13 @@ return {
     }
 
     fn validate_power_turn(m: &ServerMessage) -> bool {
-        matches!(m, ServerMessage::PlayerPowerTurn { player_id: _, phase: _ })
+        matches!(
+            m,
+            ServerMessage::PlayerPowerTurn {
+                player_id: _,
+                phase: _
+            }
+        )
     }
 
     fn validate_player_bidded(m: &ServerMessage) -> bool {
@@ -2142,7 +2158,10 @@ return {
 
     async fn get_next_power_player(stream: &mut WebSocket) -> PlayerId {
         match assert_game_msg(stream, validate_power_turn).await {
-            ServerMessage::PlayerPowerTurn { player_id, phase: _ } => player_id,
+            ServerMessage::PlayerPowerTurn {
+                player_id,
+                phase: _,
+            } => player_id,
             _ => panic!("Should be a PlayerPowerTurn message"),
         }
     }

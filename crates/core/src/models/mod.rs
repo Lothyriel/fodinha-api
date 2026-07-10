@@ -65,7 +65,7 @@ impl Card {
         rank + suit
     }
 
-    pub(crate) fn get_trump_value(&self, upcard: Card) -> u8 {
+    pub fn get_trump_value(&self, upcard: Card) -> u8 {
         let card_value = self.get_value();
 
         if upcard.rank.get_next() == self.rank {
@@ -75,7 +75,7 @@ impl Card {
         }
     }
 
-    pub(crate) fn is_trump(&self, upcard: Card) -> bool {
+    pub fn is_trump(&self, upcard: Card) -> bool {
         upcard.rank.get_next() == self.rank
     }
 }

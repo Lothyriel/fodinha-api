@@ -7,10 +7,8 @@ use std::time::{Duration, Instant};
 use rand::RngExt;
 use tokio::{sync::mpsc, time::MissedTickBehavior};
 
-use oh_hell::{
-    client::{ClientError, GameOutcome, GameSession, HttpClient, TurnDelay, WsClient},
-    models::game::{GameSettings, fodinha_classic},
-};
+use fodinha_client::{ClientError, GameOutcome, GameSession, HttpClient, TurnDelay, WsClient};
+use fodinha_core::models::game::{GameSettings, fodinha_classic};
 
 #[derive(serde::Deserialize, Clone)]
 struct Config {

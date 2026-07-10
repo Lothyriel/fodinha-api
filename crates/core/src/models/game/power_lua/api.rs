@@ -227,7 +227,12 @@ impl LuaGame {
             return Err(unknown_player(player_id));
         };
 
-        power_cards_to_lua_table(lua, &player.power_cards, Rc::clone(&self.players), player_id)
+        power_cards_to_lua_table(
+            lua,
+            &player.power_cards,
+            Rc::clone(&self.players),
+            player_id,
+        )
     }
 
     fn steal_power_card(

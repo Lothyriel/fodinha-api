@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use rand::RngExt;
 
-use crate::models::{
+use fodinha_core::models::{
     Card,
     commands::{ClientCommand, MatchSnapshot, ServerMessage},
     game::{GameCommand, fodinha_classic},

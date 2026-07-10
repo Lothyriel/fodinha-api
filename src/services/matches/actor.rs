@@ -721,7 +721,8 @@ impl MatchActor {
                 let game = Game::FodinhaPower(power_game);
                 let mut power_decks = power_decks_to_dto(&power_set.decks);
                 let mut mana = power_mana_to_dto(&power_set.mana);
-                let lifes = (!passive_effects.lifes.is_empty()).then(|| passive_effects.lifes.clone());
+                let lifes =
+                    (!passive_effects.lifes.is_empty()).then(|| passive_effects.lifes.clone());
 
                 for (player_id, deck) in &passive_effects.decks {
                     set.decks.insert(player_id.clone(), deck.clone());
@@ -841,8 +842,16 @@ impl MatchActor {
                 let msg = OutboundMessage::SetEnded { lifes };
                 self.broadcast(msg).await;
 
-                self.init_set(decks, turn.lifes, turn.power_decks, turn.mana, upcard, next, possible)
-                    .await;
+                self.init_set(
+                    decks,
+                    turn.lifes,
+                    turn.power_decks,
+                    turn.mana,
+                    upcard,
+                    next,
+                    possible,
+                )
+                .await;
 
                 false
             }
@@ -906,15 +915,19 @@ impl MatchActor {
             for (player_id, deck) in power_decks.clone() {
                 self.send_to_player(
                     &player_id,
-                    OutboundMessage::PlayerPowerCards(self.authoritative_power_cards(&player_id, deck)),
+                    OutboundMessage::PlayerPowerCards(
+                        self.authoritative_power_cards(&player_id, deck),
+                    ),
                 )
-                    .await;
+                .await;
             }
         }
 
         if next_set.is_some() {
-            self.broadcast(OutboundMessage::SetEnded { lifes: lifes.clone() })
-                .await;
+            self.broadcast(OutboundMessage::SetEnded {
+                lifes: lifes.clone(),
+            })
+            .await;
 
             if let Some(OutboundMessage::PlayerBiddingTurn {
                 player_id: next,
@@ -922,15 +935,11 @@ impl MatchActor {
             }) = self.current_phase_message()
             {
                 self.init_set(
-                    decks
-                        .into_iter()
-                        .collect::<IndexMap<_, _>>(),
+                    decks.into_iter().collect::<IndexMap<_, _>>(),
                     Some(lifes),
                     Some(power_decks.into_iter().collect::<IndexMap<_, _>>()),
                     Some(mana),
-                    next_set
-                        .expect("resolved next set is required")
-                        .upcard,
+                    next_set.expect("resolved next set is required").upcard,
                     next,
                     possible_bids,
                 )
@@ -957,8 +966,10 @@ impl MatchActor {
         let mana = outcome.mana.clone();
 
         if !outcome.changed_lifes.is_empty() {
-            self.broadcast(OutboundMessage::PlayersLifesChanged(outcome.changed_lifes.clone()))
-                .await;
+            self.broadcast(OutboundMessage::PlayersLifesChanged(
+                outcome.changed_lifes.clone(),
+            ))
+            .await;
         }
 
         if next_set.is_none() {
@@ -975,15 +986,19 @@ impl MatchActor {
             for (player_id, deck) in power_decks.clone() {
                 self.send_to_player(
                     &player_id,
-                    OutboundMessage::PlayerPowerCards(self.authoritative_power_cards(&player_id, deck)),
+                    OutboundMessage::PlayerPowerCards(
+                        self.authoritative_power_cards(&player_id, deck),
+                    ),
                 )
-                    .await;
+                .await;
             }
         }
 
         if next_set.is_some() {
-            self.broadcast(OutboundMessage::SetEnded { lifes: lifes.clone() })
-                .await;
+            self.broadcast(OutboundMessage::SetEnded {
+                lifes: lifes.clone(),
+            })
+            .await;
 
             if let Some(OutboundMessage::PlayerBiddingTurn {
                 player_id: next,
@@ -991,15 +1006,11 @@ impl MatchActor {
             }) = self.current_phase_message()
             {
                 self.init_set(
-                    decks
-                        .into_iter()
-                        .collect::<IndexMap<_, _>>(),
+                    decks.into_iter().collect::<IndexMap<_, _>>(),
                     Some(lifes),
                     Some(power_decks.into_iter().collect::<IndexMap<_, _>>()),
                     Some(mana),
-                    next_set
-                        .expect("resolved next set is required")
-                        .upcard,
+                    next_set.expect("resolved next set is required").upcard,
                     next,
                     possible_bids,
                 )
@@ -1050,9 +1061,11 @@ impl MatchActor {
             for (player, deck) in power_decks {
                 self.send_to_player(
                     &player,
-                    OutboundMessage::PlayerPowerCards(self.authoritative_power_cards(&player, deck)),
+                    OutboundMessage::PlayerPowerCards(
+                        self.authoritative_power_cards(&player, deck),
+                    ),
                 )
-                    .await;
+                .await;
             }
         }
 
@@ -1143,11 +1156,16 @@ impl MatchActor {
     }
 
     async fn refresh_power_hands(&self) {
-        let Some(lobby) = self.lobby.as_ref() else { return };
-        let LobbyState::Playing(game) = &lobby.state else { return };
+        let Some(lobby) = self.lobby.as_ref() else {
+            return;
+        };
+        let LobbyState::Playing(game) = &lobby.state else {
+            return;
+        };
         for player_id in self.connections.keys() {
             if let Some(cards) = game.get_game_info(player_id).power_cards {
-                self.send_to_player(player_id, OutboundMessage::PlayerPowerCards(cards)).await;
+                self.send_to_player(player_id, OutboundMessage::PlayerPowerCards(cards))
+                    .await;
             }
         }
     }

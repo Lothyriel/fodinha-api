@@ -13,8 +13,8 @@ COPY . .
 RUN cargo build --release
 
 FROM gcr.io/distroless/cc-debian13:nonroot AS runtime
-COPY --from=builder /app/target/release/oh_hell /usr/local/bin/
+COPY --from=builder /app/target/release/fodinha-api /usr/local/bin/
 
-ENTRYPOINT ["oh_hell"]
+ENTRYPOINT ["fodinha-api"]
 
 EXPOSE 3000

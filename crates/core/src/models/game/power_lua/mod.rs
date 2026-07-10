@@ -9,8 +9,7 @@ pub use definitions::{FODINHA_LUA_DEFINITIONS, MERCENARY_PASSIVE_TEMPLATE, POWER
 use power_lua_api::metadata;
 pub use runtime::{
     parse_mercenary_passive_definition, parse_power_card_script_definition, run_passive_script,
-    run_power_card_script,
-    validate_mercenary_passive_script, validate_power_card_script,
+    run_power_card_script, validate_mercenary_passive_script, validate_power_card_script,
 };
 
 pub fn lua_api_type_definitions() -> [power_lua_api::LuaTypeDefinition; 5] {
@@ -18,8 +17,7 @@ pub fn lua_api_type_definitions() -> [power_lua_api::LuaTypeDefinition; 5] {
 }
 
 use crate::models::{
-    Card,
-    Rank,
+    Card, Rank,
     game::fodinha_power::PowerCardType,
     id::{MercenaryId, PlayerId},
 };
@@ -132,7 +130,10 @@ pub enum PassiveGameEvent {
         player_id: PlayerId,
         card: Card,
     },
-    RoundEnded { winner: PlayerId, card: Card },
+    RoundEnded {
+        winner: PlayerId,
+        card: Card,
+    },
     SetStarted,
     SetEnded {
         lost_players: HashMap<PlayerId, usize>,
@@ -260,11 +261,8 @@ mod tests {
         ));
         let lua = runtime::create_lua().unwrap();
         let globals = lua.globals();
-        let game = api::build_game_api(
-            players,
-            input.draw_power_cards.clone(),
-            input.current_trump,
-        );
+        let game =
+            api::build_game_api(players, input.draw_power_cards.clone(), input.current_trump);
         let card = api::build_power_card(&input);
         let mercenary = api::build_mercenary(&passive_input(
             player,
@@ -337,9 +335,10 @@ mod tests {
     #[test]
     fn generated_files_are_embedded() {
         assert!(FODINHA_LUA_DEFINITIONS.contains("---@class Game"));
-        assert!(FODINHA_LUA_DEFINITIONS.contains(
-            "---@field add_mana_cost fun(self: PowerCard, delta: integer): integer"
-        ));
+        assert!(
+            FODINHA_LUA_DEFINITIONS
+                .contains("---@field add_mana_cost fun(self: PowerCard, delta: integer): integer")
+        );
         assert!(POWER_CARD_TEMPLATE.contains("PowerCardScript"));
         assert!(MERCENARY_PASSIVE_TEMPLATE.contains("MercenaryPassiveScript"));
     }
@@ -438,7 +437,10 @@ mod tests {
                 PassiveGameEvent::SetEnded {
                     lost_players: HashMap::from([(lost_player.clone(), 10)]),
                 },
-                HashMap::from([(player.clone(), script_player(50)), (lost_player, script_player(0))]),
+                HashMap::from([
+                    (player.clone(), script_player(50)),
+                    (lost_player, script_player(0)),
+                ]),
             ),
         )
         .unwrap();
@@ -584,7 +586,11 @@ mod tests {
         "#;
 
         let error = validate_power_card_script(source, "test.lua").unwrap_err();
-        assert!(error.to_string().contains("type, mana_cost, quantity, and effect fields"));
+        assert!(
+            error
+                .to_string()
+                .contains("type, mana_cost, quantity, and effect fields")
+        );
 
         let output = run_power_card_script(
             r#"

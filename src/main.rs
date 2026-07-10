@@ -1,4 +1,4 @@
-use oh_hell::{AppSettings, infra, services::manager::GameManager};
+use fodinha_api::{AppSettings, infra, services::manager::GameManager};
 use tokio::sync::watch;
 
 #[tokio::main]

@@ -770,14 +770,11 @@ impl CardDefinitionsService {
         let selected_card_ids = decks
             .iter()
             .flat_map(|deck| {
-                deck.generic_card_ids
-                    .iter()
-                    .cloned()
-                    .chain(
-                        deck.mercenary_card_ids
-                            .values()
-                            .flat_map(|card_ids| card_ids.iter().cloned()),
-                    )
+                deck.generic_card_ids.iter().cloned().chain(
+                    deck.mercenary_card_ids
+                        .values()
+                        .flat_map(|card_ids| card_ids.iter().cloned()),
+                )
             })
             .collect::<HashSet<_>>()
             .into_iter()

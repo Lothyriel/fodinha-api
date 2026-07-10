@@ -2,7 +2,7 @@
 
 ## Fast Start
 
-- This is a Rust workspace for a card-game platform with two crates: the main `oh_hell` API crate and the `power-lua-api` library crate under `crates/power-lua-api/`. The only supported game type today is `fodinha_classic`, implemented under the generic game facade in `src/models/game/`.
+- This is a Rust workspace for a card-game platform with two crates: the main `fodinha-api` API crate and the `power-lua-api` library crate under `crates/power-lua-api/`. The only supported game type today is `fodinha_classic`, implemented under the generic game facade in `src/models/game/`.
 - The process starts in `src/main.rs`: init telemetry, load `AppSettings`, start `GameManager`, then serve Axum.
 - Run Mongo first: `podman compose up -d mongodb`
 - Run the API: `cargo run`
