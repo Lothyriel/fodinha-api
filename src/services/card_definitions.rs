@@ -181,8 +181,7 @@ impl CardDefinitionsService {
                 if deck.generic_card_ids.is_empty() && deck.mercenary_card_ids.is_empty() {
                     Vec::new()
                 } else {
-                    self.deck_validation_errors(&deck.generic_card_ids, &deck.mercenary_card_ids)
-                        .await?
+                    self.deck_validation_errors().await?
                 };
 
             if validation_errors.is_empty() {
@@ -216,7 +215,7 @@ impl CardDefinitionsService {
             }
 
             let validation_errors = match self
-                .deck_validation_errors(&deck.generic_card_ids, &deck.mercenary_card_ids)
+                .deck_validation_errors()
                 .await
             {
                 Ok(validation_errors) => validation_errors,
@@ -568,12 +567,6 @@ impl CardDefinitionsService {
             return Err(CardDefinitionError::Invalid("name is required".to_string()));
         }
 
-        if card_ids.is_empty() {
-            return Err(CardDefinitionError::Invalid(
-                "select at least one card".to_string(),
-            ));
-        }
-
         let active_cards = self.cards.active_cards_by_ids(&card_ids).await?;
 
         if active_cards.len() != card_ids.len() {
@@ -583,7 +576,7 @@ impl CardDefinitionsService {
         }
 
         let validation_errors = if is_partitioned {
-            self.deck_validation_errors(&generic_card_ids, &mercenary_card_ids)
+            self.deck_validation_errors()
                 .await?
         } else {
             Vec::new()
@@ -684,8 +677,7 @@ impl CardDefinitionsService {
                 if deck.generic_card_ids.is_empty() && deck.mercenary_card_ids.is_empty() {
                     Vec::new()
                 } else {
-                    self.deck_validation_errors(&deck.generic_card_ids, &deck.mercenary_card_ids)
-                        .await?
+                    self.deck_validation_errors().await?
                 };
 
             responses.push(PowerDeckResponse {
@@ -757,34 +749,12 @@ impl CardDefinitionsService {
         })
     }
 
-    async fn deck_validation_errors(
-        &self,
-        generic_card_ids: &[CardId],
-        mercenary_card_ids: &HashMap<crate::models::id::MercenaryId, Vec<CardId>>,
-    ) -> Result<Vec<String>, CardDefinitionError> {
+    async fn deck_validation_errors(&self) -> Result<Vec<String>, CardDefinitionError> {
         let mercenaries = self.mercenaries.active_mercenaries().await?;
         let mut errors = Vec::new();
 
-        if generic_card_ids.len() < 10 {
-            errors.push("select at least 10 generic cards".to_string());
-        }
-
         if mercenaries.is_empty() {
             errors.push("create at least one mercenary before validating a deck".to_string());
-        }
-
-        for mercenary in mercenaries {
-            let count = mercenary_card_ids
-                .get(&mercenary.mercenary_id)
-                .map(Vec::len)
-                .unwrap_or_default();
-
-            if count < 5 {
-                errors.push(format!(
-                    "select at least 5 cards for mercenary {}",
-                    mercenary.mercenary_id
-                ));
-            }
         }
 
         Ok(errors)
