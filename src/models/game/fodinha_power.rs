@@ -397,7 +397,6 @@ pub struct PowerCardDefinitionInput {
 #[derive(Debug, Clone)]
 pub struct PowerDeckDefinitionInput {
     pub id: DeckId,
-    pub card_ids: Vec<CardId>,
     pub generic_card_ids: Vec<CardId>,
     pub mercenary_card_ids: HashMap<MercenaryId, Vec<CardId>>,
 }
@@ -496,7 +495,6 @@ impl From<&PowerCard> for ScriptPowerCardState {
 
 #[derive(Debug, Clone)]
 struct PowerDeckDefinition {
-    card_ids: Vec<CardId>,
     generic_card_ids: Vec<CardId>,
     mercenary_card_ids: HashMap<MercenaryId, Vec<CardId>>,
 }
@@ -504,7 +502,6 @@ struct PowerDeckDefinition {
 impl PowerDeckDefinition {
     fn from_input(input: PowerDeckDefinitionInput) -> Self {
         Self {
-            card_ids: input.card_ids,
             generic_card_ids: input.generic_card_ids,
             mercenary_card_ids: input.mercenary_card_ids,
         }
@@ -514,11 +511,7 @@ impl PowerDeckDefinition {
         !self.generic_card_ids.is_empty() || !self.mercenary_card_ids.is_empty()
     }
 
-    fn all_card_ids(&self) -> Vec<CardId> {
-        if !self.is_partitioned() {
-            return self.card_ids.clone();
-        }
-
+    fn selected_card_ids(&self) -> Vec<CardId> {
         self.generic_card_ids
             .iter()
             .cloned()
@@ -593,7 +586,7 @@ impl PowerCardRegistry {
         deck_id: DeckId,
         definitions: Vec<PowerCardDefinitionInput>,
     ) -> Result<(), PowerCardDefinitionError> {
-        let card_ids = definitions
+        let generic_card_ids = definitions
             .iter()
             .map(|definition| definition.id.clone())
             .collect();
@@ -602,8 +595,7 @@ impl PowerCardRegistry {
             definitions,
             vec![PowerDeckDefinitionInput {
                 id: deck_id,
-                card_ids,
-                generic_card_ids: Vec::new(),
+                generic_card_ids,
                 mercenary_card_ids: HashMap::new(),
             }],
         )
@@ -692,9 +684,9 @@ impl PowerCardRegistry {
         &self,
         deck_id: &DeckId,
     ) -> Result<Vec<PowerCardDefinition>, PowerCardDefinitionError> {
-        let deck_card_ids = self.power_deck_definition(deck_id)?.all_card_ids();
+        let selected_card_ids = self.power_deck_definition(deck_id)?.selected_card_ids();
 
-        self.power_card_definitions_from_ids(&deck_card_ids)
+        self.power_card_definitions_from_ids(&selected_card_ids)
     }
 
     fn power_card_definitions_from_ids(
@@ -745,11 +737,7 @@ impl PowerCardRegistry {
         player_id: &PlayerId,
     ) -> Result<Vec<PowerCardDefinition>, PowerCardDefinitionError> {
         if !deck_definition.is_partitioned() {
-            return if deck_definition.card_ids.is_empty() {
-                Ok(Vec::new())
-            } else {
-                self.weighted_power_card_definitions_from_ids(&deck_definition.card_ids)
-            };
+            return Ok(Vec::new());
         }
 
         let mut card_ids = deck_definition.generic_card_ids.clone();
@@ -2285,7 +2273,7 @@ impl Game {
                 registry,
             )?
         } else {
-            Self::new_unpartitioned_power_decks(players, &definition, seed, sequence, registry)?
+            Self::new_unpartitioned_power_decks(players)?
         };
 
         Ok(PowerSet {
@@ -2297,36 +2285,10 @@ impl Game {
 
     fn new_unpartitioned_power_decks(
         players: &[PlayerId],
-        deck_definition: &PowerDeckDefinition,
-        seed: i64,
-        sequence: i64,
-        registry: &PowerCardRegistry,
     ) -> Result<IndexMap<PlayerId, Vec<PowerCard>>, PowerCardDefinitionError> {
-        if deck_definition.card_ids.is_empty() {
-            return Ok(players
-                .iter()
-                .map(|player_id| (player_id.clone(), Vec::new()))
-                .collect());
-        }
-
-        let definitions =
-            registry.weighted_power_card_definitions_from_ids(&deck_definition.card_ids)?;
-        let needed_cards = players.len().saturating_mul(POWER_CARDS_PER_PLAYER);
-        let mut deck = (0..needed_cards)
-            .map(|idx| definitions[idx % definitions.len()].to_card())
-            .collect::<Vec<_>>();
-
-        shuffle_power_cards(&mut deck, seed, sequence);
-
         Ok(players
             .iter()
-            .map(|player_id| {
-                (
-                    player_id.clone(),
-                    deck.drain(..POWER_CARDS_PER_PLAYER.min(deck.len()))
-                        .collect(),
-                )
-            })
+            .map(|player_id| (player_id.clone(), Vec::new()))
             .collect())
     }
 
@@ -2685,10 +2647,6 @@ return {
                 partitioned_power_card_definitions(),
                 vec![PowerDeckDefinitionInput {
                     id: test_deck_id(),
-                    card_ids: (0..10)
-                        .map(|idx| card_id(&format!("generic_{idx}")))
-                        .chain((0..5).map(|idx| card_id(&format!("artemis_{idx}"))))
-                        .collect(),
                     generic_card_ids: (0..10)
                         .map(|idx| card_id(&format!("generic_{idx}")))
                         .collect(),
@@ -2929,7 +2887,6 @@ return {
                 Vec::new(),
                 vec![PowerDeckDefinitionInput {
                     id: deck_id.clone(),
-                    card_ids: Vec::new(),
                     generic_card_ids: Vec::new(),
                     mercenary_card_ids: HashMap::new(),
                 }],
@@ -3161,7 +3118,6 @@ return {
                 test_power_card_definitions(),
                 vec![PowerDeckDefinitionInput {
                     id: test_deck_id(),
-                    card_ids: vec![card_id("heal_10"), card_id("strike_10")],
                     generic_card_ids: Vec::new(),
                     mercenary_card_ids: HashMap::from([(
                         mercenary_id("gambler"),
@@ -3760,14 +3716,12 @@ return {
                 vec![
                     PowerDeckDefinitionInput {
                         id: test_deck_id(),
-                        card_ids: vec![card_id("heal_10")],
-                        generic_card_ids: Vec::new(),
+                        generic_card_ids: vec![card_id("heal_10")],
                         mercenary_card_ids: HashMap::new(),
                     },
                     PowerDeckDefinitionInput {
                         id: custom_deck_id.clone(),
-                        card_ids: vec![card_id("strike_10")],
-                        generic_card_ids: Vec::new(),
+                        generic_card_ids: vec![card_id("strike_10")],
                         mercenary_card_ids: HashMap::new(),
                     },
                 ],

@@ -195,7 +195,6 @@ impl CardDefinitionsService {
             if validation_errors.is_empty() {
                 deck_definitions.push(PowerDeckDefinitionInput {
                     id: deck.deck_id,
-                    card_ids: deck.card_ids,
                     generic_card_ids: deck.generic_card_ids,
                     mercenary_card_ids: deck.mercenary_card_ids,
                 });
@@ -590,7 +589,7 @@ impl CardDefinitionsService {
             .filter(|(_, card_ids)| !card_ids.is_empty())
             .collect::<HashMap<_, _>>();
         let is_partitioned = !generic_card_ids.is_empty() || !mercenary_card_ids.is_empty();
-        let card_ids = generic_card_ids
+        let selected_card_ids = generic_card_ids
             .iter()
             .cloned()
             .chain(
@@ -606,9 +605,9 @@ impl CardDefinitionsService {
             return Err(CardDefinitionError::Invalid("name is required".to_string()));
         }
 
-        let active_cards = self.cards.active_cards_by_ids(&card_ids).await?;
+        let active_cards = self.cards.active_cards_by_ids(&selected_card_ids).await?;
 
-        if active_cards.len() != card_ids.len() {
+        if active_cards.len() != selected_card_ids.len() {
             return Err(CardDefinitionError::Invalid(
                 "deck contains invalid cards".to_string(),
             ));
@@ -632,7 +631,6 @@ impl CardDefinitionsService {
             name: name.to_string(),
             description: description.to_string(),
             creator_id: creator_id.clone(),
-            card_ids,
             generic_card_ids,
             mercenary_card_ids,
             status,
@@ -644,7 +642,6 @@ impl CardDefinitionsService {
             self.power_card_registry
                 .upsert_power_deck_definition(PowerDeckDefinitionInput {
                     id: deck.deck_id.clone(),
-                    card_ids: deck.card_ids.clone(),
                     generic_card_ids: deck.generic_card_ids.clone(),
                     mercenary_card_ids: deck.mercenary_card_ids.clone(),
                 });
@@ -691,7 +688,7 @@ impl CardDefinitionsService {
             .map(|(mercenary_id, card_ids)| (mercenary_id, unique_card_ids(card_ids)))
             .filter(|(_, card_ids)| !card_ids.is_empty())
             .collect::<HashMap<_, _>>();
-        let card_ids = generic_card_ids
+        let selected_card_ids = generic_card_ids
             .iter()
             .cloned()
             .chain(
@@ -702,8 +699,8 @@ impl CardDefinitionsService {
             .collect::<HashSet<_>>()
             .into_iter()
             .collect::<Vec<_>>();
-        let active_cards = self.cards.active_cards_by_ids(&card_ids).await?;
-        if active_cards.len() != card_ids.len() {
+        let active_cards = self.cards.active_cards_by_ids(&selected_card_ids).await?;
+        if active_cards.len() != selected_card_ids.len() {
             return Err(CardDefinitionError::Invalid(
                 "deck contains invalid cards".to_string(),
             ));
@@ -719,7 +716,6 @@ impl CardDefinitionsService {
         deck.kind = kind;
         deck.name = name.to_string();
         deck.description = input.description.trim().to_string();
-        deck.card_ids = card_ids;
         deck.generic_card_ids = generic_card_ids;
         deck.mercenary_card_ids = mercenary_card_ids;
         deck.status = if requested_status == CardDeckStatus::Draft || !validation_errors.is_empty()
@@ -735,7 +731,6 @@ impl CardDefinitionsService {
             self.power_card_registry
                 .upsert_power_deck_definition(PowerDeckDefinitionInput {
                     id: deck.deck_id.clone(),
-                    card_ids: deck.card_ids.clone(),
                     generic_card_ids: deck.generic_card_ids.clone(),
                     mercenary_card_ids: deck.mercenary_card_ids.clone(),
                 });
@@ -772,13 +767,22 @@ impl CardDefinitionsService {
                     || viewer_id.is_some_and(|viewer_id| deck.creator_id == *viewer_id)
             })
             .collect::<Vec<_>>();
-        let card_ids = decks
+        let selected_card_ids = decks
             .iter()
-            .flat_map(|deck| deck.card_ids.iter().cloned())
+            .flat_map(|deck| {
+                deck.generic_card_ids
+                    .iter()
+                    .cloned()
+                    .chain(
+                        deck.mercenary_card_ids
+                            .values()
+                            .flat_map(|card_ids| card_ids.iter().cloned()),
+                    )
+            })
             .collect::<HashSet<_>>()
             .into_iter()
             .collect::<Vec<_>>();
-        let cards = self.cards.active_cards_by_ids(&card_ids).await?;
+        let cards = self.cards.active_cards_by_ids(&selected_card_ids).await?;
         let cards_by_id = cards
             .iter()
             .cloned()
@@ -788,8 +792,13 @@ impl CardDefinitionsService {
             .into_iter()
             .map(|deck| {
                 let cards = deck
-                    .card_ids
+                    .generic_card_ids
                     .iter()
+                    .chain(
+                        deck.mercenary_card_ids
+                            .values()
+                            .flat_map(|card_ids| card_ids.iter()),
+                    )
                     .filter_map(|card_id| cards_by_id.get(card_id).cloned())
                     .collect::<Vec<_>>();
 

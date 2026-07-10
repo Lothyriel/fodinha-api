@@ -610,7 +610,6 @@ return {
                 name: "Test Power Deck".to_string(),
                 description: "Test Fodinha Power deck".to_string(),
                 creator_id: PlayerId("test".into()),
-                card_ids: vec![CardId("heal_10".into()), CardId("strike_10".into())],
                 generic_card_ids: Vec::new(),
                 mercenary_card_ids: Default::default(),
                 status: CardDeckStatus::Valid,
