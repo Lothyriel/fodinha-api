@@ -57,6 +57,29 @@ impl CardDecksRepository {
         Ok(())
     }
 
+    pub async fn replace(&self, deck: CardDeckDto) -> mongodb::error::Result<()> {
+        telemetry::db_query(COLLECTION_NAME, "replace_one.deck_id", async {
+            self.decks
+                .replace_one(doc! { "deck_id": deck.deck_id.as_str() }, deck)
+                .await
+        })
+        .await?;
+
+        Ok(())
+    }
+
+    pub async fn active_deck_by_id(
+        &self,
+        deck_id: &DeckId,
+    ) -> mongodb::error::Result<Option<CardDeckDto>> {
+        telemetry::db_query(COLLECTION_NAME, "find_one.active_by_id", async {
+            self.decks
+                .find_one(doc! { "deck_id": deck_id.as_str(), "active": true })
+                .await
+        })
+        .await
+    }
+
     pub async fn active_decks(&self) -> mongodb::error::Result<Vec<CardDeckDto>> {
         telemetry::db_query(COLLECTION_NAME, "find.active", async {
             let cursor = self

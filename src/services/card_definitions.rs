@@ -79,7 +79,16 @@ pub struct CreatePowerDeckInput {
     pub kind: CardDeckKind,
     pub name: String,
     pub description: String,
-    pub card_ids: Vec<CardId>,
+    pub generic_card_ids: Vec<CardId>,
+    pub mercenary_card_ids: HashMap<crate::models::id::MercenaryId, Vec<CardId>>,
+    pub status: Option<CardDeckStatus>,
+}
+
+#[derive(Debug)]
+pub struct UpdatePowerDeckInput {
+    pub kind: Option<CardDeckKind>,
+    pub name: String,
+    pub description: String,
     pub generic_card_ids: Vec<CardId>,
     pub mercenary_card_ids: HashMap<crate::models::id::MercenaryId, Vec<CardId>>,
     pub status: Option<CardDeckStatus>,
@@ -116,7 +125,6 @@ pub struct PowerDeckResponse {
     pub name: String,
     pub description: String,
     pub creator_id: PlayerId,
-    pub card_ids: Vec<CardId>,
     pub generic_card_ids: Vec<CardId>,
     pub mercenary_card_ids: HashMap<crate::models::id::MercenaryId, Vec<CardId>>,
     pub validation_errors: Vec<String>,
@@ -582,21 +590,17 @@ impl CardDefinitionsService {
             .filter(|(_, card_ids)| !card_ids.is_empty())
             .collect::<HashMap<_, _>>();
         let is_partitioned = !generic_card_ids.is_empty() || !mercenary_card_ids.is_empty();
-        let card_ids = if is_partitioned {
-            generic_card_ids
-                .iter()
-                .cloned()
-                .chain(
-                    mercenary_card_ids
-                        .values()
-                        .flat_map(|card_ids| card_ids.iter().cloned()),
-                )
-                .collect::<HashSet<_>>()
-                .into_iter()
-                .collect::<Vec<_>>()
-        } else {
-            unique_card_ids(input.card_ids)
-        };
+        let card_ids = generic_card_ids
+            .iter()
+            .cloned()
+            .chain(
+                mercenary_card_ids
+                    .values()
+                    .flat_map(|card_ids| card_ids.iter().cloned()),
+            )
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
 
         if name.is_empty() {
             return Err(CardDefinitionError::Invalid("name is required".to_string()));
@@ -648,6 +652,96 @@ impl CardDefinitionsService {
 
         let mut decks = self.hydrate_decks(vec![deck], Some(&creator_id)).await?;
 
+        Ok(decks.remove(0))
+    }
+
+    pub async fn update_deck(
+        &self,
+        editor_id: PlayerId,
+        deck_id: crate::models::id::DeckId,
+        input: UpdatePowerDeckInput,
+    ) -> Result<PowerDeckResponse, CardDefinitionError> {
+        let mut deck = self
+            .decks
+            .active_deck_by_id(&deck_id)
+            .await?
+            .ok_or_else(|| CardDefinitionError::Invalid("deck not found".to_string()))?;
+
+        if deck.creator_id != editor_id {
+            return Err(CardDefinitionError::Forbidden(
+                "only the deck creator can edit this deck".to_string(),
+            ));
+        }
+
+        let kind = input.kind.unwrap_or(deck.kind);
+        if deck.kind == CardDeckKind::Official || kind == CardDeckKind::Official {
+            self.ensure_admin(&editor_id, "only admin users can edit official decks")
+                .await?;
+        }
+
+        let name = input.name.trim();
+        if name.is_empty() {
+            return Err(CardDefinitionError::Invalid("name is required".to_string()));
+        }
+
+        let generic_card_ids = unique_card_ids(input.generic_card_ids);
+        let mercenary_card_ids = input
+            .mercenary_card_ids
+            .into_iter()
+            .map(|(mercenary_id, card_ids)| (mercenary_id, unique_card_ids(card_ids)))
+            .filter(|(_, card_ids)| !card_ids.is_empty())
+            .collect::<HashMap<_, _>>();
+        let card_ids = generic_card_ids
+            .iter()
+            .cloned()
+            .chain(
+                mercenary_card_ids
+                    .values()
+                    .flat_map(|card_ids| card_ids.iter().cloned()),
+            )
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        let active_cards = self.cards.active_cards_by_ids(&card_ids).await?;
+        if active_cards.len() != card_ids.len() {
+            return Err(CardDefinitionError::Invalid(
+                "deck contains invalid cards".to_string(),
+            ));
+        }
+
+        let is_partitioned = !generic_card_ids.is_empty() || !mercenary_card_ids.is_empty();
+        let validation_errors = if is_partitioned {
+            self.deck_validation_errors().await?
+        } else {
+            Vec::new()
+        };
+        let requested_status = input.status.unwrap_or(deck.status);
+        deck.kind = kind;
+        deck.name = name.to_string();
+        deck.description = input.description.trim().to_string();
+        deck.card_ids = card_ids;
+        deck.generic_card_ids = generic_card_ids;
+        deck.mercenary_card_ids = mercenary_card_ids;
+        deck.status = if requested_status == CardDeckStatus::Draft || !validation_errors.is_empty()
+        {
+            CardDeckStatus::Draft
+        } else {
+            CardDeckStatus::Valid
+        };
+        deck.updated_at = Utc::now().timestamp();
+
+        self.decks.replace(deck.clone()).await?;
+        if deck.status == CardDeckStatus::Valid {
+            self.power_card_registry
+                .upsert_power_deck_definition(PowerDeckDefinitionInput {
+                    id: deck.deck_id.clone(),
+                    card_ids: deck.card_ids.clone(),
+                    generic_card_ids: deck.generic_card_ids.clone(),
+                    mercenary_card_ids: deck.mercenary_card_ids.clone(),
+                });
+        }
+
+        let mut decks = self.hydrate_decks(vec![deck], Some(&editor_id)).await?;
         Ok(decks.remove(0))
     }
 
@@ -721,7 +815,6 @@ impl CardDefinitionsService {
                 name: deck.name,
                 description: deck.description,
                 creator_id: deck.creator_id.clone(),
-                card_ids: deck.card_ids,
                 generic_card_ids: deck.generic_card_ids,
                 mercenary_card_ids: deck.mercenary_card_ids,
                 validation_errors,

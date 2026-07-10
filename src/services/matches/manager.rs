@@ -21,7 +21,7 @@ use crate::{
             PlayingMatchSnapshot, ServerMessage, WaitingLobbySettingsDto, WaitingLobbySnapshot,
         },
         game::{GameCommand, GameSettings, GameType, fodinha_classic, fodinha_power},
-        id::{self, MatchId, MercenaryId, PlayerId},
+        id::{self, DeckId, MatchId, MercenaryId, PlayerId},
         lobby::{
             LobbyInfoInternal, LobbyPlayerStatus, MatchSnapshotInternal,
             PlayingMatchSnapshotInternal, WaitingLobbySnapshotInternal,
@@ -33,7 +33,7 @@ use crate::{
             CardDefinitionAssetResponse, CardDefinitionError, CardDefinitionResponse,
             CardDefinitionsService, CreateCardDefinitionAssetInput,
             CreateCardDefinitionFromAssetInput, CreateCardDefinitionInput, CreatePowerDeckInput,
-            PowerDeckResponse, UpdateCardDefinitionInput,
+            PowerDeckResponse, UpdateCardDefinitionInput, UpdatePowerDeckInput,
         },
         matches::{
             MatchActor, MatchActorContext, MatchActorMessage, MatchActorResources, MatchReceiver,
@@ -467,6 +467,17 @@ impl ManagerHandle {
         viewer_id: &PlayerId,
     ) -> Result<Vec<PowerDeckResponse>, CardDefinitionError> {
         self.card_definitions.list_decks(viewer_id).await
+    }
+
+    pub async fn update_power_deck(
+        &self,
+        editor_id: PlayerId,
+        deck_id: DeckId,
+        input: UpdatePowerDeckInput,
+    ) -> Result<PowerDeckResponse, CardDefinitionError> {
+        self.card_definitions
+            .update_deck(editor_id, deck_id, input)
+            .await
     }
 
     pub async fn mercenaries(&self) -> Result<Vec<MercenaryResponse>, MercenaryError> {

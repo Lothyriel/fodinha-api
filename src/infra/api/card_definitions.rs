@@ -13,7 +13,7 @@ use crate::{
         card_definitions::{
             CardDefinitionError, CreateCardDefinitionAssetInput,
             CreateCardDefinitionFromAssetInput, CreateCardDefinitionInput, CreatePowerDeckInput,
-            UpdateCardDefinitionInput,
+            UpdateCardDefinitionInput, UpdatePowerDeckInput,
         },
         repositories::{
             card_decks::{CardDeckKind, CardDeckStatus},
@@ -41,6 +41,7 @@ pub fn decks_router() -> Router<ApiState> {
     Router::new()
         .route("/", routing::get(list_decks))
         .route("/", routing::post(create_deck))
+        .route("/{deck_id}", routing::put(update_deck))
         .layer(middleware::from_fn(telemetry::http_middleware))
 }
 
@@ -136,7 +137,31 @@ async fn create_deck(
                 kind: body.kind.unwrap_or(CardDeckKind::Community),
                 name: body.name,
                 description: body.description.unwrap_or_default(),
-                card_ids: body.card_ids,
+                generic_card_ids: body.generic_card_ids.unwrap_or_default(),
+                mercenary_card_ids: body.mercenary_card_ids.unwrap_or_default(),
+                status: body.status,
+            },
+        )
+        .await?;
+
+    Ok(Json(deck))
+}
+
+async fn update_deck(
+    State(state): State<ApiState>,
+    Extension(user_claims): Extension<UserClaims>,
+    Path(deck_id): Path<crate::models::id::DeckId>,
+    Json(body): Json<UpdatePowerDeckRequest>,
+) -> Result<Json<crate::services::card_definitions::PowerDeckResponse>, CardDefinitionError> {
+    let deck = state
+        .manager
+        .update_power_deck(
+            user_claims.id(),
+            deck_id,
+            UpdatePowerDeckInput {
+                kind: body.kind,
+                name: body.name,
+                description: body.description.unwrap_or_default(),
                 generic_card_ids: body.generic_card_ids.unwrap_or_default(),
                 mercenary_card_ids: body.mercenary_card_ids.unwrap_or_default(),
                 status: body.status,
@@ -153,7 +178,16 @@ struct CreatePowerDeckRequest {
     status: Option<CardDeckStatus>,
     name: String,
     description: Option<String>,
-    card_ids: Vec<CardId>,
+    generic_card_ids: Option<Vec<CardId>>,
+    mercenary_card_ids: Option<HashMap<MercenaryId, Vec<CardId>>>,
+}
+
+#[derive(serde::Deserialize)]
+struct UpdatePowerDeckRequest {
+    kind: Option<CardDeckKind>,
+    status: Option<CardDeckStatus>,
+    name: String,
+    description: Option<String>,
     generic_card_ids: Option<Vec<CardId>>,
     mercenary_card_ids: Option<HashMap<MercenaryId, Vec<CardId>>>,
 }
