@@ -22,6 +22,8 @@ pub struct GameManager;
 const WAITING_LOBBY_TIMEOUT: Duration = Duration::from_secs(3 * 60);
 const EMPTY_PLAYING_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const ABANDONED_MATCH_SCAN_INTERVAL: Duration = Duration::from_secs(60);
+const CARD_ASSET_EXPIRATION: Duration = Duration::from_secs(24 * 60 * 60);
+const CARD_ASSET_SCAN_INTERVAL: Duration = Duration::from_secs(60 * 60);
 
 impl GameManager {
     pub async fn start(settings: &AppSettings) -> ManagerHandle {
@@ -121,6 +123,7 @@ impl GameManager {
         });
 
         manager.start_abandoned_match_janitor(empty_playing_timeout, abandoned_match_scan_interval);
+        manager.start_card_asset_janitor(CARD_ASSET_EXPIRATION, CARD_ASSET_SCAN_INTERVAL);
 
         manager
     }

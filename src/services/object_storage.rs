@@ -143,6 +143,23 @@ impl ObjectStorage {
         Ok(bytes.to_vec())
     }
 
+    pub async fn delete(&self, key: &str) -> Result<(), ObjectStorageError> {
+        self.client
+            .delete_object()
+            .bucket(&self.bucket)
+            .key(key)
+            .send()
+            .await
+            .map_err(|error| {
+                tracing::error!(bucket = %self.bucket, key, operation = "delete_object", error = ?error,
+                    "object storage request failed");
+                ObjectStorageError::S3 {
+                    bucket: self.bucket.clone(), key: key.to_string(), operation: "delete_object",
+                }
+            })?;
+        Ok(())
+    }
+
     pub fn public_url(&self, key: &str) -> Option<String> {
         self.public_base_url
             .as_ref()

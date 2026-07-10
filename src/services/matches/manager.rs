@@ -18,8 +18,7 @@ use crate::{
         Card,
         commands::{
             CreateLobbyResponse, GetLobbyDto, LobbyInfo, MatchSnapshot, PlayerStatus,
-            PlayingMatchSnapshot, ServerMessage, WaitingLobbySettingsDto,
-            WaitingLobbySnapshot,
+            PlayingMatchSnapshot, ServerMessage, WaitingLobbySettingsDto, WaitingLobbySnapshot,
         },
         game::{GameCommand, GameSettings, GameType, fodinha_classic, fodinha_power},
         id::{self, MatchId, MercenaryId, PlayerId},
@@ -87,6 +86,7 @@ struct ManagerBackground {
     actor_tasks: TaskTracker,
     deferred_tasks: TaskTracker,
     janitor_task: Arc<Mutex<Option<JoinHandle<()>>>>,
+    card_asset_janitor_task: Arc<Mutex<Option<JoinHandle<()>>>>,
 }
 
 fn fallback_user_claims(player_id: &PlayerId) -> UserClaims {
@@ -151,6 +151,7 @@ impl ManagerHandle {
 
     pub async fn shutdown(&self) {
         self.abort_janitor();
+        self.abort_card_asset_janitor();
         self.registry.matches.clear();
         self.registry.player_routes.clear();
 
@@ -169,6 +170,7 @@ impl ManagerHandle {
 
     pub fn abort_background_tasks(&self) {
         self.abort_janitor();
+        self.abort_card_asset_janitor();
         self.registry.matches.clear();
         self.registry.player_routes.clear();
         self.background.actor_tasks.abort_all();
@@ -182,6 +184,49 @@ impl ManagerHandle {
             .janitor_task
             .lock()
             .expect("janitor task lock poisoned")
+            .take()
+        {
+            handle.abort();
+        }
+    }
+
+    pub(crate) fn start_card_asset_janitor(&self, expiration: Duration, scan_interval: Duration) {
+        let cards = self.card_definitions.clone();
+        let handle = tokio::spawn(async move {
+            let mut interval = tokio::time::interval(scan_interval);
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+            loop {
+                interval.tick().await;
+                let before = chrono::Utc::now()
+                    .checked_sub_signed(chrono::Duration::from_std(expiration).unwrap())
+                    .expect("valid asset expiration")
+                    .timestamp();
+                match cards.cleanup_expired_assets(before).await {
+                    Ok(count) if count > 0 => tracing::info!(count, "Deleted expired card assets"),
+                    Ok(_) => {}
+                    Err(error) => tracing::error!(?error, "Error cleaning up card assets"),
+                }
+            }
+        });
+
+        if let Some(previous) = self
+            .background
+            .card_asset_janitor_task
+            .lock()
+            .expect("card asset janitor task lock poisoned")
+            .replace(handle)
+        {
+            previous.abort();
+        }
+    }
+
+    fn abort_card_asset_janitor(&self) {
+        if let Some(handle) = self
+            .background
+            .card_asset_janitor_task
+            .lock()
+            .expect("card asset janitor task lock poisoned")
             .take()
         {
             handle.abort();
@@ -374,9 +419,12 @@ impl ManagerHandle {
 
     pub async fn create_card_definition_asset(
         &self,
+        creator_id: PlayerId,
         input: CreateCardDefinitionAssetInput,
     ) -> Result<CardDefinitionAssetResponse, CardDefinitionError> {
-        self.card_definitions.create_card_asset(input).await
+        self.card_definitions
+            .create_card_asset(creator_id, input)
+            .await
     }
 
     pub async fn create_card_definition_from_asset(

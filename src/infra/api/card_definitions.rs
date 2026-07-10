@@ -8,9 +8,7 @@ use std::collections::HashMap;
 
 use crate::{
     infra::{UserClaims, telemetry},
-    models::{
-        id::{CardId, MercenaryId},
-    },
+    models::id::{CardId, MercenaryId},
     services::{
         card_definitions::{
             CardDefinitionError, CreateCardDefinitionAssetInput,
@@ -84,11 +82,15 @@ async fn update_card(
 
 async fn create_card_asset(
     State(state): State<ApiState>,
+    Extension(user_claims): Extension<UserClaims>,
     multipart: Multipart,
 ) -> Result<Json<crate::services::card_definitions::CardDefinitionAssetResponse>, CardDefinitionError>
 {
     let input = read_create_card_asset_input(multipart).await?;
-    let asset = state.manager.create_card_definition_asset(input).await?;
+    let asset = state
+        .manager
+        .create_card_definition_asset(user_claims.id(), input)
+        .await?;
 
     Ok(Json(asset))
 }

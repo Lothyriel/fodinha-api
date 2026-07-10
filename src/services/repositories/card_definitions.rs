@@ -11,16 +11,19 @@ use crate::{
 };
 
 const COLLECTION_NAME: &str = "CardDefinitions";
+const ASSETS_COLLECTION_NAME: &str = "CardDefinitionAssets";
 
 #[derive(Clone)]
 pub struct CardDefinitionsRepository {
     cards: Collection<CardDefinitionDto>,
+    assets: Collection<CardDefinitionAssetDto>,
 }
 
 impl CardDefinitionsRepository {
     pub fn new(database: &Database) -> Self {
         Self {
             cards: database.collection(COLLECTION_NAME),
+            assets: database.collection(ASSETS_COLLECTION_NAME),
         }
     }
 
@@ -35,6 +38,21 @@ impl CardDefinitionsRepository {
                 )
                 .await
         })
+        .await?;
+
+        telemetry::db_query(
+            ASSETS_COLLECTION_NAME,
+            "create_index.pending_created_at",
+            async {
+                self.assets
+                    .create_index(
+                        IndexModel::builder()
+                            .keys(doc! { "status": 1, "created_at": 1 })
+                            .build(),
+                    )
+                    .await
+            },
+        )
         .await?;
 
         telemetry::db_query(COLLECTION_NAME, "create_index.kind_creator_active", async {
@@ -117,6 +135,66 @@ impl CardDefinitionsRepository {
         })
         .await
     }
+
+    pub async fn insert_asset(&self, asset: CardDefinitionAssetDto) -> mongodb::error::Result<()> {
+        telemetry::db_query(ASSETS_COLLECTION_NAME, "insert_one", async {
+            self.assets.insert_one(asset).await
+        })
+        .await?;
+        Ok(())
+    }
+
+    pub async fn pending_asset_by_id(
+        &self,
+        asset_id: &CardId,
+    ) -> mongodb::error::Result<Option<CardDefinitionAssetDto>> {
+        telemetry::db_query(ASSETS_COLLECTION_NAME, "find_one.pending_by_id", async {
+            self.assets
+                .find_one(doc! { "asset_id": asset_id.as_str(), "status": "pending" })
+                .await
+        })
+        .await
+    }
+
+    pub async fn expired_pending_assets(
+        &self,
+        before: i64,
+    ) -> mongodb::error::Result<Vec<CardDefinitionAssetDto>> {
+        telemetry::db_query(ASSETS_COLLECTION_NAME, "find.expired_pending", async {
+            let cursor = self
+                .assets
+                .find(doc! { "status": "pending", "created_at": { "$lt": before } })
+                .await?;
+            cursor.try_collect().await
+        })
+        .await
+    }
+
+    pub async fn delete_asset(&self, asset_id: &CardId) -> mongodb::error::Result<()> {
+        telemetry::db_query(ASSETS_COLLECTION_NAME, "delete_one", async {
+            self.assets
+                .delete_one(doc! { "asset_id": asset_id.as_str() })
+                .await
+        })
+        .await?;
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct CardDefinitionAssetDto {
+    pub asset_id: CardId,
+    pub creator_id: PlayerId,
+    pub image_object_key: String,
+    pub script_object_key: String,
+    pub status: CardDefinitionAssetStatus,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CardDefinitionAssetStatus {
+    Pending,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

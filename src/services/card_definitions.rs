@@ -20,7 +20,8 @@ use crate::{
                 CardDeckDto, CardDeckKind, CardDeckStatus, CardDecksRepository, NewCardDeck,
             },
             card_definitions::{
-                CardDefinitionDto, CardDefinitionKind, CardDefinitionsRepository, NewCardDefinition,
+                CardDefinitionAssetDto, CardDefinitionAssetStatus, CardDefinitionDto,
+                CardDefinitionKind, CardDefinitionsRepository, NewCardDefinition,
             },
             mercenaries::MercenariesRepository,
             users::UsersRepository,
@@ -30,7 +31,6 @@ use crate::{
 
 const IMAGE_OBJECT_CONTENT_TYPE: &str = "image/png";
 const SCRIPT_OBJECT_CONTENT_TYPE: &str = "text/x-lua";
-const CARD_ASSET_ID_LEN: usize = 16;
 
 #[derive(Clone)]
 pub struct CardDefinitionsService {
@@ -214,10 +214,7 @@ impl CardDefinitionsService {
                 return Ok(true);
             }
 
-            let validation_errors = match self
-                .deck_validation_errors()
-                .await
-            {
+            let validation_errors = match self.deck_validation_errors().await {
                 Ok(validation_errors) => validation_errors,
                 Err(CardDefinitionError::Database(error)) => return Err(error),
                 Err(_) => return Ok(false),
@@ -268,8 +265,9 @@ impl CardDefinitionsService {
         let image_object_key = card_image_object_key(&card_id);
         let script_object_key = card_script_object_key(&card_id);
 
-        let script_definition = power_lua::parse_power_card_script_definition(&script, &script_object_key)
-            .map_err(|error| CardDefinitionError::Script(error.to_string()))?;
+        let script_definition =
+            power_lua::parse_power_card_script_definition(&script, &script_object_key)
+                .map_err(|error| CardDefinitionError::Script(error.to_string()))?;
 
         let definition = PowerCardDefinitionInput {
             id: card_id.clone(),
@@ -294,7 +292,7 @@ impl CardDefinitionsService {
         )?;
 
         let card = CardDefinitionDto::new(NewCardDefinition {
-            card_id,
+            card_id: card_id.clone(),
             kind: input.kind,
             name: name.to_string(),
             description: description.to_string(),
@@ -316,6 +314,7 @@ impl CardDefinitionsService {
 
     pub async fn create_card_asset(
         &self,
+        creator_id: PlayerId,
         input: CreateCardDefinitionAssetInput,
     ) -> Result<CardDefinitionAssetResponse, CardDefinitionError> {
         if input.image.is_empty() {
@@ -349,6 +348,17 @@ impl CardDefinitionsService {
                 .put(&image_object_key, input.image, IMAGE_OBJECT_CONTENT_TYPE),
         )?;
 
+        self.cards
+            .insert_asset(CardDefinitionAssetDto {
+                asset_id: asset_id.clone(),
+                creator_id,
+                image_object_key: image_object_key.clone(),
+                script_object_key: script_object_key.clone(),
+                status: CardDefinitionAssetStatus::Pending,
+                created_at: Utc::now().timestamp(),
+            })
+            .await?;
+
         Ok(CardDefinitionAssetResponse {
             asset_id,
             image_url: self.storage.public_url(&image_object_key),
@@ -366,9 +376,17 @@ impl CardDefinitionsService {
         let name = input.name.trim();
         let description = input.description.trim();
 
-        if !is_card_asset_id(input.asset_id.as_str()) {
-            return Err(CardDefinitionError::Invalid(
-                "invalid card asset id".to_string(),
+        let asset = self
+            .cards
+            .pending_asset_by_id(&input.asset_id)
+            .await?
+            .ok_or_else(|| {
+                CardDefinitionError::Invalid("card asset not found or expired".to_string())
+            })?;
+
+        if asset.creator_id != creator_id {
+            return Err(CardDefinitionError::Forbidden(
+                "only the asset creator can use this asset".to_string(),
             ));
         }
 
@@ -383,14 +401,15 @@ impl CardDefinitionsService {
         }
 
         let card_id = input.asset_id;
-        let image_object_key = card_image_object_key(&card_id);
-        let script_object_key = card_script_object_key(&card_id);
+        let image_object_key = asset.image_object_key;
+        let script_object_key = asset.script_object_key;
         let script = self.storage.get_bytes(&script_object_key).await?;
         let script = String::from_utf8(script)
             .map_err(|error| CardDefinitionError::Script(error.to_string()))?;
 
-        let script_definition = power_lua::parse_power_card_script_definition(&script, &script_object_key)
-            .map_err(|error| CardDefinitionError::Script(error.to_string()))?;
+        let script_definition =
+            power_lua::parse_power_card_script_definition(&script, &script_object_key)
+                .map_err(|error| CardDefinitionError::Script(error.to_string()))?;
 
         let definition = PowerCardDefinitionInput {
             id: card_id.clone(),
@@ -405,7 +424,7 @@ impl CardDefinitionsService {
         };
 
         let card = CardDefinitionDto::new(NewCardDefinition {
-            card_id,
+            card_id: card_id.clone(),
             kind: input.kind,
             name: name.to_string(),
             description: description.to_string(),
@@ -419,10 +438,27 @@ impl CardDefinitionsService {
         });
 
         self.cards.insert(card.clone()).await?;
+        self.cards.delete_asset(&card_id).await?;
         self.power_card_registry
             .upsert_power_card_definition(definition)?;
 
         self.card_response(card, script)
+    }
+
+    pub async fn cleanup_expired_assets(&self, before: i64) -> Result<usize, CardDefinitionError> {
+        let assets = self.cards.expired_pending_assets(before).await?;
+        let mut deleted = 0;
+
+        for asset in assets {
+            tokio::try_join!(
+                self.storage.delete(&asset.image_object_key),
+                self.storage.delete(&asset.script_object_key),
+            )?;
+            self.cards.delete_asset(&asset.asset_id).await?;
+            deleted += 1;
+        }
+
+        Ok(deleted)
     }
 
     pub async fn update_card(
@@ -487,8 +523,9 @@ impl CardDefinitionsService {
             }
         };
 
-        let script_definition = power_lua::parse_power_card_script_definition(&script, &script_object_key)
-            .map_err(|error| CardDefinitionError::Script(error.to_string()))?;
+        let script_definition =
+            power_lua::parse_power_card_script_definition(&script, &script_object_key)
+                .map_err(|error| CardDefinitionError::Script(error.to_string()))?;
 
         if let Some(image) = input.image {
             if image.is_empty() {
@@ -576,8 +613,7 @@ impl CardDefinitionsService {
         }
 
         let validation_errors = if is_partitioned {
-            self.deck_validation_errors()
-                .await?
+            self.deck_validation_errors().await?
         } else {
             Vec::new()
         };
@@ -724,11 +760,9 @@ impl CardDefinitionsService {
         card: CardDefinitionDto,
         script: String,
     ) -> Result<CardDefinitionResponse, CardDefinitionError> {
-        let script_definition = power_lua::parse_power_card_script_definition(
-            &script,
-            &card.script_object_key,
-        )
-        .map_err(|error| CardDefinitionError::Script(error.to_string()))?;
+        let script_definition =
+            power_lua::parse_power_card_script_definition(&script, &card.script_object_key)
+                .map_err(|error| CardDefinitionError::Script(error.to_string()))?;
 
         Ok(CardDefinitionResponse {
             id: card.card_id,
@@ -805,11 +839,9 @@ impl CardDefinitionsService {
         card: &CardDefinitionDto,
         script: String,
     ) -> Result<PowerCardDefinitionInput, CardDefinitionError> {
-        let script_definition = power_lua::parse_power_card_script_definition(
-            &script,
-            &card.script_object_key,
-        )
-        .map_err(|error| CardDefinitionError::Script(error.to_string()))?;
+        let script_definition =
+            power_lua::parse_power_card_script_definition(&script, &card.script_object_key)
+                .map_err(|error| CardDefinitionError::Script(error.to_string()))?;
 
         Ok(PowerCardDefinitionInput {
             id: card.card_id.clone(),
@@ -842,11 +874,4 @@ fn card_image_object_key(card_id: &CardId) -> String {
 
 fn card_script_object_key(card_id: &CardId) -> String {
     format!("card-definitions/{}/effect.lua", card_id.as_str())
-}
-
-fn is_card_asset_id(value: &str) -> bool {
-    value.len() == CARD_ASSET_ID_LEN
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
 }
