@@ -1,0 +1,28 @@
+# Development compose file for frontend developers.
+# Use together with the base file:
+#   podman compose -f compose.yml -f compose.dev.yml up --build
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      - mongodb
+      - minio-init
+    ports:
+      - "3000:3000"
+    environment:
+      JWT_KEY: ${JWT_KEY:-local-development-jwt-key}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-112306439846-2ivn23do1uh156v0lpjtu22gu8f98sd4.apps.googleusercontent.com}
+      MONGO_CONN_STRING: ${MONGO_CONN_STRING:-mongodb://mongodb:27017/?retryWrites=true}
+      MONGO_DATABASE: ${MONGO_DATABASE:-oh_hell}
+      MONGO_MAX_POOL_SIZE: ${MONGO_MAX_POOL_SIZE:-64}
+      OBJECT_STORAGE_ACCESS_KEY_ID: ${OBJECT_STORAGE_ACCESS_KEY_ID:-minioadmin}
+      OBJECT_STORAGE_BUCKET: ${OBJECT_STORAGE_BUCKET:-fodinha-card-definitions}
+      OBJECT_STORAGE_ENDPOINT: ${OBJECT_STORAGE_ENDPOINT:-http://minio:9000}
+      OBJECT_STORAGE_FORCE_PATH_STYLE: ${OBJECT_STORAGE_FORCE_PATH_STYLE:-true}
+      # This URL is consumed by the browser, so it must point at the host port.
+      OBJECT_STORAGE_PUBLIC_BASE_URL: ${OBJECT_STORAGE_PUBLIC_BASE_URL:-http://localhost:9000/fodinha-card-definitions}
+      OBJECT_STORAGE_REGION: ${OBJECT_STORAGE_REGION:-auto}
+      OBJECT_STORAGE_SECRET_ACCESS_KEY: ${OBJECT_STORAGE_SECRET_ACCESS_KEY:-minioadmin}
