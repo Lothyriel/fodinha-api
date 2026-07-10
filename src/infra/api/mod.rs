@@ -1700,8 +1700,8 @@ return {
         let lifes = set_lifes.expect("expected SetEnded lifes");
         let life_values = lifes.values().copied().collect::<Vec<_>>();
 
-        assert!(life_values.contains(&50));
-        assert!(life_values.contains(&40));
+        assert!(life_values.contains(&40), "unexpected life totals: {life_values:?}");
+        assert!(life_values.contains(&30), "unexpected life totals: {life_values:?}");
 
         drop(player_data);
         server.shutdown().await;
@@ -1726,10 +1726,13 @@ return {
     }
 
     async fn recv_game_or_set_ended(socket: &mut WebSocket) -> EndMessage {
-        match recv_msg(socket).await {
-            ServerMessage::SetEnded { lifes } => EndMessage::Set(lifes),
-            ServerMessage::GameEnded { lifes: _ } => EndMessage::Game,
-            msg => panic!("Expected Set or Game end | {msg:?}"),
+        loop {
+            match recv_msg(socket).await {
+                ServerMessage::SetEnded { lifes } => return EndMessage::Set(lifes),
+                ServerMessage::GameEnded { lifes: _ } => return EndMessage::Game,
+                ServerMessage::PlayerPowerCards(_) => continue,
+                msg => panic!("Expected Set or Game end | {msg:?}"),
+            }
         }
     }
 
@@ -1957,6 +1960,10 @@ return {
         for i in 0..rounds_count {
             play_power_round(players, i == rounds_count - 1).await;
         }
+
+        // A completed power set enters a second power phase before the
+        // pending set is finalized and SetEnded is broadcast.
+        power_phase(players).await;
     }
 
     async fn power_phase(players: &mut TestPlayersData) {
@@ -2173,13 +2180,20 @@ return {
 
     async fn assert_game_msg<F>(stream: &mut WebSocket, predicate: F) -> ServerMessage
     where
-        F: FnOnce(&ServerMessage) -> bool,
+        F: Fn(&ServerMessage) -> bool,
     {
-        let msg = recv_msg(stream).await;
+        loop {
+            let msg = recv_msg(stream).await;
 
-        match predicate(&msg) {
-            true => msg,
-            false => panic!("Message not expected {msg:?}"),
+            if predicate(&msg) {
+                return msg;
+            }
+
+            if matches!(msg, ServerMessage::PlayerPowerCards(_)) {
+                continue;
+            }
+
+            panic!("Message not expected {msg:?}");
         }
     }
 
