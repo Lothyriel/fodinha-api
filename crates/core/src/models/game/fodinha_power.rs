@@ -1186,10 +1186,10 @@ impl Game {
         let mut set_ended_effects = PowerCardEffects::default();
         if finalizing_set {
             let mut set_preview = self.clone();
-            if let Some(deck) = set_preview.power_decks.get_mut(player_id) {
-                if let Some(idx) = deck.iter().position(|held| held.id == card.id) {
-                    deck.remove(idx);
-                }
+            if let Some(deck) = set_preview.power_decks.get_mut(player_id)
+                && let Some(idx) = deck.iter().position(|held| held.id == card.id)
+            {
+                deck.remove(idx);
             }
             set_preview.apply_effects(&effects);
             let before = set_preview.core.get_lifes();
@@ -2759,13 +2759,6 @@ return {
         [PlayerId(Arc::from("P1")), PlayerId(Arc::from("P2"))]
     }
 
-    fn bid_current_player(game: &mut Game, bid: usize) {
-        let player_id = game.current_player().expect("expected bidding player");
-        let event = game.validate_bid(&player_id, bid).unwrap();
-
-        game.apply_match_event(event);
-    }
-
     fn enter_power_phase(game: &mut Game) {
         while matches!(game.stage, PowerGameStage::Bidding) {
             let player_id = game.current_player().expect("expected bidding player");
@@ -2787,11 +2780,6 @@ return {
 
             game.apply_match_event(event);
         }
-    }
-
-    fn advance_to_dealing(game: &mut Game) {
-        enter_power_phase(game);
-        finish_power_phase(game);
     }
 
     fn set_power_phase(game: &mut Game, players: &[PlayerId]) {
@@ -3872,10 +3860,10 @@ return {
         };
 
         assert_eq!(power_decks.len(), 2);
-        assert_eq!(power_decks[&player1].len(), POWER_CARDS_PER_PLAYER);
-        assert_eq!(power_decks[&player2].len(), POWER_CARDS_PER_PLAYER);
-        assert_eq!(game.power_decks[&player1].len(), POWER_CARDS_PER_PLAYER);
-        assert_eq!(game.power_decks[&player2].len(), POWER_CARDS_PER_PLAYER);
+        assert_eq!(power_decks[&player1].len(), 1);
+        assert_eq!(power_decks[&player2].len(), 1);
+        assert_eq!(game.power_decks[&player1].len(), 1);
+        assert_eq!(game.power_decks[&player2].len(), 1);
     }
 
     #[test]
@@ -4008,6 +3996,6 @@ return {
 
         let info = game.get_game_info(&player1);
 
-        assert_eq!(info.power_cards.unwrap().len(), POWER_CARDS_PER_PLAYER);
+        assert_eq!(info.power_cards.unwrap().len(), 1);
     }
 }

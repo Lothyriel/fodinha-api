@@ -59,6 +59,7 @@ pub(crate) struct MatchActorResources {
     pub(crate) empty_playing_timeout: Duration,
 }
 
+#[allow(clippy::large_enum_variant)]
 enum AppliedEvent {
     None,
     PlayerJoined,
@@ -72,6 +73,16 @@ enum AppliedEvent {
         possible_bids: Vec<usize>,
     },
     Game(AppliedGameChange),
+}
+
+struct SetInitialization {
+    decks: IndexMap<PlayerId, Vec<Card>>,
+    lifes: Option<HashMap<PlayerId, usize>>,
+    power_decks: Option<IndexMap<PlayerId, Vec<PowerCardDto>>>,
+    mana: Option<HashMap<PlayerId, PlayerManaDto>>,
+    upcard: Card,
+    next: PlayerId,
+    possible_bids: Vec<usize>,
 }
 
 impl MatchActor {
@@ -493,15 +504,15 @@ impl MatchActor {
             {
                 self.refresh_empty_playing_activity();
                 self.broadcast_snapshots().await;
-                self.init_set(
-                    set.decks,
+                self.init_set(SetInitialization {
+                    decks: set.decks,
                     lifes,
                     power_decks,
                     mana,
-                    set.upcard,
+                    upcard: set.upcard,
                     next,
                     possible_bids,
-                )
+                })
                 .await;
             }
         }
@@ -842,15 +853,15 @@ impl MatchActor {
                 let msg = OutboundMessage::SetEnded { lifes };
                 self.broadcast(msg).await;
 
-                self.init_set(
+                self.init_set(SetInitialization {
                     decks,
-                    turn.lifes,
-                    turn.power_decks,
-                    turn.mana,
+                    lifes: turn.lifes,
+                    power_decks: turn.power_decks,
+                    mana: turn.mana,
                     upcard,
                     next,
-                    possible,
-                )
+                    possible_bids: possible,
+                })
                 .await;
 
                 false
@@ -923,7 +934,7 @@ impl MatchActor {
             }
         }
 
-        if next_set.is_some() {
+        if let Some(next_set) = next_set {
             self.broadcast(OutboundMessage::SetEnded {
                 lifes: lifes.clone(),
             })
@@ -934,15 +945,15 @@ impl MatchActor {
                 possible_bids,
             }) = self.current_phase_message()
             {
-                self.init_set(
-                    decks.into_iter().collect::<IndexMap<_, _>>(),
-                    Some(lifes),
-                    Some(power_decks.into_iter().collect::<IndexMap<_, _>>()),
-                    Some(mana),
-                    next_set.expect("resolved next set is required").upcard,
+                self.init_set(SetInitialization {
+                    decks: decks.into_iter().collect::<IndexMap<_, _>>(),
+                    lifes: Some(lifes),
+                    power_decks: Some(power_decks.into_iter().collect::<IndexMap<_, _>>()),
+                    mana: Some(mana),
+                    upcard: next_set.upcard,
                     next,
                     possible_bids,
-                )
+                })
                 .await;
             }
         } else if outcome.ended {
@@ -994,7 +1005,7 @@ impl MatchActor {
             }
         }
 
-        if next_set.is_some() {
+        if let Some(next_set) = next_set {
             self.broadcast(OutboundMessage::SetEnded {
                 lifes: lifes.clone(),
             })
@@ -1005,15 +1016,15 @@ impl MatchActor {
                 possible_bids,
             }) = self.current_phase_message()
             {
-                self.init_set(
-                    decks.into_iter().collect::<IndexMap<_, _>>(),
-                    Some(lifes),
-                    Some(power_decks.into_iter().collect::<IndexMap<_, _>>()),
-                    Some(mana),
-                    next_set.expect("resolved next set is required").upcard,
+                self.init_set(SetInitialization {
+                    decks: decks.into_iter().collect::<IndexMap<_, _>>(),
+                    lifes: Some(lifes),
+                    power_decks: Some(power_decks.into_iter().collect::<IndexMap<_, _>>()),
+                    mana: Some(mana),
+                    upcard: next_set.upcard,
                     next,
                     possible_bids,
-                )
+                })
                 .await;
             }
         } else if outcome.ended {
@@ -1026,16 +1037,17 @@ impl MatchActor {
         outcome.ended
     }
 
-    async fn init_set(
-        &self,
-        decks: IndexMap<PlayerId, Vec<Card>>,
-        lifes: Option<HashMap<PlayerId, usize>>,
-        power_decks: Option<IndexMap<PlayerId, Vec<PowerCardDto>>>,
-        mana: Option<HashMap<PlayerId, PlayerManaDto>>,
-        upcard: Card,
-        next: PlayerId,
-        possible_bids: Vec<usize>,
-    ) {
+    async fn init_set(&self, initialization: SetInitialization) {
+        let SetInitialization {
+            decks,
+            lifes,
+            power_decks,
+            mana,
+            upcard,
+            next,
+            possible_bids,
+        } = initialization;
+
         self.broadcast(OutboundMessage::SetStart { upcard }).await;
 
         if let Some(lifes) = lifes
