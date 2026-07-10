@@ -725,6 +725,9 @@ impl PowerCardRegistry {
         let deck_definition = self.power_deck_definition(deck_id)?;
         let definitions =
             self.draw_power_card_definitions(&deck_definition, player_mercenaries, player_id)?;
+        if definitions.is_empty() {
+            return Ok(Vec::new());
+        }
         let needed_cards = offset.saturating_add(count);
         let mut deck = (0..needed_cards)
             .map(|idx| definitions[idx % definitions.len()].to_card())
@@ -742,7 +745,11 @@ impl PowerCardRegistry {
         player_id: &PlayerId,
     ) -> Result<Vec<PowerCardDefinition>, PowerCardDefinitionError> {
         if !deck_definition.is_partitioned() {
-            return self.weighted_power_card_definitions_from_ids(&deck_definition.card_ids);
+            return if deck_definition.card_ids.is_empty() {
+                Ok(Vec::new())
+            } else {
+                self.weighted_power_card_definitions_from_ids(&deck_definition.card_ids)
+            };
         }
 
         let mut card_ids = deck_definition.generic_card_ids.clone();
@@ -752,7 +759,11 @@ impl PowerCardRegistry {
             card_ids.extend(mercenary_card_ids.iter().cloned());
         }
 
-        self.weighted_power_card_definitions_from_ids(&card_ids)
+        if card_ids.is_empty() {
+            Ok(Vec::new())
+        } else {
+            self.weighted_power_card_definitions_from_ids(&card_ids)
+        }
     }
 
     fn weighted_power_card_definitions_from_ids(
@@ -2291,7 +2302,15 @@ impl Game {
         sequence: i64,
         registry: &PowerCardRegistry,
     ) -> Result<IndexMap<PlayerId, Vec<PowerCard>>, PowerCardDefinitionError> {
-        let definitions = registry.weighted_power_card_definitions_from_ids(&deck_definition.card_ids)?;
+        if deck_definition.card_ids.is_empty() {
+            return Ok(players
+                .iter()
+                .map(|player_id| (player_id.clone(), Vec::new()))
+                .collect());
+        }
+
+        let definitions =
+            registry.weighted_power_card_definitions_from_ids(&deck_definition.card_ids)?;
         let needed_cards = players.len().saturating_mul(POWER_CARDS_PER_PLAYER);
         let mut deck = (0..needed_cards)
             .map(|idx| definitions[idx % definitions.len()].to_card())
@@ -2319,12 +2338,19 @@ impl Game {
         sequence: i64,
         registry: &PowerCardRegistry,
     ) -> Result<IndexMap<PlayerId, Vec<PowerCard>>, PowerCardDefinitionError> {
-        let generic_cards = registry
-            .weighted_power_card_definitions_from_ids(&deck_definition.generic_card_ids)?;
-        let mut generic_deck = (0..players.len().saturating_mul(GENERIC_POWER_CARDS_PER_PLAYER))
-            .map(|idx| generic_cards[idx % generic_cards.len()].to_card())
-            .collect::<Vec<_>>();
-        shuffle_power_cards(&mut generic_deck, seed, sequence);
+        let mut generic_deck = if deck_definition.generic_card_ids.is_empty() {
+            Vec::new()
+        } else {
+            let generic_cards = registry
+                .weighted_power_card_definitions_from_ids(&deck_definition.generic_card_ids)?;
+            let mut generic_deck =
+                (0..players.len().saturating_mul(GENERIC_POWER_CARDS_PER_PLAYER))
+                    .map(|idx| generic_cards[idx % generic_cards.len()].to_card())
+                    .collect::<Vec<_>>();
+            shuffle_power_cards(&mut generic_deck, seed, sequence);
+
+            generic_deck
+        };
 
         let mut decks = IndexMap::new();
 
@@ -2895,6 +2921,38 @@ return {
     }
 
     #[test]
+    fn empty_power_deck_starts_without_power_cards() {
+        let mut registry = PowerCardRegistry::default();
+        let deck_id = DeckId(Arc::from("empty_deck"));
+        registry
+            .replace_power_card_registry(
+                Vec::new(),
+                vec![PowerDeckDefinitionInput {
+                    id: deck_id.clone(),
+                    card_ids: Vec::new(),
+                    generic_card_ids: Vec::new(),
+                    mercenary_card_ids: HashMap::new(),
+                }],
+            )
+            .expect("valid empty deck definition");
+        let players = test_players();
+        let settings = GameSettings {
+            life_multiplier: 1.0,
+            power_deck_id: deck_id,
+            player_mercenaries: HashMap::new(),
+        };
+
+        let MatchEvent::GameStarted { power_set, .. } =
+            Game::start_match_event_with_seed(&players, settings, 42, &registry).unwrap()
+        else {
+            panic!("expected game started event");
+        };
+
+        assert_eq!(power_set.decks.len(), players.len());
+        assert!(power_set.decks.values().all(Vec::is_empty));
+    }
+
+    #[test]
     fn game_starts_with_initial_mana_pool() {
         let registry = test_registry();
         let players = test_players();
@@ -3092,6 +3150,64 @@ return {
                     .iter()
                     .any(|card| card.id.as_str().starts_with("artemis_"))
             );
+        }
+    }
+
+    #[test]
+    fn partitioned_deck_without_generic_cards_deals_mercenary_cards() {
+        let mut registry = PowerCardRegistry::default();
+        registry
+            .replace_power_card_registry(
+                test_power_card_definitions(),
+                vec![PowerDeckDefinitionInput {
+                    id: test_deck_id(),
+                    card_ids: vec![card_id("heal_10"), card_id("strike_10")],
+                    generic_card_ids: Vec::new(),
+                    mercenary_card_ids: HashMap::from([(
+                        mercenary_id("gambler"),
+                        vec![card_id("heal_10"), card_id("strike_10")],
+                    )]),
+                }],
+            )
+            .expect("valid Gambler-only deck");
+        registry
+            .replace_mercenary_definitions(vec![MercenaryDefinitionInput {
+                id: mercenary_id("gambler"),
+                name: "Gambler".to_string(),
+                base_life: 50,
+                initial_mana: 2,
+                passive_script: r#"
+                    return {
+                        base_life = 50,
+                        initial_mana = 2,
+                    }
+                "#
+                .to_string(),
+                passive_source: "test/gambler_passive.lua".to_string(),
+            }])
+            .expect("valid Gambler mercenary");
+        let [player1, player2] = test_players();
+        let players = [player1.clone(), player2.clone()];
+        let settings = GameSettings {
+            life_multiplier: 1.0,
+            power_deck_id: test_deck_id(),
+            player_mercenaries: HashMap::from([
+                (player1.clone(), mercenary_id("gambler")),
+                (player2.clone(), mercenary_id("gambler")),
+            ]),
+        };
+
+        let MatchEvent::GameStarted { power_set, .. } =
+            Game::start_match_event_with_seed(&players, settings, 42, &registry).unwrap()
+        else {
+            panic!("expected game started event");
+        };
+
+        for player in players {
+            let cards = power_set.decks.get(&player).unwrap();
+
+            assert_eq!(cards.len(), 1);
+            assert!(matches!(cards[0].id.as_str(), "heal_10" | "strike_10"));
         }
     }
 

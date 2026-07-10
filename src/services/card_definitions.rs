@@ -194,10 +194,8 @@ impl CardDefinitionsService {
             }
         }
 
-        if count > 0 {
-            self.power_card_registry
-                .replace_power_card_registry(definitions, deck_definitions)?;
-        }
+        self.power_card_registry
+            .replace_power_card_registry(definitions, deck_definitions)?;
 
         Ok(count)
     }
