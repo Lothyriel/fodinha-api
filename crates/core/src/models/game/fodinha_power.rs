@@ -25,7 +25,6 @@ use crate::{
 };
 
 const LIFE_LOSS_PER_BID_DIFFERENCE: usize = 10;
-const POWER_CARDS_PER_PLAYER: usize = 1;
 const GENERIC_POWER_CARDS_PER_PLAYER: usize = 1;
 const MERCENARY_POWER_CARDS_PER_PLAYER: usize = 1;
 const INITIAL_MANA_POOL: usize = 2;
@@ -2228,41 +2227,6 @@ impl Game {
             .into_iter()
             .filter(|player_id| self.core.is_player_alive(player_id))
             .collect()
-    }
-
-    fn sync_turn_outcome_lifes(
-        outcome: &mut fodinha_classic::GameOutcome,
-        lifes: HashMap<PlayerId, usize>,
-    ) {
-        match outcome {
-            fodinha_classic::GameOutcome::SetEnded {
-                lifes: outcome_lifes,
-                ..
-            }
-            | fodinha_classic::GameOutcome::Ended {
-                lifes: outcome_lifes,
-            } => *outcome_lifes = lifes,
-            _ => {}
-        }
-    }
-
-    fn merge_next_set_decks(
-        outcome: &mut fodinha_classic::GameOutcome,
-        decks: &HashMap<PlayerId, Vec<Card>>,
-    ) {
-        if decks.is_empty() {
-            return;
-        }
-
-        if let fodinha_classic::GameOutcome::SetEnded {
-            decks: outcome_decks,
-            ..
-        } = outcome
-        {
-            for (player_id, deck) in decks {
-                outcome_decks.insert(player_id.clone(), deck.clone());
-            }
-        }
     }
 
     fn new_power_set_for_game(&self, players: &[PlayerId]) -> PowerSet {
