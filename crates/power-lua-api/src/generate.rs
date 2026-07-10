@@ -88,9 +88,19 @@ fn write_class(out: &mut String, definition: &LuaTypeDefinition) {
     for field in definition.fields {
         write_field(out, field);
     }
+
+    // LuaLS does not consistently connect methods declared on a local table
+    // (`function PowerCard:add_mana_cost(...)`) to parameters typed as the
+    // `PowerCard` class. Representing the method as a function-valued class
+    // field makes completion work for inline script callbacks as well.
+    if definition.name == "PowerCard" {
+        for method in definition.methods {
+            write_method_field(out, definition.name, method);
+        }
+    }
     writeln!(out).unwrap();
 
-    if !definition.methods.is_empty() {
+    if !definition.methods.is_empty() && definition.name != "PowerCard" {
         writeln!(out, "local {} = {{}}", definition.name).unwrap();
         writeln!(out).unwrap();
 
@@ -98,6 +108,30 @@ fn write_class(out: &mut String, definition: &LuaTypeDefinition) {
             write_method(out, definition.name, method);
         }
     }
+}
+
+fn write_method_field(
+    out: &mut String,
+    class_name: &str,
+    method: &crate::metadata::LuaMethodDefinition,
+) {
+    let params = std::iter::once(format!("self: {class_name}"))
+        .chain(
+            method
+                .params
+                .iter()
+                .map(|param| format!("{}: {}", param.name, param.lua_type)),
+        )
+        .collect::<Vec<_>>()
+        .join(", ");
+    let returns = method.returns.join(", ");
+
+    writeln!(
+        out,
+        "---@field {} fun({}): {} # {}",
+        method.name, params, returns, method.description
+    )
+    .unwrap();
 }
 
 fn write_field(out: &mut String, field: &LuaFieldDefinition) {

@@ -337,6 +337,9 @@ mod tests {
     #[test]
     fn generated_files_are_embedded() {
         assert!(FODINHA_LUA_DEFINITIONS.contains("---@class Game"));
+        assert!(FODINHA_LUA_DEFINITIONS.contains(
+            "---@field add_mana_cost fun(self: PowerCard, delta: integer): integer"
+        ));
         assert!(POWER_CARD_TEMPLATE.contains("PowerCardScript"));
         assert!(MERCENARY_PASSIVE_TEMPLATE.contains("MercenaryPassiveScript"));
     }
