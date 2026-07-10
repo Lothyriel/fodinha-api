@@ -1205,8 +1205,13 @@ impl Game {
                 .into_iter()
                 .filter_map(|player_id| {
                     let lives = before[&player_id];
-                    (set_preview.core.get_lifes().get(&player_id).copied().unwrap_or(lives) < lives)
-                        .then_some(player_id)
+                    let remaining_lives = set_preview
+                        .core
+                        .get_lifes()
+                        .get(&player_id)
+                        .copied()
+                        .unwrap_or(lives);
+                    (remaining_lives < lives).then_some((player_id, lives - remaining_lives))
                 })
                 .collect();
             set_ended_effects = set_preview
@@ -1303,8 +1308,13 @@ impl Game {
                 .into_iter()
                 .filter_map(|player_id| {
                     let lives = before[&player_id];
-                    (set_preview.core.get_lifes().get(&player_id).copied().unwrap_or(lives) < lives)
-                        .then_some(player_id)
+                    let remaining_lives = set_preview
+                        .core
+                        .get_lifes()
+                        .get(&player_id)
+                        .copied()
+                        .unwrap_or(lives);
+                    (remaining_lives < lives).then_some((player_id, lives - remaining_lives))
                 })
                 .collect();
             set_ended_effects = set_preview

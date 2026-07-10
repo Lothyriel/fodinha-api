@@ -733,7 +733,11 @@ pub(crate) fn build_event_table(lua: &Lua, event: &PassiveGameEvent) -> mlua::Re
             table.set("card", LuaCard::from_card(*card))?;
         }
         PassiveGameEvent::SetEnded { lost_players } => {
-            table.set("lost_players", lost_players.iter().map(PlayerId::as_str).collect::<Vec<_>>())?;
+            let lost_players = lost_players
+                .iter()
+                .map(|(player_id, lives)| (player_id.as_str(), *lives))
+                .collect::<std::collections::HashMap<_, _>>();
+            table.set("lost_players", lost_players)?;
         }
         PassiveGameEvent::BidPlaced { player_id, bid } => {
             table.set("player_id", player_id.as_str())?;

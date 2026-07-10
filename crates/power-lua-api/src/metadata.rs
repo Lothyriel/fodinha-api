@@ -583,8 +583,8 @@ pub const SET_ENDED_EVENT_FIELDS: &[LuaFieldDefinition] = &[LuaFieldDefinition {
     description: "Event discriminator.",
 }, LuaFieldDefinition {
     name: "lost_players",
-    lua_type: "PlayerId[]",
-    description: "Players whose life total decreased during the set.",
+    lua_type: "table<PlayerId, integer>",
+    description: "Lives lost by each player during the set.",
 }];
 
 pub const EVENT_DEFINITIONS: &[LuaEventDefinition] = &[

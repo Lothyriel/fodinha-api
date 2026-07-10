@@ -135,7 +135,7 @@ pub enum PassiveGameEvent {
     RoundEnded { winner: PlayerId, card: Card },
     SetStarted,
     SetEnded {
-        lost_players: Vec<PlayerId>,
+        lost_players: HashMap<PlayerId, usize>,
     },
 }
 
@@ -424,7 +424,7 @@ mod tests {
                 base_life = 50,
                 initial_mana = 2,
                 on_set_ended = function(game, event, mercenary)
-                    assert(event.lost_players[1] == "P2")
+                    assert(event.lost_players["P2"] == 10)
                     assert(game.get_lives("P2") == 0)
                     game.add_lives(mercenary.owner_id, 1)
                 end,
@@ -433,7 +433,7 @@ mod tests {
             passive_input(
                 player.clone(),
                 PassiveGameEvent::SetEnded {
-                    lost_players: vec![lost_player.clone()],
+                    lost_players: HashMap::from([(lost_player.clone(), 10)]),
                 },
                 HashMap::from([(player.clone(), script_player(50)), (lost_player, script_player(0))]),
             ),
