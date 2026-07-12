@@ -240,6 +240,7 @@ fn smoke_event_for_handler(
         "on_set_started" => PassiveGameEvent::SetStarted,
         "on_set_ended" => PassiveGameEvent::SetEnded {
             lost_players: HashMap::from([(target.clone(), 1)]),
+            bids: HashMap::from([(owner.clone(), 1), (target.clone(), 2)]),
         },
         _ => {
             return Err(mlua::Error::external(format!(

@@ -711,9 +711,9 @@ impl Game {
         self.next_shuffle_sequence = set.shuffle.sequence.wrapping_add(1);
 
         for (id, player) in self.players.iter_mut() {
+            player.bid = None;
             if player.is_alive() {
                 player.deck = set.decks.get(id).cloned().unwrap_or_default();
-                player.bid = None;
             }
         }
     }
@@ -1037,6 +1037,23 @@ mod tests {
         let set = Game::new_set(players, DealingMode::Increasing, cards_count, 1, 0);
 
         Game::from_started(players, GameSettings::default(), set).unwrap()
+    }
+
+    #[test]
+    fn next_set_clears_bids_for_eliminated_players() {
+        let player1 = PlayerId("P1".into());
+        let player2 = PlayerId("P2".into());
+        let mut game = game_with_cards_count(&[player1.clone(), player2.clone()], 1);
+
+        game.players.get_mut(&player1).unwrap().lifes = 0;
+        game.players.get_mut(&player1).unwrap().bid = Some(1);
+        game.players.get_mut(&player2).unwrap().bid = Some(0);
+
+        let next_set = game.new_set_for_game(&[player2.clone()], DealingMode::Increasing, 2);
+        game.apply_new_set(&next_set);
+
+        assert_eq!(game.players[&player1].bid, None);
+        assert_eq!(game.players[&player2].bid, None);
     }
 
     #[test]

@@ -1202,6 +1202,7 @@ impl Game {
                 deck.remove(idx);
             }
             set_preview.apply_effects(&effects);
+            let bids = set_preview.current_set_bids();
             let before = set_preview.core.get_lifes();
             let player_ids: Vec<_> = set_preview
                 .core
@@ -1224,7 +1225,7 @@ impl Game {
                 })
                 .collect();
             set_ended_effects = set_preview
-                .passive_effects(PassiveGameEvent::SetEnded { lost_players })
+                .passive_effects(PassiveGameEvent::SetEnded { lost_players, bids })
                 .map_err(PowerCardError::Script)?;
         }
 
@@ -1308,6 +1309,7 @@ impl Game {
         if finalizing_set {
             let mut set_preview = self.clone();
             set_preview.apply_effects(&effects);
+            let bids = set_preview.current_set_bids();
             let before = set_preview.core.get_lifes();
             let player_ids: Vec<_> = set_preview
                 .core
@@ -1330,7 +1332,7 @@ impl Game {
                 })
                 .collect();
             set_ended_effects = set_preview
-                .passive_effects(PassiveGameEvent::SetEnded { lost_players })
+                .passive_effects(PassiveGameEvent::SetEnded { lost_players, bids })
                 .map_err(PowerCardError::Script)?;
         }
 
@@ -1914,6 +1916,14 @@ impl Game {
         }
 
         Ok(effects)
+    }
+
+    fn current_set_bids(&self) -> HashMap<PlayerId, usize> {
+        self.core
+            .get_player_snapshots()
+            .into_iter()
+            .filter_map(|(player_id, player)| player.bid.map(|bid| (player_id, bid)))
+            .collect()
     }
 
     fn script_players(
@@ -2580,6 +2590,32 @@ return {
 }
 "#;
 
+    const SET_ENDED_HIGHEST_BIDDER_MANA_PASSIVE_SCRIPT: &str = r#"
+return {
+    base_life = 50,
+    initial_mana = 2,
+    on_set_ended = function(game, event, mercenary)
+        local highest_bid = -1
+        local highest_bidder = nil
+        local tie = false
+
+        for player_id, bid in pairs(event.bids) do
+            if bid > highest_bid then
+                highest_bid = bid
+                highest_bidder = player_id
+                tie = false
+            elseif bid == highest_bid then
+                tie = true
+            end
+        end
+
+        if not tie and highest_bidder == mercenary.owner_id then
+            game:add_mana(mercenary.owner_id, 3)
+        end
+    end,
+}
+"#;
+
     fn test_registry() -> PowerCardRegistry {
         registry_with_power_card_definitions(test_power_card_definitions())
     }
@@ -2836,6 +2872,36 @@ return {
         let card = game.core.get_player_snapshots()[&player_id].deck[0];
 
         game.validate_turn(Turn { player_id, card }).unwrap()
+    }
+
+    fn prepare_second_set_end_power_phase(game: &mut Game, highest_bidder: &PlayerId) {
+        enter_power_phase(game);
+        finish_power_phase(game);
+        while matches!(game.stage, PowerGameStage::Dealing) {
+            let event = validate_current_turn(game);
+            game.apply_match_event(event);
+        }
+        finish_power_phase(game);
+
+        while matches!(game.stage, PowerGameStage::Bidding) {
+            let player_id = game.current_player().expect("expected bidding player");
+            let bid = if &player_id == highest_bidder { 1 } else { 0 };
+            assert!(game.get_possible_bids().contains(&bid));
+            game.apply_match_event(game.validate_bid(&player_id, bid).unwrap());
+        }
+        finish_power_phase(game);
+        while matches!(game.stage, PowerGameStage::Dealing) {
+            let event = validate_current_turn(game);
+            game.apply_match_event(event);
+        }
+
+        assert!(matches!(
+            game.stage,
+            PowerGameStage::Power {
+                phase: PowerPhase::Second,
+                ..
+            }
+        ));
     }
 
     fn registry_power_card(registry: &PowerCardRegistry, id: &str) -> PowerCard {
@@ -3288,6 +3354,108 @@ return {
         game.apply_match_event(event);
 
         assert_eq!(game.core.get_lifes().get(&player1), Some(&(before + 1)));
+    }
+
+    #[test]
+    fn set_ended_passive_uses_completed_bids_on_skipped_power_phase() {
+        let registry =
+            test_registry_with_mercenary_passive(SET_ENDED_HIGHEST_BIDDER_MANA_PASSIVE_SCRIPT);
+        let [player1, player2] = test_players();
+        let players = [player1.clone(), player2.clone()];
+        let settings = GameSettings {
+            life_multiplier: 1.0,
+            power_deck_id: test_deck_id(),
+            player_mercenaries: HashMap::from([(player1.clone(), mercenary_id("artemis"))]),
+        };
+        let mut game = Game::new_with_seed(&players, settings, 42, registry).unwrap();
+        game.mana.insert(
+            player1.clone(),
+            PlayerMana {
+                current: 0,
+                max: 100,
+            },
+        );
+
+        prepare_second_set_end_power_phase(&mut game, &player1);
+        loop {
+            let should_skip = match &game.stage {
+                PowerGameStage::Power {
+                    pending_players, ..
+                } => pending_players.len() > 1,
+                _ => false,
+            };
+            if !should_skip {
+                break;
+            }
+            let player_id = game.current_player().expect("expected power player");
+            game.apply_match_event(game.validate_skip_power_phase(&player_id).unwrap());
+        }
+
+        let before = game.mana[&player1].current;
+        let player_id = game.current_player().expect("expected final power player");
+        let event = game.validate_skip_power_phase(&player_id).unwrap();
+        let MatchEvent::PowerPhaseSkipped {
+            set_ended_effects, ..
+        } = &event
+        else {
+            panic!("expected power phase skip event");
+        };
+
+        assert_eq!(set_ended_effects.mana[&player1].current, before + 3);
+        game.apply_match_event(event);
+    }
+
+    #[test]
+    fn set_ended_passive_uses_completed_bids_on_power_card_resolution() {
+        let registry =
+            test_registry_with_mercenary_passive(SET_ENDED_HIGHEST_BIDDER_MANA_PASSIVE_SCRIPT);
+        let [player1, player2] = test_players();
+        let players = [player1.clone(), player2.clone()];
+        let settings = GameSettings {
+            life_multiplier: 1.0,
+            power_deck_id: test_deck_id(),
+            player_mercenaries: HashMap::from([(player1.clone(), mercenary_id("artemis"))]),
+        };
+        let mut game = Game::new_with_seed(&players, settings, 42, registry).unwrap();
+        game.mana.insert(
+            player1.clone(),
+            PlayerMana {
+                current: 0,
+                max: 100,
+            },
+        );
+
+        prepare_second_set_end_power_phase(&mut game, &player1);
+        loop {
+            let should_skip = match &game.stage {
+                PowerGameStage::Power {
+                    pending_players, ..
+                } => pending_players.len() > 1,
+                _ => false,
+            };
+            if !should_skip {
+                break;
+            }
+            let player_id = game.current_player().expect("expected power player");
+            game.apply_match_event(game.validate_skip_power_phase(&player_id).unwrap());
+        }
+
+        let before = game.mana[&player1].current;
+        let player_id = game.current_player().expect("expected final power player");
+        let card = registry_power_card(&game.registry, "heal_10");
+        game.power_decks.insert(player_id.clone(), vec![card]);
+        let event = game
+            .validate_power_card(&player_id, &card_id("heal_10"), None)
+            .unwrap();
+        let MatchEvent::PowerCardPlayed {
+            set_ended_effects, ..
+        } = &event
+        else {
+            panic!("expected power card event");
+        };
+
+        assert_eq!(set_ended_effects.mana[&player1].current, before + 3);
+        game.apply_match_event(event);
     }
 
     #[test]

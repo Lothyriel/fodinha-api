@@ -173,6 +173,7 @@ pub enum PassiveGameEvent {
     #[lua_api_event(description = "Passive event emitted when a set ends.")]
     SetEnded {
         lost_players: HashMap<PlayerId, usize>,
+        bids: HashMap<PlayerId, usize>,
     },
 }
 
@@ -436,6 +437,7 @@ mod tests {
         assert!(definitions.contains("---@field suit Suit"));
         assert!(definitions.contains("---@field type PowerCardType"));
         assert!(definitions.contains("---@field type \"bid_placed\""));
+        assert!(definitions.contains("---@field bids table<PlayerId, integer>"));
         assert!(definitions.contains(
             "---@field on_match_started? fun(game: Game, event: MatchStartedEvent, mercenary: Mercenary)"
         ));
@@ -535,6 +537,8 @@ mod tests {
                 initial_mana = 2,
                 on_set_ended = function(game, event, mercenary)
                     assert(event.lost_players["P2"] == 10)
+                    assert(event.bids["P1"] == 1)
+                    assert(event.bids["P2"] == 2)
                     assert(game.get_lives("P2") == 0)
                     game.add_lives(mercenary.owner_id, 1)
                 end,
@@ -544,6 +548,7 @@ mod tests {
                 player.clone(),
                 PassiveGameEvent::SetEnded {
                     lost_players: HashMap::from([(lost_player.clone(), 10)]),
+                    bids: HashMap::from([(player.clone(), 1), (lost_player.clone(), 2)]),
                 },
                 HashMap::from([
                     (player.clone(), script_player(50)),
