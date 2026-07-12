@@ -1,16 +1,18 @@
 use std::{
     fmt::Display,
     future::Future,
-    sync::LazyLock,
+    sync::{Arc, LazyLock, Mutex},
     time::{Duration, Instant},
 };
 
 use axum::{
+    body::{Body, BodyDataStream, Bytes},
     extract::{MatchedPath, Request},
     http::{Method, StatusCode},
     middleware::Next,
     response::{IntoResponse, Response},
 };
+use futures::StreamExt;
 use opentelemetry::{
     KeyValue, global,
     metrics::{Counter, Histogram, UpDownCounter},
@@ -32,6 +34,7 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use crate::models::game::GameType;
 
 const DEFAULT_FILTER: &str = "info,hyper=off,rustls=error,tungstenite=error";
+const MAX_BODY_LOG_BYTES: usize = 8 * 1024;
 const LATENCY_HISTOGRAM_BUCKETS: &[f64] = &[
     0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0,
 ];
@@ -302,6 +305,248 @@ pub async fn http_middleware(req: Request, next: Next) -> Response {
     response
 }
 
+pub async fn http_error_middleware(req: Request, next: Next) -> Response {
+    let method = req.method().clone();
+    let route = http_route(&req);
+    let path = req.uri().path().to_string();
+    let started = Instant::now();
+    let (parts, body) = req.into_parts();
+    let request_body_capture = Arc::new(Mutex::new(RequestBodyCapture::default()));
+    let body = Body::from_stream(capture_request_body(
+        body.into_data_stream(),
+        request_body_capture.clone(),
+    ));
+    let request = Request::from_parts(parts, body);
+    let response = next.run(request).await;
+    let status = response.status();
+
+    if !(status.is_client_error() || status.is_server_error()) {
+        return response;
+    }
+
+    let (parts, body) = response.into_parts();
+    let capture = ErrorBodyCapture::new(
+        method,
+        route,
+        path,
+        status,
+        started.elapsed(),
+        request_body_capture,
+    );
+    let body = Body::from_stream(capture_error_body(body.into_data_stream(), capture));
+
+    Response::from_parts(parts, body)
+}
+
+fn capture_error_body(
+    stream: BodyDataStream,
+    capture: ErrorBodyCapture,
+) -> impl futures::Stream<Item = Result<Bytes, axum::Error>> {
+    futures::stream::unfold(
+        (stream, Some(capture)),
+        |(mut stream, capture)| async move {
+            let mut capture = capture?;
+            match stream.next().await {
+                Some(Ok(bytes)) => {
+                    capture.record(&bytes);
+                    Some((Ok(bytes), (stream, Some(capture))))
+                }
+                Some(Err(error)) => {
+                    capture.finish(Some(error.to_string()));
+                    Some((Err(error), (stream, None)))
+                }
+                None => {
+                    capture.finish(None);
+                    None
+                }
+            }
+        },
+    )
+}
+
+fn capture_request_body(
+    stream: BodyDataStream,
+    capture: Arc<Mutex<RequestBodyCapture>>,
+) -> impl futures::Stream<Item = Result<Bytes, axum::Error>> {
+    futures::stream::unfold((stream, capture), |(mut stream, capture)| async move {
+        match stream.next().await {
+            Some(Ok(bytes)) => {
+                capture.lock().unwrap().record(&bytes);
+                Some((Ok(bytes), (stream, capture)))
+            }
+            Some(Err(error)) => {
+                capture.lock().unwrap().finish(Some(error.to_string()));
+                Some((Err(error), (stream, capture)))
+            }
+            None => {
+                capture.lock().unwrap().finish(None);
+                None
+            }
+        }
+    })
+}
+
+#[derive(Default)]
+struct RequestBodyCapture {
+    body: Vec<u8>,
+    omitted: bool,
+    complete: bool,
+    error: Option<String>,
+}
+
+impl RequestBodyCapture {
+    fn record(&mut self, bytes: &Bytes) {
+        if self.omitted {
+            return;
+        }
+
+        if self.body.len().saturating_add(bytes.len()) > MAX_BODY_LOG_BYTES {
+            self.body.clear();
+            self.omitted = true;
+        } else {
+            self.body.extend_from_slice(bytes);
+        }
+    }
+
+    fn finish(&mut self, error: Option<String>) {
+        self.complete = true;
+        self.error = error;
+    }
+
+    fn display(&self) -> String {
+        if let Some(error) = &self.error {
+            format!("<body unavailable: {error}>")
+        } else if self.omitted {
+            format!("<body omitted after {MAX_BODY_LOG_BYTES} bytes>")
+        } else if !self.complete {
+            "<body was not consumed>".to_string()
+        } else {
+            String::from_utf8_lossy(&self.body).into_owned()
+        }
+    }
+}
+
+struct ErrorBodyCapture {
+    method: Method,
+    route: String,
+    path: String,
+    status: StatusCode,
+    duration: Duration,
+    request_body: Arc<Mutex<RequestBodyCapture>>,
+    body: Vec<u8>,
+    omitted: bool,
+    logged: bool,
+}
+
+impl ErrorBodyCapture {
+    fn new(
+        method: Method,
+        route: String,
+        path: String,
+        status: StatusCode,
+        duration: Duration,
+        request_body: Arc<Mutex<RequestBodyCapture>>,
+    ) -> Self {
+        Self {
+            method,
+            route,
+            path,
+            status,
+            duration,
+            request_body,
+            body: Vec::new(),
+            omitted: false,
+            logged: false,
+        }
+    }
+
+    fn record(&mut self, bytes: &Bytes) {
+        if self.omitted {
+            return;
+        }
+
+        if self.body.len().saturating_add(bytes.len()) > MAX_BODY_LOG_BYTES {
+            self.body.clear();
+            self.omitted = true;
+        } else {
+            self.body.extend_from_slice(bytes);
+        }
+    }
+
+    fn finish(&mut self, stream_error: Option<String>) {
+        if self.logged {
+            return;
+        }
+
+        self.logged = true;
+        let body = if let Some(error) = stream_error {
+            format!("<body unavailable: {error}>")
+        } else if self.omitted {
+            format!("<body omitted after {MAX_BODY_LOG_BYTES} bytes>")
+        } else {
+            String::from_utf8_lossy(&self.body).into_owned()
+        };
+
+        let request_body = self.request_body.lock().unwrap().display();
+
+        log_http_error(
+            &self.method,
+            &self.route,
+            &self.path,
+            self.status,
+            self.duration,
+            &request_body,
+            &body,
+        );
+    }
+}
+
+impl Drop for ErrorBodyCapture {
+    fn drop(&mut self) {
+        if !self.logged {
+            self.finish(Some(
+                "body stream was dropped before completion".to_string(),
+            ));
+        }
+    }
+}
+
+fn log_http_error(
+    method: &Method,
+    route: &str,
+    path: &str,
+    status: StatusCode,
+    duration: Duration,
+    request_body: &str,
+    body: &str,
+) {
+    let duration_ms = duration.as_secs_f64() * 1_000.0;
+
+    if status.is_server_error() {
+        tracing::error!(
+            %method,
+            route,
+            path,
+            status = status.as_u16(),
+            duration_ms,
+            request_body,
+            body,
+            "HTTP request failed",
+        );
+    } else {
+        tracing::warn!(
+            %method,
+            route,
+            path,
+            status = status.as_u16(),
+            duration_ms,
+            request_body,
+            body,
+            "HTTP request failed",
+        );
+    }
+}
+
 fn http_route(req: &Request) -> String {
     req.extensions()
         .get::<MatchedPath>()
@@ -457,4 +702,93 @@ fn game_type_label(game_type: Option<GameType>) -> String {
     game_type
         .map(|game_type| game_type.to_string())
         .unwrap_or_else(|| "unknown".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{
+        io::Write,
+        sync::{Arc, Mutex},
+    };
+    use tracing_subscriber::fmt::MakeWriter;
+
+    #[derive(Clone)]
+    struct SharedWriter(Arc<Mutex<Vec<u8>>>);
+
+    impl Write for SharedWriter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> MakeWriter<'a> for SharedWriter {
+        type Writer = Self;
+
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    #[test]
+    fn logs_http_error_metadata_and_body() {
+        let output = Arc::new(Mutex::new(Vec::new()));
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .with_writer(SharedWriter(output.clone()))
+            .finish();
+
+        tracing::subscriber::with_default(subscriber, || {
+            log_http_error(
+                &Method::POST,
+                "/auth/signup",
+                "/auth/signup",
+                StatusCode::BAD_REQUEST,
+                Duration::from_millis(12),
+                "{\"nickname\":\"Guest\"}",
+                "invalid payload",
+            );
+        });
+
+        let log = String::from_utf8(output.lock().unwrap().clone()).unwrap();
+        assert!(log.contains("HTTP request failed"));
+        assert!(log.contains("status=400"));
+        assert!(log.contains("route=\"/auth/signup\""));
+        assert!(log.contains("request_body=\"{\\\"nickname\\\":\\\"Guest\\\"}\""));
+        assert!(log.contains("invalid payload"));
+    }
+
+    #[test]
+    fn error_body_capture_marks_bodies_over_the_limit() {
+        let mut capture = ErrorBodyCapture::new(
+            Method::GET,
+            "/test".to_string(),
+            "/test".to_string(),
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Duration::ZERO,
+            Arc::new(Mutex::new(RequestBodyCapture::default())),
+        );
+
+        capture.record(&Bytes::from(vec![b'x'; MAX_BODY_LOG_BYTES]));
+        capture.record(&Bytes::from_static(b"one more byte"));
+
+        assert!(capture.omitted);
+        assert!(capture.body.is_empty());
+    }
+
+    #[test]
+    fn request_body_capture_marks_bodies_over_the_limit() {
+        let mut capture = RequestBodyCapture::default();
+
+        capture.record(&Bytes::from(vec![b'x'; MAX_BODY_LOG_BYTES]));
+        capture.record(&Bytes::from_static(b"one more byte"));
+        capture.finish(None);
+
+        assert_eq!(capture.display(), "<body omitted after 8192 bytes>");
+    }
 }

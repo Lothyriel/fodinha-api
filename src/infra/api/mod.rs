@@ -9,7 +9,7 @@ mod stats;
 
 use std::net::Ipv6Addr;
 
-use axum::{Json, Router, extract::State, response::IntoResponse, routing};
+use axum::{Json, Router, extract::State, middleware, response::IntoResponse, routing};
 use reqwest::StatusCode;
 use tokio::{net::TcpListener, sync::watch};
 use tower_http::cors::{Any, CorsLayer};
@@ -113,8 +113,9 @@ fn build_app(
         .nest("/auth", auth::router(state.clone()))
         .fallback(fallback_handler)
         .with_state(state)
-        .layer(tower_http::trace::TraceLayer::new_for_http())
+        .layer(tower_http::trace::TraceLayer::new_for_http().on_failure(()))
         .layer(cors)
+        .layer(middleware::from_fn(telemetry::http_error_middleware))
 }
 
 async fn fallback_handler() -> (StatusCode, &'static str) {
