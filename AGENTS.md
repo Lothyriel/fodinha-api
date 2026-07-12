@@ -2,7 +2,7 @@
 
 ## Fast Start
 
-- This is a Rust workspace for a card-game platform with two crates: the main `fodinha-api` API crate and the `power-lua-api` library crate under `crates/power-lua-api/`. The only supported game type today is `fodinha_classic`, implemented under the generic game facade in `src/models/game/`.
+- This is a Rust workspace for a card-game platform. The main API crate and supporting crates live under `crates/`; Lua API generation is implemented in `fodinha-core` and `lua-api-derive`. The only supported game type today is `fodinha_classic`, implemented under the generic game facade in `src/models/game/`.
 - The process starts in `src/main.rs`: init telemetry, load `AppSettings`, start `GameManager`, then serve Axum.
 - Run Mongo first: `podman compose up -d mongodb`
 - Run the API: `cargo run`
@@ -13,7 +13,7 @@
 
 - After every feature change, run the relevant backend and frontend tests before considering the change complete. Report any failing tests and do not treat a build-only pass as sufficient verification.
 - Run workspace commands from `api/`; `cargo test` runs tests for both crates. The API integration tests use a real MongoDB at `mongodb://localhost/?retryWrites=true` and create per-test databases named `oh_hell_test_*` inside `src/infra/api/mod.rs` tests.
-- `power-lua-api` generates `fodinha.d.lua`, `power-card-template.lua`, and `mercenary-passive-template.lua` into Cargo's `OUT_DIR`; the API embeds those generated files at compile time.
+- `fodinha-core` and `lua-api-derive` generate the Lua definitions and templates; the API embeds the generated definitions at compile time.
 - Good focused regression check for actor restore/replay work: `cargo test test_concurrent_lazy_loads_match_actor_from_events -- --exact`
 - Good focused regression check for persistence boundaries: `cargo test test_lobby_changes_do_not_write_match_events -- --exact`
 - Good focused check for game event BSON/wire serialization: `cargo test game::tests`

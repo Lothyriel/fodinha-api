@@ -1,5 +1,11 @@
 [workspace]
-members = [".", "crates/core", "crates/client", "crates/loadtester", "crates/power-lua-api"]
+members = [
+    ".",
+    "crates/core",
+    "crates/client",
+    "crates/loadtester",
+    "crates/lua-api-derive",
+]
 resolver = "3"
 
 [package]
@@ -30,8 +36,6 @@ thiserror = "2.0.18"
 
 serde = { version = "1.0.228", features = ["derive", "rc"] }
 serde_json = "1.0.150"
-mlua = { version = "0.12.0", features = ["lua54", "vendored", "error-send"] }
-power-lua-api = { path = "crates/power-lua-api" }
 
 mongodb = "3.7.0"
 
@@ -61,7 +65,7 @@ flume = { version = "0.12.0", features = ["async"] }
 tokio-tungstenite = "0.29.0"
 
 [build-dependencies]
-power-lua-api = { path = "crates/power-lua-api" }
+fodinha-core = { path = "crates/core" }
 
 [[bin]]
 name = "fodinha-api"

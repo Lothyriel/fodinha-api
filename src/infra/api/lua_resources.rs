@@ -9,14 +9,15 @@ use axum::{
     routing,
 };
 
-use crate::models::game::power_lua::{
-    FODINHA_LUA_DEFINITIONS, MERCENARY_PASSIVE_TEMPLATE, POWER_CARD_TEMPLATE,
+use crate::models::game::power_lua::lua_codegen::{
+    render_mercenary_passive_template, render_power_card_template,
 };
 
 use super::ApiState;
 
 const CONTENT_TYPE_VALUE: HeaderValue = HeaderValue::from_static("text/plain; charset=utf-8");
 const CACHE_CONTROL_VALUE: HeaderValue = HeaderValue::from_static("public, max-age=300");
+const FODINHA_LUA_DEFINITIONS: &str = include_str!(concat!(env!("OUT_DIR"), "/fodinha.d.lua"));
 
 pub fn router() -> Router<ApiState> {
     Router::new()
@@ -36,11 +37,11 @@ async fn fodinha_definitions(headers: HeaderMap) -> Response {
 }
 
 async fn power_card_template(headers: HeaderMap) -> Response {
-    lua_text_response(headers, POWER_CARD_TEMPLATE)
+    lua_text_response(headers, render_power_card_template())
 }
 
 async fn mercenary_passive_template(headers: HeaderMap) -> Response {
-    lua_text_response(headers, MERCENARY_PASSIVE_TEMPLATE)
+    lua_text_response(headers, render_mercenary_passive_template())
 }
 
 fn lua_text_response(request_headers: HeaderMap, content: &'static str) -> Response {

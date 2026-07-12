@@ -1,20 +1,15 @@
 mod api;
-mod definitions;
 pub mod lua_codegen;
 mod runtime;
 
 use std::{collections::HashMap, rc::Rc};
 
-pub use definitions::{FODINHA_LUA_DEFINITIONS, MERCENARY_PASSIVE_TEMPLATE, POWER_CARD_TEMPLATE};
-use power_lua_api::metadata;
+use lua_api_derive::{LuaApiEvent, LuaApiScript};
+use mlua_extras::mlua;
 pub use runtime::{
     parse_mercenary_passive_definition, parse_power_card_script_definition, run_passive_script,
     run_power_card_script, validate_mercenary_passive_script, validate_power_card_script,
 };
-
-pub fn lua_api_type_definitions() -> [power_lua_api::LuaTypeDefinition; 5] {
-    api::userdata_type_definitions()
-}
 
 use crate::models::{
     Card, Rank,
@@ -102,6 +97,46 @@ pub struct MercenaryPassiveDefinition {
 
 pub type DrawPowerCardsFn = Rc<dyn Fn(&str, usize) -> Result<Vec<ScriptPowerCardState>, String>>;
 
+#[allow(dead_code)]
+#[derive(LuaApiScript)]
+#[lua_api_script(description = "A power card script definition.")]
+struct PowerCardScript {
+    #[lua_api_field(name = "type")]
+    card_type: PowerCardType,
+    #[description("Base mana cost of the card.")]
+    mana_cost: usize,
+    #[description("Number of copies added to a deck.")]
+    quantity: usize,
+    #[description("Runs when the card is played.")]
+    effect: fn(api::LuaGame, api::LuaPowerCard),
+}
+
+#[allow(dead_code)]
+#[derive(LuaApiScript)]
+#[lua_api_script(description = "A mercenary passive script definition.")]
+struct MercenaryPassiveScript {
+    #[description("Base life total for the mercenary.")]
+    base_life: usize,
+    #[description("Initial mana pool size for the mercenary.")]
+    initial_mana: usize,
+    #[description("Runs when a match starts.")]
+    on_match_started: fn(api::LuaGame, PassiveGameEvent, api::LuaMercenary),
+    #[description("Runs after a bid is placed.")]
+    on_bid_placed: fn(api::LuaGame, PassiveGameEvent, api::LuaMercenary),
+    #[description("Runs when a power card is played.")]
+    on_power_card_played: fn(api::LuaGame, PassiveGameEvent, api::LuaMercenary),
+    #[description("Runs when a round starts.")]
+    on_round_start: fn(api::LuaGame, PassiveGameEvent, api::LuaMercenary),
+    #[description("Runs after a normal card is played.")]
+    on_turn_played: fn(api::LuaGame, PassiveGameEvent, api::LuaMercenary),
+    #[description("Runs when a round ends.")]
+    on_round_ended: fn(api::LuaGame, PassiveGameEvent, api::LuaMercenary),
+    #[description("Runs when a set starts.")]
+    on_set_started: fn(api::LuaGame, PassiveGameEvent, api::LuaMercenary),
+    #[description("Runs when a set ends.")]
+    on_set_ended: fn(api::LuaGame, PassiveGameEvent, api::LuaMercenary),
+}
+
 impl std::fmt::Debug for PassiveScriptInput {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PassiveScriptInput")
@@ -113,28 +148,27 @@ impl std::fmt::Debug for PassiveScriptInput {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, LuaApiEvent)]
 pub enum PassiveGameEvent {
+    #[lua_api_event(description = "Passive event emitted when a match starts.")]
     MatchStarted,
-    BidPlaced {
-        player_id: PlayerId,
-        bid: usize,
-    },
+    #[lua_api_event(description = "Passive event emitted after a bid is placed.")]
+    BidPlaced { player_id: PlayerId, bid: usize },
+    #[lua_api_event(description = "Passive event emitted after a power card is played.")]
     PowerCardPlayed {
         player_id: PlayerId,
         card_id: String,
         target_player_id: Option<PlayerId>,
     },
+    #[lua_api_event(description = "Passive event emitted when a round starts.")]
     RoundStart,
-    TurnPlayed {
-        player_id: PlayerId,
-        card: Card,
-    },
-    RoundEnded {
-        winner: PlayerId,
-        card: Card,
-    },
+    #[lua_api_event(description = "Passive event emitted after a normal card is played.")]
+    TurnPlayed { player_id: PlayerId, card: Card },
+    #[lua_api_event(description = "Passive event emitted when a round ends.")]
+    RoundEnded { winner: PlayerId, card: Card },
+    #[lua_api_event(description = "Passive event emitted when a set starts.")]
     SetStarted,
+    #[lua_api_event(description = "Passive event emitted when a set ends.")]
     SetEnded {
         lost_players: HashMap<PlayerId, usize>,
     },
@@ -143,14 +177,14 @@ pub enum PassiveGameEvent {
 impl PassiveGameEvent {
     pub(crate) fn handler_name(&self) -> &'static str {
         match self {
-            Self::MatchStarted => metadata::ON_MATCH_STARTED,
-            Self::BidPlaced { .. } => metadata::ON_BID_PLACED,
-            Self::PowerCardPlayed { .. } => metadata::ON_POWER_CARD_PLAYED,
-            Self::RoundStart => metadata::ON_ROUND_START,
-            Self::TurnPlayed { .. } => metadata::ON_TURN_PLAYED,
-            Self::RoundEnded { .. } => metadata::ON_ROUND_ENDED,
-            Self::SetStarted => metadata::ON_SET_STARTED,
-            Self::SetEnded { .. } => metadata::ON_SET_ENDED,
+            Self::MatchStarted => lua_codegen::passive_handler_name("match_started"),
+            Self::BidPlaced { .. } => lua_codegen::passive_handler_name("bid_placed"),
+            Self::PowerCardPlayed { .. } => lua_codegen::passive_handler_name("power_card_played"),
+            Self::RoundStart => lua_codegen::passive_handler_name("round_start"),
+            Self::TurnPlayed { .. } => lua_codegen::passive_handler_name("turn_played"),
+            Self::RoundEnded { .. } => lua_codegen::passive_handler_name("round_ended"),
+            Self::SetStarted => lua_codegen::passive_handler_name("set_started"),
+            Self::SetEnded { .. } => lua_codegen::passive_handler_name("set_ended"),
         }
     }
 
@@ -260,9 +294,11 @@ mod tests {
                 .collect::<HashMap<_, _>>(),
         ));
         let lua = runtime::create_lua().unwrap();
-        let globals = lua.globals();
-        let game =
-            api::build_game_api(players, input.draw_power_cards.clone(), input.current_trump);
+        let game = api::build_game_api(
+            Rc::clone(&players),
+            input.draw_power_cards.clone(),
+            input.current_trump,
+        );
         let card = api::build_power_card(&input);
         let mercenary = api::build_mercenary(&passive_input(
             player,
@@ -270,77 +306,144 @@ mod tests {
             input.players.clone(),
         ));
 
-        globals.set("game", game).unwrap();
-        globals.set("card", card).unwrap();
-        globals.set("mercenary", mercenary).unwrap();
-
-        for method in metadata::GAME_TYPE.methods {
-            let source = format!("return type(game.{})", method.name);
-            let lua_type: String = lua.load(source).eval().unwrap();
-            assert_eq!(lua_type, "function", "{} should be callable", method.name);
+        for name in [
+            "get_lives",
+            "get_current_trump",
+            "add_lives",
+            "set_lives",
+            "get_bid",
+            "add_bids",
+            "get_rounds",
+            "get_mana",
+            "get_max_mana",
+            "get_mana_pool",
+            "add_mana",
+            "set_mana",
+            "set_max_mana",
+            "get_cards",
+            "switch_cards",
+            "get_power_cards",
+            "steal_power_card",
+            "draw_power_cards",
+            "player_ids",
+        ] {
+            let source = format!("return function(game) return type(game.{name}) end");
+            let check: mlua::Function = lua.load(source).eval().unwrap();
+            let lua_type: String = check.call(game.clone()).unwrap();
+            assert_eq!(lua_type, "function", "{name} should be callable");
         }
 
-        for field in metadata::POWER_CARD_TYPE.fields {
-            let source = format!("return card.{} ~= nil", field.name);
-            let _: bool = lua.load(source).eval().unwrap();
+        for name in ["id", "mana_cost", "owner_id", "target_player_id"] {
+            let source = format!("return function(card) return card.{name} ~= nil end");
+            let check: mlua::Function = lua.load(source).eval().unwrap();
+            let _: bool = check.call(card.clone()).unwrap();
         }
 
-        for method in metadata::POWER_CARD_TYPE.methods {
-            let source = format!("return type(card.{})", method.name);
-            let lua_type: String = lua.load(source).eval().unwrap();
-            assert_eq!(lua_type, "function", "{} should be callable", method.name);
-        }
+        let name = "add_mana_cost";
+        let source = format!("return function(card) return type(card.{name}) end");
+        let check: mlua::Function = lua.load(source).eval().unwrap();
+        let lua_type: String = check.call(card.clone()).unwrap();
+        assert_eq!(lua_type, "function", "{name} should be callable");
 
-        for field in metadata::MERCENARY_TYPE.fields {
-            let source = format!("return mercenary.{} ~= nil", field.name);
-            let _: bool = lua.load(source).eval().unwrap();
+        let card_state = api::LuaPowerCardState::with_context(
+            &ScriptPowerCardState {
+                id: "state_card".to_string(),
+                name: "State Card".to_string(),
+                description: "A test card".to_string(),
+                mana_cost: 1,
+                card_type: PowerCardType::Instant,
+                image_url: None,
+                usable: true,
+            },
+            Rc::clone(&players),
+            "P1",
+        );
+        let check: mlua::Function = lua
+            .load("return function(card_state) return type(card_state.set_usable) end")
+            .eval()
+            .unwrap();
+        let lua_type: String = check.call(card_state).unwrap();
+        assert_eq!(lua_type, "function", "set_usable should be callable");
+
+        for name in ["id", "owner_id", "base_life", "initial_mana"] {
+            let source = format!("return function(mercenary) return mercenary.{name} ~= nil end");
+            let check: mlua::Function = lua.load(source).eval().unwrap();
+            let _: bool = check.call(mercenary.clone()).unwrap();
         }
 
         let card_fields_ok: bool = lua
             .load(
-                r#"
+                r#"return function(game)
                 local cards = game.get_cards("P1")
                 return #cards == 0
-                "#,
+            end"#,
             )
-            .eval()
+            .eval::<mlua::Function>()
+            .unwrap()
+            .call(game)
             .unwrap();
         assert!(card_fields_ok);
 
-        lua.load(power_lua_api::generate::render_definitions())
+        lua.load(lua_codegen::render_definitions())
             .set_name("fodinha.d.lua")
             .exec()
             .unwrap();
-        lua.load(power_lua_api::generate::render_power_card_template())
+        lua.load(super::lua_codegen::render_power_card_template())
             .set_name("power-card-template.lua")
             .exec()
             .unwrap();
-        lua.load(power_lua_api::generate::render_mercenary_passive_template())
+        lua.load(super::lua_codegen::render_mercenary_passive_template())
             .set_name("mercenary-passive-template.lua")
             .exec()
             .unwrap();
 
-        validate_power_card_script(
-            power_lua_api::generate::render_power_card_template(),
-            "template",
-        )
-        .unwrap();
+        validate_power_card_script(super::lua_codegen::render_power_card_template(), "template")
+            .unwrap();
         validate_mercenary_passive_script(
-            power_lua_api::generate::render_mercenary_passive_template(),
+            super::lua_codegen::render_mercenary_passive_template(),
             "template",
         )
         .unwrap();
     }
 
     #[test]
-    fn generated_files_are_embedded() {
-        assert!(FODINHA_LUA_DEFINITIONS.contains("---@class Game"));
+    fn typed_definitions_are_generated() {
+        let definitions = lua_codegen::render_definitions();
+        assert!(definitions.starts_with("---@meta\n\n"));
+        assert!(definitions.contains("---@class Game"));
+        assert!(definitions.contains(
+            "---@field get_lives fun(self: Game, player_id: PlayerId): integer"
+        ));
+        assert!(definitions.contains(
+            "---@field get_cards fun(self: Game, player_id: PlayerId): Card[]"
+        ));
+        assert!(definitions.contains(
+            "---@field get_power_cards fun(self: Game, player_id: PlayerId): PowerCardState[]"
+        ));
+        assert!(definitions.contains("---@field get_current_trump fun(self: Game): Rank"));
+        assert!(definitions.contains(
+            "---@field add_mana_cost fun(self: PowerCard, delta: integer): integer"
+        ));
+        assert!(definitions.contains(
+            "---@field set_usable fun(self: PowerCardState, usable: boolean)"
+        ));
+        assert!(definitions.contains("---@field rank Rank"));
+        assert!(definitions.contains("---@field suit Suit"));
+        assert!(definitions.contains("---@field type PowerCardType"));
+        assert!(definitions.contains("---@field type \"bid_placed\""));
+        assert!(definitions.contains(
+            "---@field on_match_started? fun(game: Game, event: MatchStartedEvent, mercenary: Mercenary)"
+        ));
+        assert!(!definitions.contains("_CLASS_"));
+        assert!(!definitions.contains("LuaCard"));
+        assert!(!definitions.contains("game = nil"));
+        assert!(!definitions.contains("card = nil"));
+        assert!(!definitions.contains("mercenary = nil"));
+        assert!(!definitions.contains("event = nil"));
+        assert!(lua_codegen::render_power_card_template().contains("PowerCardScript"));
         assert!(
-            FODINHA_LUA_DEFINITIONS
-                .contains("---@field add_mana_cost fun(self: PowerCard, delta: integer): integer")
+            lua_codegen::render_mercenary_passive_template().contains("MercenaryPassiveScript")
         );
-        assert!(POWER_CARD_TEMPLATE.contains("PowerCardScript"));
-        assert!(MERCENARY_PASSIVE_TEMPLATE.contains("MercenaryPassiveScript"));
     }
 
     #[test]

@@ -4,8 +4,7 @@ use std::{
     rc::Rc,
 };
 
-use mlua::{HookTriggers, Lua, LuaOptions, StdLib, Value, VmState};
-use power_lua_api::metadata;
+use mlua_extras::mlua::{self, HookTriggers, Lua, LuaOptions, StdLib, Value, VmState};
 
 use crate::models::id::PlayerId;
 
@@ -74,7 +73,7 @@ fn validate_power_card_table(
 
         match key.to_str()?.as_ref() {
             "effect" | "type" | "mana_cost" | "quantity" => {}
-            key if metadata::PASSIVE_EVENT_HANDLERS.contains(&key) => {
+            key if super::lua_codegen::is_passive_handler(key) => {
                 if !matches!(table.get::<Value>(key)?, Value::Function(_)) {
                     return Err(mlua::Error::external(format!(
                         "power card event handler {key} must be a function"
@@ -100,7 +99,8 @@ fn validate_power_card_table(
 
 fn validate_passive_table(table: &mlua::Table) -> Result<MercenaryPassiveDefinition, mlua::Error> {
     let base_life = positive_integer_field(table, "base_life")?;
-    let initial_mana = non_negative_integer_field(table, "initial_mana")?;
+    let initial_mana =
+        non_negative_integer_field(table, "initial_mana")?;
 
     for pair in table.clone().pairs::<Value, Value>() {
         let (key, value) = pair?;
@@ -111,11 +111,14 @@ fn validate_passive_table(table: &mlua::Table) -> Result<MercenaryPassiveDefinit
         };
         let key = key.to_str()?;
 
-        if matches!(key.as_ref(), "base_life" | "initial_mana") {
+        if matches!(
+            key.as_ref(),
+            "base_life" | "initial_mana"
+        ) {
             continue;
         }
 
-        if !metadata::PASSIVE_EVENT_HANDLERS.contains(&key.as_ref()) {
+        if !super::lua_codegen::is_passive_handler(key.as_ref()) {
             return Err(mlua::Error::external(format!(
                 "unsupported passive event handler: {key}"
             )));
@@ -140,16 +143,12 @@ pub fn run_power_card_script(
 ) -> Result<PowerScriptOutput, PowerScriptError> {
     let players = shared_players(&input.players);
     let lua = create_lua()?;
-    let globals = lua.globals();
     let game = api::build_game_api(
         Rc::clone(&players),
         input.draw_power_cards.clone(),
         input.current_trump,
     );
     let card = api::build_power_card(&input);
-
-    globals.set("game", game.clone())?;
-    globals.set("card", card.clone())?;
 
     if let Value::Table(table) = lua.load(script).set_name("power_card").eval()? {
         if let Some(event) = input.event.as_ref() {
@@ -185,7 +184,6 @@ pub fn run_passive_script(
 ) -> Result<PowerScriptOutput, PowerScriptError> {
     let players = shared_players(&input.players);
     let lua = create_lua()?;
-    let globals = lua.globals();
     let game = api::build_game_api(
         Rc::clone(&players),
         input.draw_power_cards.clone(),
@@ -193,10 +191,6 @@ pub fn run_passive_script(
     );
     let event = api::build_event_table(&lua, &input.event)?;
     let mercenary = api::build_mercenary(&input);
-
-    globals.set("game", game.clone())?;
-    globals.set("event", event.clone())?;
-    globals.set("mercenary", mercenary.clone())?;
 
     if let Value::Table(table) = lua.load(script).set_name("mercenary_passive").eval()? {
         let handler: Value = table.get(input.event.handler_name())?;
@@ -223,10 +217,12 @@ pub(crate) fn create_lua() -> Result<Lua, mlua::Error> {
 
 fn register_power_card_type_enum(lua: &Lua) -> Result<(), mlua::Error> {
     let enum_table = lua.create_table()?;
-    enum_table.set("Instant", metadata::POWER_CARD_TYPE_VALUES[0])?;
-    enum_table.set("Targetable", metadata::POWER_CARD_TYPE_VALUES[1])?;
-    enum_table.set("Interactive", metadata::POWER_CARD_TYPE_VALUES[2])?;
-    lua.globals().set("PowerCardType", enum_table)?;
+    let definition = super::lua_codegen::enum_definition("PowerCardType");
+    for variant in definition.variants {
+        enum_table.set(variant.name, variant.value)?;
+    }
+    lua.globals()
+        .set(definition.name, enum_table)?;
 
     Ok(())
 }

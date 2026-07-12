@@ -1,6 +1,8 @@
 use std::sync::Arc;
 
-#[derive(Debug, PartialEq, Eq, Hash, Clone)]
+use lua_api_derive::LuaApiScalar;
+
+#[derive(Debug, PartialEq, Eq, Hash, Clone, LuaApiScalar)]
 pub struct PlayerId(pub Arc<str>);
 
 impl<'de> serde::Deserialize<'de> for PlayerId {

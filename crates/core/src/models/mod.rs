@@ -4,6 +4,7 @@ pub mod id;
 pub mod lobby;
 pub mod util;
 
+use lua_api_derive::LuaApiEnum;
 use serde::{Deserialize, Serialize};
 use strum::IntoEnumIterator;
 
@@ -80,7 +81,19 @@ impl Card {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, EnumIter, Clone, Copy, PartialEq, PartialOrd, Eq, Ord)]
+#[derive(
+    Debug,
+    Serialize,
+    Deserialize,
+    EnumIter,
+    Clone,
+    Copy,
+    PartialEq,
+    PartialOrd,
+    Eq,
+    Ord,
+    LuaApiEnum,
+)]
 pub enum Rank {
     Four,
     Five,
@@ -113,7 +126,9 @@ impl Rank {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, EnumIter, Clone, Copy, PartialEq, PartialOrd, Eq, Ord)]
+#[derive(
+    Debug, Serialize, Deserialize, EnumIter, Clone, Copy, PartialEq, PartialOrd, Eq, Ord, LuaApiEnum,
+)]
 pub enum Suit {
     Golds,
     Swords,

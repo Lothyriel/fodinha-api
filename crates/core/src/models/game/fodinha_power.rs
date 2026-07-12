@@ -6,6 +6,7 @@ use std::{
 };
 
 use indexmap::IndexMap;
+use mlua_extras::mlua;
 
 use crate::{
     models::{
@@ -139,13 +140,14 @@ impl From<ScriptManaState> for PlayerMana {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, lua_api_derive::LuaApiEnum)]
 #[serde(rename_all = "snake_case")]
 pub enum PowerCardType {
     Instant,
     Targetable,
     Interactive,
 }
+
 
 impl PowerCardType {
     pub fn needs_target(self) -> bool {
