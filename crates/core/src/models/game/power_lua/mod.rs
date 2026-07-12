@@ -8,7 +8,9 @@ use lua_api_derive::{LuaApiEvent, LuaApiScript};
 use mlua_extras::mlua;
 pub use runtime::{
     parse_mercenary_passive_definition, parse_power_card_script_definition, run_passive_script,
-    run_power_card_script, validate_mercenary_passive_script, validate_power_card_script,
+    run_power_card_script, validate_mercenary_passive_script,
+    validate_mercenary_passive_script_execution, validate_power_card_script,
+    validate_power_card_script_execution,
 };
 
 use crate::models::{
@@ -411,22 +413,25 @@ mod tests {
         let definitions = lua_codegen::render_definitions();
         assert!(definitions.starts_with("---@meta\n\n"));
         assert!(definitions.contains("---@class Game"));
-        assert!(definitions.contains(
-            "---@field get_lives fun(self: Game, player_id: PlayerId): integer"
-        ));
-        assert!(definitions.contains(
-            "---@field get_cards fun(self: Game, player_id: PlayerId): Card[]"
-        ));
+        assert!(
+            definitions
+                .contains("---@field get_lives fun(self: Game, player_id: PlayerId): integer")
+        );
+        assert!(
+            definitions
+                .contains("---@field get_cards fun(self: Game, player_id: PlayerId): Card[]")
+        );
         assert!(definitions.contains(
             "---@field get_power_cards fun(self: Game, player_id: PlayerId): PowerCardState[]"
         ));
         assert!(definitions.contains("---@field get_current_trump fun(self: Game): Rank"));
-        assert!(definitions.contains(
-            "---@field add_mana_cost fun(self: PowerCard, delta: integer): integer"
-        ));
-        assert!(definitions.contains(
-            "---@field set_usable fun(self: PowerCardState, usable: boolean)"
-        ));
+        assert!(
+            definitions
+                .contains("---@field add_mana_cost fun(self: PowerCard, delta: integer): integer")
+        );
+        assert!(
+            definitions.contains("---@field set_usable fun(self: PowerCardState, usable: boolean)")
+        );
         assert!(definitions.contains("---@field rank Rank"));
         assert!(definitions.contains("---@field suit Suit"));
         assert!(definitions.contains("---@field type PowerCardType"));

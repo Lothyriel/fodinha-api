@@ -2,15 +2,20 @@ use std::{
     cell::{Cell, RefCell},
     collections::HashMap,
     rc::Rc,
+    sync::Arc,
 };
 
 use mlua_extras::mlua::{self, HookTriggers, Lua, LuaOptions, StdLib, Value, VmState};
 
-use crate::models::id::PlayerId;
+use crate::models::{
+    Card, Rank, Suit,
+    id::{MercenaryId, PlayerId},
+};
 
 use super::{
-    MercenaryPassiveDefinition, PassiveScriptInput, PowerCardScriptDefinition, PowerScriptError,
-    PowerScriptInput, PowerScriptOutput, ScriptPlayerState, api,
+    MercenaryPassiveDefinition, PassiveGameEvent, PassiveScriptInput, PowerCardScriptDefinition,
+    PowerScriptError, PowerScriptInput, PowerScriptOutput, ScriptManaState, ScriptPlayerState,
+    ScriptPowerCardState, api,
 };
 
 const LUA_MEMORY_LIMIT_BYTES: usize = 256 * 1024;
@@ -21,8 +26,227 @@ pub fn validate_power_card_script(source: &str, path: &str) -> Result<(), mlua::
     parse_power_card_script_definition(source, path).map(|_| ())
 }
 
+/// Parse a script and execute its effect and every handler it declares with the
+/// same API/runtime used by a match. This is deliberately a smoke check: it
+/// catches runtime failures without trying to model every possible game state.
+pub fn validate_power_card_script_execution(source: &str, path: &str) -> Result<(), mlua::Error> {
+    let definition = parse_power_card_script_definition(source, path)
+        .map_err(|error| contextual_error(path, "definition", error))?;
+    let owner = PlayerId(Arc::from("validator-owner"));
+    let target = PlayerId(Arc::from("validator-target"));
+
+    run_power_card_script(
+        source,
+        smoke_power_input(&owner, Some(&target), definition.mana_cost, None),
+    )
+    .map_err(|error| contextual_error(path, "effect", error))?;
+
+    for handler in definition.event_handlers {
+        let event = smoke_event_for_handler(&handler, &owner, &target)?;
+        run_power_card_script(
+            source,
+            smoke_power_input(
+                &owner,
+                Some(&target),
+                definition.mana_cost,
+                Some((event, smoke_power_card_state())),
+            ),
+        )
+        .map_err(|error| contextual_error(path, &handler, error))?;
+    }
+
+    Ok(())
+}
+
 pub fn validate_mercenary_passive_script(source: &str, path: &str) -> Result<(), mlua::Error> {
     parse_mercenary_passive_definition(source, path).map(|_| ())
+}
+
+pub fn validate_mercenary_passive_script_execution(
+    source: &str,
+    path: &str,
+) -> Result<(), mlua::Error> {
+    let definition = parse_mercenary_passive_definition(source, path)
+        .map_err(|error| contextual_error(path, "definition", error))?;
+    let owner = PlayerId(std::sync::Arc::from("validator-owner"));
+    let target = PlayerId(std::sync::Arc::from("validator-target"));
+    let _mercenary_id = MercenaryId(std::sync::Arc::from("validator-mercenary"));
+
+    for handler in [
+        "on_match_started",
+        "on_bid_placed",
+        "on_power_card_played",
+        "on_round_start",
+        "on_turn_played",
+        "on_round_ended",
+        "on_set_started",
+        "on_set_ended",
+    ] {
+        if !handler_is_present(source, handler)? {
+            continue;
+        }
+        let event = smoke_event_for_handler(handler, &owner, &target)?;
+        run_passive_script(source, smoke_passive_input(&owner, definition, event))
+            .map_err(|error| contextual_error(path, handler, error))?;
+    }
+
+    Ok(())
+}
+
+fn contextual_error(path: &str, context: &str, error: impl std::fmt::Display) -> mlua::Error {
+    mlua::Error::external(format!("{path} {context} failed: {error}"))
+}
+
+fn handler_is_present(source: &str, handler: &str) -> Result<bool, mlua::Error> {
+    let lua = create_lua()?;
+    let table: mlua::Table = lua.load(source).set_name("handler-check").eval()?;
+    Ok(matches!(table.get::<Value>(handler)?, Value::Function(_)))
+}
+
+fn smoke_players(owner: &PlayerId, target: &PlayerId) -> HashMap<PlayerId, ScriptPlayerState> {
+    let card = Card::new(Rank::One, Suit::Clubs);
+    let power_card = ScriptPowerCardState {
+        id: "validator-power-card".to_string(),
+        name: "Validator card".to_string(),
+        description: "Smoke test card".to_string(),
+        mana_cost: 1,
+        card_type: crate::models::game::fodinha_power::PowerCardType::Instant,
+        image_url: None,
+        usable: true,
+    };
+    HashMap::from([
+        (
+            owner.clone(),
+            ScriptPlayerState {
+                lifes: 50,
+                bid: Some(1),
+                rounds: 1,
+                mana: ScriptManaState {
+                    current: 5,
+                    max: 10,
+                },
+                cards: vec![card],
+                power_cards: vec![power_card.clone()],
+            },
+        ),
+        (
+            target.clone(),
+            ScriptPlayerState {
+                lifes: 45,
+                bid: Some(2),
+                rounds: 2,
+                mana: ScriptManaState {
+                    current: 4,
+                    max: 10,
+                },
+                cards: vec![Card::new(Rank::Two, Suit::Golds)],
+                power_cards: vec![power_card],
+            },
+        ),
+    ])
+}
+
+fn smoke_draw(_: &str, count: usize) -> Result<Vec<ScriptPowerCardState>, String> {
+    Ok((0..count)
+        .map(|index| ScriptPowerCardState {
+            id: format!("drawn-{index}"),
+            name: "Drawn card".to_string(),
+            description: String::new(),
+            mana_cost: 1,
+            card_type: crate::models::game::fodinha_power::PowerCardType::Instant,
+            image_url: None,
+            usable: true,
+        })
+        .collect())
+}
+
+fn smoke_power_card_state() -> ScriptPowerCardState {
+    ScriptPowerCardState {
+        id: "validator-power-card".to_string(),
+        name: "Validator card".to_string(),
+        description: "Smoke test card".to_string(),
+        mana_cost: 1,
+        card_type: crate::models::game::fodinha_power::PowerCardType::Instant,
+        image_url: None,
+        usable: true,
+    }
+}
+
+fn smoke_power_input(
+    owner: &PlayerId,
+    target: Option<&PlayerId>,
+    mana_cost: usize,
+    event: Option<(PassiveGameEvent, ScriptPowerCardState)>,
+) -> PowerScriptInput {
+    let (event, card_state) =
+        event.map_or((None, None), |(event, state)| (Some(event), Some(state)));
+    PowerScriptInput {
+        card_id: "validator-card".to_string(),
+        mana_cost,
+        owner_id: owner.clone(),
+        target_player_id: target.cloned(),
+        players: smoke_players(owner, target.unwrap()),
+        draw_power_cards: Rc::new(smoke_draw),
+        event,
+        card_state,
+        current_trump: Rank::Four,
+    }
+}
+
+fn smoke_passive_input(
+    owner: &PlayerId,
+    definition: MercenaryPassiveDefinition,
+    event: PassiveGameEvent,
+) -> PassiveScriptInput {
+    let target = PlayerId(std::sync::Arc::from("validator-target"));
+    PassiveScriptInput {
+        mercenary_id: MercenaryId(std::sync::Arc::from("validator-mercenary")),
+        owner_id: owner.clone(),
+        base_life: definition.base_life,
+        initial_mana: definition.initial_mana,
+        event,
+        players: smoke_players(owner, &target),
+        draw_power_cards: Rc::new(smoke_draw),
+        current_trump: Rank::Four,
+    }
+}
+
+fn smoke_event_for_handler(
+    handler: &str,
+    owner: &PlayerId,
+    target: &PlayerId,
+) -> Result<PassiveGameEvent, mlua::Error> {
+    let card = Card::new(Rank::One, Suit::Clubs);
+    Ok(match handler {
+        "on_match_started" => PassiveGameEvent::MatchStarted,
+        "on_bid_placed" => PassiveGameEvent::BidPlaced {
+            player_id: owner.clone(),
+            bid: 1,
+        },
+        "on_power_card_played" => PassiveGameEvent::PowerCardPlayed {
+            player_id: owner.clone(),
+            card_id: "validator-card".into(),
+            target_player_id: Some(target.clone()),
+        },
+        "on_round_start" => PassiveGameEvent::RoundStart,
+        "on_turn_played" => PassiveGameEvent::TurnPlayed {
+            player_id: owner.clone(),
+            card,
+        },
+        "on_round_ended" => PassiveGameEvent::RoundEnded {
+            winner: owner.clone(),
+            card,
+        },
+        "on_set_started" => PassiveGameEvent::SetStarted,
+        "on_set_ended" => PassiveGameEvent::SetEnded {
+            lost_players: HashMap::from([(target.clone(), 1)]),
+        },
+        _ => {
+            return Err(mlua::Error::external(format!(
+                "unsupported handler {handler}"
+            )));
+        }
+    })
 }
 
 pub fn parse_power_card_script_definition(
@@ -99,8 +323,7 @@ fn validate_power_card_table(
 
 fn validate_passive_table(table: &mlua::Table) -> Result<MercenaryPassiveDefinition, mlua::Error> {
     let base_life = positive_integer_field(table, "base_life")?;
-    let initial_mana =
-        non_negative_integer_field(table, "initial_mana")?;
+    let initial_mana = non_negative_integer_field(table, "initial_mana")?;
 
     for pair in table.clone().pairs::<Value, Value>() {
         let (key, value) = pair?;
@@ -111,10 +334,7 @@ fn validate_passive_table(table: &mlua::Table) -> Result<MercenaryPassiveDefinit
         };
         let key = key.to_str()?;
 
-        if matches!(
-            key.as_ref(),
-            "base_life" | "initial_mana"
-        ) {
+        if matches!(key.as_ref(), "base_life" | "initial_mana") {
             continue;
         }
 
@@ -221,8 +441,7 @@ fn register_power_card_type_enum(lua: &Lua) -> Result<(), mlua::Error> {
     for variant in definition.variants {
         enum_table.set(variant.name, variant.value)?;
     }
-    lua.globals()
-        .set(definition.name, enum_table)?;
+    lua.globals().set(definition.name, enum_table)?;
 
     Ok(())
 }
@@ -354,4 +573,56 @@ fn set_limits(lua: &Lua) -> Result<(), mlua::Error> {
     )?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn execution_validation_accepts_generated_templates() {
+        validate_power_card_script_execution(
+            super::super::lua_codegen::render_power_card_template(),
+            "card.lua",
+        )
+        .unwrap();
+        validate_mercenary_passive_script_execution(
+            super::super::lua_codegen::render_mercenary_passive_template(),
+            "mercenary.lua",
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn execution_validation_reports_effect_and_handler_failures() {
+        let effect = r#"return { type = PowerCardType.Instant, mana_cost = 1, quantity = 1,
+            effect = function() error('effect boom') end }"#;
+        assert!(
+            validate_power_card_script_execution(effect, "card.lua")
+                .unwrap_err()
+                .to_string()
+                .contains("effect")
+        );
+
+        let handler = r#"return { base_life = 10, initial_mana = 1,
+            on_round_start = function() error('handler boom') end }"#;
+        assert!(
+            validate_mercenary_passive_script_execution(handler, "mercenary.lua")
+                .unwrap_err()
+                .to_string()
+                .contains("on_round_start")
+        );
+    }
+
+    #[test]
+    fn execution_validation_enforces_instruction_limit() {
+        let source = r#"return { type = PowerCardType.Instant, mana_cost = 1, quantity = 1,
+            effect = function() while true do end end }"#;
+        assert!(
+            validate_power_card_script_execution(source, "loop.lua")
+                .unwrap_err()
+                .to_string()
+                .contains("instruction limit")
+        );
+    }
 }

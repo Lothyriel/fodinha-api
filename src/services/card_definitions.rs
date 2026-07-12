@@ -178,6 +178,8 @@ impl CardDefinitionsService {
             let script = String::from_utf8(script)
                 .map_err(|error| CardDefinitionError::Script(error.to_string()))?;
 
+            power_lua::validate_power_card_script_execution(&script, &card.script_object_key)
+                .map_err(|error| CardDefinitionError::Script(error.to_string()))?;
             definitions.push(self.definition_input(&card, script)?);
         }
 
@@ -273,6 +275,8 @@ impl CardDefinitionsService {
         let script_definition =
             power_lua::parse_power_card_script_definition(&script, &script_object_key)
                 .map_err(|error| CardDefinitionError::Script(error.to_string()))?;
+        power_lua::validate_power_card_script_execution(&script, &script_object_key)
+            .map_err(|error| CardDefinitionError::Script(error.to_string()))?;
 
         let definition = PowerCardDefinitionInput {
             id: card_id.clone(),
@@ -340,7 +344,7 @@ impl CardDefinitionsService {
         let script = String::from_utf8(input.script)
             .map_err(|error| CardDefinitionError::Script(error.to_string()))?;
 
-        power_lua::parse_power_card_script_definition(&script, &script_object_key)
+        power_lua::validate_power_card_script_execution(&script, &script_object_key)
             .map_err(|error| CardDefinitionError::Script(error.to_string()))?;
 
         tokio::try_join!(
@@ -415,6 +419,8 @@ impl CardDefinitionsService {
         let script_definition =
             power_lua::parse_power_card_script_definition(&script, &script_object_key)
                 .map_err(|error| CardDefinitionError::Script(error.to_string()))?;
+        power_lua::validate_power_card_script_execution(&script, &script_object_key)
+            .map_err(|error| CardDefinitionError::Script(error.to_string()))?;
 
         let definition = PowerCardDefinitionInput {
             id: card_id.clone(),
@@ -531,6 +537,8 @@ impl CardDefinitionsService {
         let script_definition =
             power_lua::parse_power_card_script_definition(&script, &script_object_key)
                 .map_err(|error| CardDefinitionError::Script(error.to_string()))?;
+        power_lua::validate_power_card_script_execution(&script, &script_object_key)
+            .map_err(|error| CardDefinitionError::Script(error.to_string()))?;
 
         if let Some(image) = input.image {
             if image.is_empty() {

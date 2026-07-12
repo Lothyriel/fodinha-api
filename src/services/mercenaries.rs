@@ -97,6 +97,12 @@ impl MercenariesService {
             let script = String::from_utf8(script)
                 .map_err(|error| MercenaryError::Script(error.to_string()))?;
 
+            power_lua::validate_mercenary_passive_script_execution(
+                &script,
+                &mercenary.passive_script_object_key,
+            )
+            .map_err(|error| MercenaryError::Script(error.to_string()))?;
+
             definitions.push(mercenary_definition_input(&mercenary, script)?);
         }
 
@@ -138,7 +144,7 @@ impl MercenariesService {
         let icon_object_key = mercenary_icon_object_key(&normalized.mercenary_id);
         let script_object_key = mercenary_passive_script_object_key(&normalized.mercenary_id);
 
-        power_lua::validate_mercenary_passive_script(&script, &script_object_key)
+        power_lua::validate_mercenary_passive_script_execution(&script, &script_object_key)
             .map_err(|error| MercenaryError::Script(error.to_string()))?;
 
         tokio::try_join!(
@@ -214,7 +220,7 @@ impl MercenariesService {
             }
         };
 
-        power_lua::validate_mercenary_passive_script(&script, &script_object_key)
+        power_lua::validate_mercenary_passive_script_execution(&script, &script_object_key)
             .map_err(|error| MercenaryError::Script(error.to_string()))?;
 
         if let Some(banner) = normalized.banner {

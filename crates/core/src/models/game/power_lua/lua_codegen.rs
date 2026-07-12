@@ -107,13 +107,7 @@ fn render_types() -> String {
             let name = index_name(name);
             if method_names.contains(&name) || is_method_name(registration.name, &name) {
                 if let Type::Function { params, returns } = &field.ty {
-                    render_function_method(
-                        &mut output,
-                        registration.name,
-                        &name,
-                        params,
-                        returns,
-                    );
+                    render_function_method(&mut output, registration.name, &name, params, returns);
                 }
                 continue;
             }

@@ -82,17 +82,7 @@ impl Card {
 }
 
 #[derive(
-    Debug,
-    Serialize,
-    Deserialize,
-    EnumIter,
-    Clone,
-    Copy,
-    PartialEq,
-    PartialOrd,
-    Eq,
-    Ord,
-    LuaApiEnum,
+    Debug, Serialize, Deserialize, EnumIter, Clone, Copy, PartialEq, PartialOrd, Eq, Ord, LuaApiEnum,
 )]
 pub enum Rank {
     Four,

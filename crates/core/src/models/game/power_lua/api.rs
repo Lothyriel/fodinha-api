@@ -450,7 +450,9 @@ impl LuaGame {
             lua,
             self,
             2,
-            |_, this, (player_id, lifes): (String, i64)| this.set_lives_for_player(&player_id, lifes),
+            |_, this, (player_id, lifes): (String, i64)| {
+                this.set_lives_for_player(&player_id, lifes)
+            },
         )
     }
 
@@ -467,7 +469,9 @@ impl LuaGame {
             lua,
             self,
             2,
-            |_, this, (player_id, bid_count): (String, i64)| this.add_bids_for_player(&player_id, bid_count),
+            |_, this, (player_id, bid_count): (String, i64)| {
+                this.add_bids_for_player(&player_id, bid_count)
+            },
         )
     }
 
@@ -505,7 +509,9 @@ impl LuaGame {
             lua,
             self,
             2,
-            |_, this, (player_id, delta): (String, i64)| this.adjust_mana_for_player(&player_id, delta),
+            |_, this, (player_id, delta): (String, i64)| {
+                this.adjust_mana_for_player(&player_id, delta)
+            },
         )
     }
 
@@ -517,10 +523,7 @@ impl LuaGame {
     }
 
     #[getter("set_max_mana")]
-    fn set_max_mana_field(
-        &self,
-        lua: &Lua,
-    ) -> mlua::Result<TypedFunction<(String, i64), usize>> {
+    fn set_max_mana_field(&self, lua: &Lua) -> mlua::Result<TypedFunction<(String, i64), usize>> {
         game_function(lua, self, 2, |_, this, (player_id, mana): (String, i64)| {
             this.set_max_mana_for_player(&player_id, mana)
         })
@@ -588,7 +591,9 @@ impl LuaGame {
             lua,
             self,
             2,
-            |_, this, (player_id, count): (String, i64)| this.draw_power_cards_for_player(&player_id, count),
+            |_, this, (player_id, count): (String, i64)| {
+                this.draw_power_cards_for_player(&player_id, count)
+            },
         )
     }
 
@@ -937,7 +942,6 @@ fn power_cards_to_lua_vec(
         .map(|card| LuaPowerCardState::with_context(card, Rc::clone(&players), owner_id))
         .collect()
 }
-
 
 fn unknown_player(player_id: &str) -> mlua::Error {
     mlua::Error::external(format!("unknown player_id: {player_id}"))
