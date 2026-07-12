@@ -185,8 +185,6 @@ impl CardDefinitionsRepository {
 pub struct CardDefinitionAssetDto {
     pub asset_id: CardId,
     pub creator_id: PlayerId,
-    pub image_object_key: String,
-    pub script_object_key: String,
     pub status: CardDefinitionAssetStatus,
     pub created_at: i64,
 }
@@ -238,9 +236,6 @@ pub struct CardDefinitionDto {
     pub card_type: PowerCardType,
     pub creator_id: PlayerId,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub image_object_key: Option<String>,
-    pub script_object_key: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub image_content_type: Option<String>,
     pub active: bool,
     pub created_at: i64,
@@ -260,8 +255,6 @@ impl CardDefinitionDto {
             mana_cost: input.mana_cost,
             card_type: input.card_type,
             creator_id: input.creator_id,
-            image_object_key: input.image_object_key,
-            script_object_key: input.script_object_key,
             image_content_type: input.image_content_type,
             active: true,
             created_at: now,
@@ -283,7 +276,74 @@ pub struct NewCardDefinition {
     pub mana_cost: usize,
     pub card_type: PowerCardType,
     pub creator_id: PlayerId,
-    pub image_object_key: Option<String>,
-    pub script_object_key: String,
     pub image_content_type: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::{
+        CardDefinitionAssetDto, CardDefinitionAssetStatus, CardDefinitionDto, CardDefinitionKind,
+        NewCardDefinition,
+    };
+    use crate::models::{
+        game::fodinha_power::PowerCardType,
+        id::{CardId, PlayerId},
+    };
+
+    fn card() -> CardDefinitionDto {
+        CardDefinitionDto::new(NewCardDefinition {
+            card_id: CardId(Arc::from("card-1")),
+            kind: CardDefinitionKind::Community,
+            name: "Card".to_string(),
+            description: "Description".to_string(),
+            life: None,
+            mana_cost: 1,
+            card_type: PowerCardType::Instant,
+            creator_id: PlayerId(Arc::from("creator")),
+            image_content_type: Some("image/png".to_string()),
+        })
+    }
+
+    fn asset() -> CardDefinitionAssetDto {
+        CardDefinitionAssetDto {
+            asset_id: CardId(Arc::from("asset-1")),
+            creator_id: PlayerId(Arc::from("creator")),
+            status: CardDefinitionAssetStatus::Pending,
+            created_at: 1,
+        }
+    }
+
+    #[test]
+    fn card_and_asset_serialization_do_not_store_object_keys() {
+        let card = serde_json::to_value(card()).unwrap();
+        let asset = serde_json::to_value(asset()).unwrap();
+
+        assert!(!card.as_object().unwrap().contains_key("image_object_key"));
+        assert!(!card.as_object().unwrap().contains_key("script_object_key"));
+        assert!(!asset.as_object().unwrap().contains_key("image_object_key"));
+        assert!(!asset.as_object().unwrap().contains_key("script_object_key"));
+    }
+
+    #[test]
+    fn legacy_object_keys_are_ignored_and_not_rewritten() {
+        let mut value = serde_json::to_value(card()).unwrap();
+        let object = value.as_object_mut().unwrap();
+        object.insert(
+            "image_object_key".to_string(),
+            serde_json::json!("legacy/card.png"),
+        );
+        object.insert(
+            "script_object_key".to_string(),
+            serde_json::json!("legacy/effect.lua"),
+        );
+
+        let decoded: CardDefinitionDto = serde_json::from_value(value).unwrap();
+        let rewritten = serde_json::to_value(decoded).unwrap();
+        let rewritten = rewritten.as_object().unwrap();
+
+        assert!(!rewritten.contains_key("image_object_key"));
+        assert!(!rewritten.contains_key("script_object_key"));
+    }
 }

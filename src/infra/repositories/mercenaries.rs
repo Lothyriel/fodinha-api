@@ -106,12 +106,7 @@ pub struct MercenaryDto {
     pub temper: String,
     pub creator_id: PlayerId,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub banner_object_key: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub icon_object_key: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub icon_content_type: Option<String>,
-    pub passive_script_object_key: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub banner_content_type: Option<String>,
     pub active: bool,
@@ -131,10 +126,7 @@ impl MercenaryDto {
             style: input.style,
             temper: input.temper,
             creator_id: input.creator_id,
-            banner_object_key: input.banner_object_key,
-            icon_object_key: input.icon_object_key,
             icon_content_type: input.icon_content_type,
-            passive_script_object_key: input.passive_script_object_key,
             banner_content_type: input.banner_content_type,
             active: true,
             created_at: now,
@@ -151,9 +143,64 @@ pub struct NewMercenary {
     pub style: String,
     pub temper: String,
     pub creator_id: PlayerId,
-    pub banner_object_key: Option<String>,
-    pub icon_object_key: Option<String>,
     pub icon_content_type: Option<String>,
-    pub passive_script_object_key: String,
     pub banner_content_type: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::{MercenaryDto, NewMercenary};
+    use crate::models::id::{MercenaryId, PlayerId};
+
+    fn mercenary() -> MercenaryDto {
+        MercenaryDto::new(NewMercenary {
+            mercenary_id: MercenaryId(Arc::from("mercenary-1")),
+            name: "Mercenary".to_string(),
+            subtitle: "Subtitle".to_string(),
+            description: "Description".to_string(),
+            style: "Bid".to_string(),
+            temper: "Aggressive".to_string(),
+            creator_id: PlayerId(Arc::from("creator")),
+            icon_content_type: Some("image/png".to_string()),
+            banner_content_type: Some("image/png".to_string()),
+        })
+    }
+
+    #[test]
+    fn mercenary_serialization_does_not_store_object_keys() {
+        let value = serde_json::to_value(mercenary()).unwrap();
+        let object = value.as_object().unwrap();
+
+        assert!(!object.contains_key("banner_object_key"));
+        assert!(!object.contains_key("icon_object_key"));
+        assert!(!object.contains_key("passive_script_object_key"));
+    }
+
+    #[test]
+    fn legacy_object_keys_are_ignored_and_not_rewritten() {
+        let mut value = serde_json::to_value(mercenary()).unwrap();
+        let object = value.as_object_mut().unwrap();
+        object.insert(
+            "banner_object_key".to_string(),
+            serde_json::json!("legacy/banner.png"),
+        );
+        object.insert(
+            "icon_object_key".to_string(),
+            serde_json::json!("legacy/icon.png"),
+        );
+        object.insert(
+            "passive_script_object_key".to_string(),
+            serde_json::json!("legacy/passive.lua"),
+        );
+
+        let decoded: MercenaryDto = serde_json::from_value(value).unwrap();
+        let rewritten = serde_json::to_value(decoded).unwrap();
+        let rewritten = rewritten.as_object().unwrap();
+
+        assert!(!rewritten.contains_key("banner_object_key"));
+        assert!(!rewritten.contains_key("icon_object_key"));
+        assert!(!rewritten.contains_key("passive_script_object_key"));
+    }
 }
