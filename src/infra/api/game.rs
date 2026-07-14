@@ -18,7 +18,10 @@ use crate::{
     },
     services::{
         ManagerError,
-        matches::{ManagerHandle, OutboundMessage, PlayerReceiver, PlayerSender},
+        matches::{
+            CommonOutboundMessage, ManagerHandle, OutboundMessage, OutboundPayload, PlayerReceiver,
+            PlayerSender,
+        },
     },
 };
 
@@ -145,7 +148,12 @@ impl PlayerConnection {
                     };
 
                     match msg {
-                        OutboundMessage::Close { code, reason } => {
+                        OutboundMessage::Public(OutboundPayload::Common(
+                            CommonOutboundMessage::Close { code, reason },
+                        ))
+                        | OutboundMessage::SinglePlayer(OutboundPayload::Common(
+                            CommonOutboundMessage::Close { code, reason },
+                        )) => {
                             self.socket
                                 .send(Message::Close(Some(CloseFrame {
                                     code,

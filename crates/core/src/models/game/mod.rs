@@ -1,4 +1,5 @@
 pub mod fodinha_classic;
+pub mod fodinha_core;
 pub mod fodinha_power;
 pub mod power_lua;
 
@@ -13,97 +14,46 @@ use crate::{
         Card, GameError, Turn,
         id::{CardId, PlayerId},
     },
-    services::{GameInfoDto, GameStageDto, PlayerManaDto, PowerCardDto},
+    services::{GameInfoDetailsDto, GameInfoDto, GameStageDto, PlayerManaDto, PowerCardDto},
 };
 
 pub use fodinha_classic::{BiddingState, DealState, DealingMode, DeckShuffle, GameOutcome, NewSet};
 
 #[derive(Debug, Clone)]
-pub struct AppliedTurn {
-    pub state: DealState,
-    pub lifes: Option<HashMap<PlayerId, usize>>,
-    pub power_decks: Option<IndexMap<PlayerId, Vec<PowerCardDto>>>,
-    pub mana: Option<HashMap<PlayerId, PlayerManaDto>>,
-    pub deck_reveals: Vec<power_lua::DeckReveal>,
+pub enum AppliedGameChange {
+    FodinhaClassic(fodinha_classic::AppliedGameChange),
+    FodinhaPower(Box<fodinha_power::AppliedGameChange>),
 }
 
 #[derive(Debug, Clone)]
-pub enum AppliedGameChange {
-    BidPlaced {
-        player_id: PlayerId,
-        bid: usize,
-        state: BiddingState,
+pub enum AppliedGameStart {
+    FodinhaClassic {
+        decks: IndexMap<PlayerId, Vec<Card>>,
+        upcard: Card,
+        next: PlayerId,
+        possible_bids: Vec<usize>,
+    },
+    FodinhaPower {
+        decks: IndexMap<PlayerId, Vec<Card>>,
+        upcard: Card,
+        lifes: HashMap<PlayerId, usize>,
+        power_decks: IndexMap<PlayerId, Vec<PowerCardDto>>,
         mana: HashMap<PlayerId, PlayerManaDto>,
         deck_reveals: Vec<power_lua::DeckReveal>,
+        next: PlayerId,
+        possible_bids: Vec<usize>,
     },
-    TurnPlayed(AppliedTurn),
-    PowerCardPlayed(fodinha_power::PowerCardOutcome),
-    PowerPhaseSkipped(fodinha_power::PowerPhaseSkipOutcome),
 }
 
 impl From<fodinha_classic::AppliedGameChange> for AppliedGameChange {
     fn from(change: fodinha_classic::AppliedGameChange) -> Self {
-        match change {
-            fodinha_classic::AppliedGameChange::BidPlaced {
-                player_id,
-                bid,
-                state,
-            } => Self::BidPlaced {
-                player_id,
-                bid,
-                state,
-                mana: HashMap::new(),
-                deck_reveals: Vec::new(),
-            },
-            fodinha_classic::AppliedGameChange::TurnPlayed(state) => {
-                Self::TurnPlayed(AppliedTurn {
-                    state,
-                    lifes: None,
-                    power_decks: None,
-                    mana: None,
-                    deck_reveals: Vec::new(),
-                })
-            }
-        }
+        Self::FodinhaClassic(change)
     }
 }
 
 impl From<fodinha_power::AppliedGameChange> for AppliedGameChange {
     fn from(change: fodinha_power::AppliedGameChange) -> Self {
-        match change {
-            fodinha_power::AppliedGameChange::BidPlaced {
-                player_id,
-                bid,
-                state,
-                mana,
-                deck_reveals,
-            } => Self::BidPlaced {
-                player_id,
-                bid,
-                state,
-                mana,
-                deck_reveals,
-            },
-            fodinha_power::AppliedGameChange::TurnPlayed {
-                state,
-                lifes,
-                power_decks,
-                mana,
-                deck_reveals,
-            } => Self::TurnPlayed(AppliedTurn {
-                state,
-                lifes,
-                power_decks,
-                mana,
-                deck_reveals,
-            }),
-            fodinha_power::AppliedGameChange::PowerCardPlayed(outcome) => {
-                Self::PowerCardPlayed(outcome)
-            }
-            fodinha_power::AppliedGameChange::PowerPhaseSkipped(outcome) => {
-                Self::PowerPhaseSkipped(outcome)
-            }
-        }
+        Self::FodinhaPower(Box::new(change))
     }
 }
 
@@ -398,6 +348,85 @@ impl Game {
                     .map(GameEvent::FodinhaPower)
                     .map(MatchEvent::Game)
             }
+        }
+    }
+
+    pub fn from_start_event(
+        players: &[PlayerId],
+        event: GameEvent,
+        power_card_registry: fodinha_power::PowerCardRegistry,
+    ) -> Result<(Self, AppliedGameStart), GameError> {
+        match event {
+            GameEvent::FodinhaClassic(fodinha_classic::MatchEvent::GameStarted {
+                settings,
+                seed,
+            }) => {
+                let game = fodinha_classic::Game::from_started_with_seed(players, settings, seed)?;
+                let (decks, upcard) = game.get_decks();
+                let start = AppliedGameStart::FodinhaClassic {
+                    decks,
+                    upcard,
+                    next: game.get_bidding_player(),
+                    possible_bids: game.get_possible_bids(),
+                };
+
+                Ok((Self::FodinhaClassic(game), start))
+            }
+            GameEvent::FodinhaPower(fodinha_power::MatchEvent::GameStarted {
+                settings,
+                seed,
+                initial_mana,
+                draw_seed,
+                passive_effects,
+                ..
+            }) => {
+                let mut game = fodinha_power::Game::from_started(
+                    players,
+                    settings,
+                    seed,
+                    initial_mana,
+                    draw_seed,
+                    power_card_registry,
+                )?;
+                let (passive_mana, passive_power_decks) =
+                    game.apply_start_effects(&passive_effects);
+                let game = Self::FodinhaPower(game);
+                let mut decks = IndexMap::new();
+                let mut power_decks = IndexMap::new();
+                let mut mana = HashMap::new();
+                let mut upcard = None;
+
+                for player_id in players {
+                    let info = game.get_game_info(player_id);
+                    decks.insert(player_id.clone(), info.deck);
+                    upcard.get_or_insert(info.upcard);
+                    if let GameInfoDetailsDto::FodinhaPower { power_cards } = info.game {
+                        power_decks.insert(player_id.clone(), power_cards);
+                    }
+                    for player in info.info {
+                        let id = player.id.clone();
+                        if let Some(player_mana) = player.into_mana() {
+                            mana.insert(id, player_mana);
+                        }
+                    }
+                }
+
+                mana.extend(passive_mana);
+                power_decks.extend(passive_power_decks);
+                let start = AppliedGameStart::FodinhaPower {
+                    decks,
+                    upcard: upcard.expect("started game has an upcard"),
+                    lifes: passive_effects.lifes.clone(),
+                    power_decks,
+                    mana,
+                    deck_reveals: passive_effects.deck_reveals,
+                    next: game.get_bidding_player(),
+                    possible_bids: game.get_possible_bids(),
+                };
+
+                Ok((game, start))
+            }
+            _ => Err(GameError::InvalidStage),
         }
     }
 
@@ -843,5 +872,31 @@ mod tests {
         assert!(!payload.contains_key("set"));
         assert!(!payload.contains_key("decks"));
         assert!(!payload.contains_key("upcard"));
+    }
+
+    #[test]
+    fn facade_restores_classic_start_without_power_state() {
+        let players = vec![
+            PlayerId(Arc::from("player-1")),
+            PlayerId(Arc::from("player-2")),
+        ];
+        let event = GameEvent::FodinhaClassic(fodinha_classic::MatchEvent::GameStarted {
+            settings: fodinha_classic::GameSettings { lifes: 5 },
+            seed: 42,
+        });
+
+        let (game, start) =
+            Game::from_start_event(&players, event, fodinha_power::PowerCardRegistry::default())
+                .unwrap();
+
+        assert_eq!(game.game_type(), GameType::FodinhaClassic);
+        assert!(matches!(
+            start,
+            AppliedGameStart::FodinhaClassic {
+                ref decks,
+                possible_bids: ref bids,
+                ..
+            } if decks.len() == 2 && !bids.is_empty()
+        ));
     }
 }

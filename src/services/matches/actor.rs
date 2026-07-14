@@ -11,7 +11,7 @@ use crate::{
         Card, Game, GameError, GameOutcome, LobbyState,
         commands::GetLobbyDto,
         game::{
-            AppliedGameChange, AppliedTurn, BiddingState, GameEvent, GameSettings, GameType,
+            AppliedGameChange, AppliedGameStart, BiddingState, GameEvent, GameSettings, GameType,
             MatchEvent, fodinha_classic, fodinha_power, power_lua::DeckReveal,
         },
         id::{MatchId, MercenaryId, PlayerId},
@@ -20,8 +20,9 @@ use crate::{
     services::{
         LobbyError, ManagerError, PlayerManaDto, PowerCardDto,
         matches::{
-            MatchActorMessage, MatchEntries, MatchReceiver, MatchRegistry, OutboundMessage,
-            PlayerRoutes, PlayerSender, WAITING_LOBBY_INACTIVITY_CLOSE_CODE,
+            CommonOutboundMessage, FodinhaOutboundMessage, MatchActorMessage, MatchEntries,
+            MatchReceiver, MatchRegistry, OutboundMessage, OutboundPayload, PlayerRoutes,
+            PlayerSender, PowerOutboundMessage, WAITING_LOBBY_INACTIVITY_CLOSE_CODE,
             WAITING_LOBBY_INACTIVITY_CLOSE_REASON, project_match_metadata,
         },
         repositories::matches::{MatchMetadataDto, MatchesRepository},
@@ -64,16 +65,7 @@ enum AppliedEvent {
     None,
     PlayerJoined,
     PlayerStatusChanged,
-    GameStarted {
-        decks: IndexMap<PlayerId, Vec<Card>>,
-        upcard: Card,
-        lifes: Option<HashMap<PlayerId, usize>>,
-        power_decks: Option<IndexMap<PlayerId, Vec<PowerCardDto>>>,
-        mana: Option<HashMap<PlayerId, PlayerManaDto>>,
-        deck_reveals: Vec<DeckReveal>,
-        next: PlayerId,
-        possible_bids: Vec<usize>,
-    },
+    GameStarted(AppliedGameStart),
     Game(AppliedGameChange),
 }
 
@@ -325,7 +317,7 @@ impl MatchActor {
             self.touch_lobby_activity().await?;
         }
 
-        self.send_to_player(&player_id, OutboundMessage::Snapshot(snapshot))
+        self.send_to_player(&player_id, CommonOutboundMessage::Snapshot(snapshot))
             .await;
 
         Ok(())
@@ -361,7 +353,7 @@ impl MatchActor {
             .await?;
         self.apply_player_joined(player_id.clone())?;
         self.refresh_waiting_activity();
-        self.broadcast(OutboundMessage::PlayerJoined(player_id.clone()))
+        self.broadcast(CommonOutboundMessage::PlayerJoined(player_id.clone()))
             .await;
 
         Ok(self.lobby()?.get_info(&player_id))
@@ -421,7 +413,7 @@ impl MatchActor {
             .remove_metadata_player(&self.match_id, &player_id)
             .await?;
         self.apply_player_left(&player_id)?;
-        self.broadcast(OutboundMessage::PlayerLeft {
+        self.broadcast(CommonOutboundMessage::PlayerLeft {
             player_id: player_id.clone(),
         })
         .await;
@@ -474,7 +466,7 @@ impl MatchActor {
             .await?;
         self.apply_player_status_changed(&player_id, ready)?;
         self.refresh_waiting_activity();
-        let msg = OutboundMessage::PlayerStatusChange { player_id, ready };
+        let msg = CommonOutboundMessage::PlayerStatusChange { player_id, ready };
         self.broadcast(msg).await;
 
         if let Some((players, settings)) = self.start_game_data()? {
@@ -495,30 +487,42 @@ impl MatchActor {
                 }
             };
 
-            if let AppliedEvent::GameStarted {
-                decks,
-                upcard,
-                lifes,
-                power_decks,
-                mana,
-                next,
-                possible_bids,
-                deck_reveals,
-            } = applied
-            {
+            if let AppliedEvent::GameStarted(start) = applied {
                 self.refresh_empty_playing_activity();
                 self.broadcast_snapshots().await;
-                self.init_set(SetInitialization {
-                    decks,
-                    lifes,
-                    power_decks,
-                    mana,
-                    upcard,
-                    next,
-                    possible_bids,
-                })
-                .await;
-                self.send_deck_reveals(deck_reveals).await;
+                match start {
+                    AppliedGameStart::FodinhaClassic {
+                        decks,
+                        upcard,
+                        next,
+                        possible_bids,
+                    } => {
+                        self.init_classic_set(decks, upcard, next, possible_bids)
+                            .await;
+                    }
+                    AppliedGameStart::FodinhaPower {
+                        decks,
+                        upcard,
+                        lifes,
+                        power_decks,
+                        mana,
+                        deck_reveals,
+                        next,
+                        possible_bids,
+                    } => {
+                        self.init_set(SetInitialization {
+                            decks,
+                            lifes: Some(lifes),
+                            power_decks: Some(power_decks),
+                            mana: Some(mana),
+                            upcard,
+                            next,
+                            possible_bids,
+                        })
+                        .await;
+                        self.send_deck_reveals(deck_reveals).await;
+                    }
+                }
             }
         }
 
@@ -547,7 +551,7 @@ impl MatchActor {
             .await?;
         self.apply_player_mercenary_selected(&player_id, mercenary_id.clone())?;
         self.refresh_waiting_activity();
-        self.broadcast(OutboundMessage::PlayerMercenarySelected {
+        self.broadcast(CommonOutboundMessage::PlayerMercenarySelected {
             player_id,
             mercenary_id,
         })
@@ -579,19 +583,21 @@ impl MatchActor {
         let applied = self.persist_apply(event).await?;
 
         match applied {
-            AppliedEvent::Game(AppliedGameChange::BidPlaced {
-                player_id,
-                bid,
-                state,
-                mana,
-                deck_reveals,
-            }) => {
-                self.broadcast_bid(player_id, bid, state, mana, deck_reveals)
+            AppliedEvent::Game(AppliedGameChange::FodinhaClassic(
+                fodinha_classic::AppliedGameChange::BidPlaced {
+                    player_id,
+                    bid,
+                    state,
+                },
+            )) => {
+                self.broadcast_bid(player_id, bid, state, HashMap::new(), Vec::new())
                     .await;
                 Ok(ActorResult::Continue)
             }
-            AppliedEvent::Game(AppliedGameChange::TurnPlayed(turn)) => {
-                let ended = self.broadcast_turn(turn).await;
+            AppliedEvent::Game(AppliedGameChange::FodinhaClassic(
+                fodinha_classic::AppliedGameChange::TurnPlayed(state),
+            )) => {
+                let ended = self.broadcast_classic_turn(state).await;
 
                 if ended {
                     Ok(ActorResult::Stop)
@@ -599,24 +605,54 @@ impl MatchActor {
                     Ok(ActorResult::Continue)
                 }
             }
-            AppliedEvent::Game(AppliedGameChange::PowerCardPlayed(outcome)) => {
-                let ended = self.broadcast_power_card(outcome).await;
-
-                if ended {
-                    Ok(ActorResult::Stop)
-                } else {
+            AppliedEvent::Game(AppliedGameChange::FodinhaPower(change)) => match *change {
+                fodinha_power::AppliedGameChange::BidPlaced {
+                    player_id,
+                    bid,
+                    state,
+                    mana,
+                    deck_reveals,
+                } => {
+                    self.broadcast_bid(player_id, bid, state, mana, deck_reveals)
+                        .await;
                     Ok(ActorResult::Continue)
                 }
-            }
-            AppliedEvent::Game(AppliedGameChange::PowerPhaseSkipped(outcome)) => {
-                let ended = self.broadcast_power_phase_skip(outcome).await;
+                fodinha_power::AppliedGameChange::TurnPlayed {
+                    state,
+                    lifes,
+                    power_decks,
+                    mana,
+                    deck_reveals,
+                } => {
+                    let ended = self
+                        .broadcast_power_turn(state, lifes, power_decks, mana, deck_reveals)
+                        .await;
 
-                if ended {
-                    Ok(ActorResult::Stop)
-                } else {
-                    Ok(ActorResult::Continue)
+                    if ended {
+                        Ok(ActorResult::Stop)
+                    } else {
+                        Ok(ActorResult::Continue)
+                    }
                 }
-            }
+                fodinha_power::AppliedGameChange::PowerCardPlayed(outcome) => {
+                    let ended = self.broadcast_power_card(outcome).await;
+
+                    if ended {
+                        Ok(ActorResult::Stop)
+                    } else {
+                        Ok(ActorResult::Continue)
+                    }
+                }
+                fodinha_power::AppliedGameChange::PowerPhaseSkipped(outcome) => {
+                    let ended = self.broadcast_power_phase_skip(outcome).await;
+
+                    if ended {
+                        Ok(ActorResult::Stop)
+                    } else {
+                        Ok(ActorResult::Continue)
+                    }
+                }
+            },
             _ => unreachable!("game command must apply a game event"),
         }
     }
@@ -689,97 +725,21 @@ impl MatchActor {
 
                 Ok(AppliedEvent::PlayerStatusChanged)
             }
-            MatchEvent::Game(GameEvent::FodinhaClassic(
-                fodinha_classic::MatchEvent::GameStarted { settings, seed },
-            )) => {
-                let lobby = self.lobby_mut()?;
-                let players = lobby.get_players_id();
-                let game = Game::FodinhaClassic(
-                    fodinha_classic::Game::from_started_with_seed(&players, settings, seed)
-                        .map_err(|e| ManagerError::Lobby(LobbyError::GameError(e)))?,
-                );
-
-                let (decks, upcard) = initial_set_state(&game, &players);
-
-                lobby.state = LobbyState::Playing(game);
-
-                let game = match &lobby.state {
-                    LobbyState::Playing(game) => game,
-                    LobbyState::NotStarted(_) => unreachable!("game was just started"),
-                };
-
-                Ok(AppliedEvent::GameStarted {
-                    decks,
-                    upcard,
-                    lifes: None,
-                    power_decks: None,
-                    mana: None,
-                    deck_reveals: Vec::new(),
-                    next: game.get_bidding_player(),
-                    possible_bids: game.get_possible_bids(),
-                })
-            }
-            MatchEvent::Game(GameEvent::FodinhaPower(fodinha_power::MatchEvent::GameStarted {
-                settings,
-                seed,
-                initial_mana,
-                draw_seed,
-                passive_effects,
-                ..
-            })) => {
+            MatchEvent::Game(event)
+                if matches!(
+                    &event,
+                    GameEvent::FodinhaClassic(fodinha_classic::MatchEvent::GameStarted { .. })
+                        | GameEvent::FodinhaPower(fodinha_power::MatchEvent::GameStarted { .. })
+                ) =>
+            {
                 let power_card_registry = self.power_card_registry.snapshot();
                 let lobby = self.lobby_mut()?;
                 let players = lobby.get_players_id();
-                let mut power_game = fodinha_power::Game::from_started(
-                    &players,
-                    settings,
-                    seed,
-                    initial_mana,
-                    draw_seed,
-                    power_card_registry,
-                )
-                .map_err(|e| ManagerError::Lobby(LobbyError::GameError(e)))?;
-                let (passive_mana, passive_power_decks) =
-                    power_game.apply_start_effects(&passive_effects);
-                let game = Game::FodinhaPower(power_game);
-                let (decks, upcard) = initial_set_state(&game, &players);
-                let mut power_decks = IndexMap::new();
-                let mut mana = HashMap::new();
-                for player_id in &players {
-                    let info = game.get_game_info(player_id);
-                    if let Some(cards) = info.power_cards {
-                        power_decks.insert(player_id.clone(), cards);
-                    }
-                    for player in info.info {
-                        if let Some(player_mana) = player.mana {
-                            mana.insert(player.id, player_mana);
-                        }
-                    }
-                }
-                let lifes =
-                    (!passive_effects.lifes.is_empty()).then(|| passive_effects.lifes.clone());
-                let deck_reveals = passive_effects.deck_reveals.clone();
-
-                mana.extend(passive_mana);
-                power_decks.extend(passive_power_decks);
-
+                let (game, start) = Game::from_start_event(&players, event, power_card_registry)
+                    .map_err(|e| ManagerError::Lobby(LobbyError::GameError(e)))?;
                 lobby.state = LobbyState::Playing(game);
 
-                let game = match &lobby.state {
-                    LobbyState::Playing(game) => game,
-                    LobbyState::NotStarted(_) => unreachable!("game was just started"),
-                };
-
-                Ok(AppliedEvent::GameStarted {
-                    decks,
-                    upcard,
-                    lifes,
-                    power_decks: Some(power_decks),
-                    mana: Some(mana),
-                    deck_reveals,
-                    next: game.get_bidding_player(),
-                    possible_bids: game.get_possible_bids(),
-                })
+                Ok(AppliedEvent::GameStarted(start))
             }
             MatchEvent::Game(event) => {
                 let lobby = self.lobby_mut()?;
@@ -826,14 +786,14 @@ impl MatchActor {
         mana: HashMap<PlayerId, PlayerManaDto>,
         deck_reveals: Vec<DeckReveal>,
     ) {
-        let msg = OutboundMessage::PlayerBidded {
+        let msg = FodinhaOutboundMessage::PlayerBidded {
             player_id: player_id.clone(),
             bid,
         };
         self.broadcast(msg).await;
 
         if !mana.is_empty() {
-            self.broadcast(OutboundMessage::PlayersManaChanged(mana))
+            self.broadcast(PowerOutboundMessage::PlayersManaChanged(mana))
                 .await;
         }
 
@@ -842,7 +802,8 @@ impl MatchActor {
         if self.is_finished()
             && let Some(lifes) = self.current_lifes()
         {
-            self.broadcast(OutboundMessage::GameEnded { lifes }).await;
+            self.broadcast(FodinhaOutboundMessage::GameEnded { lifes })
+                .await;
             return;
         }
 
@@ -850,24 +811,23 @@ impl MatchActor {
             BiddingState::Active {
                 possible_bids,
                 next,
-            } => OutboundMessage::PlayerBiddingTurn {
+            } => FodinhaOutboundMessage::PlayerBiddingTurn {
                 player_id: next,
                 possible_bids,
-            },
+            }
+            .into(),
             BiddingState::Ended { next } => self
                 .current_phase_message()
-                .unwrap_or(OutboundMessage::PlayerTurn { player_id: next }),
+                .unwrap_or_else(|| FodinhaOutboundMessage::PlayerTurn { player_id: next }.into()),
         };
 
         self.broadcast(msg).await;
         self.refresh_power_hands().await;
     }
 
-    async fn broadcast_turn(&self, turn: AppliedTurn) -> bool {
-        let state = turn.state;
-        let msg = OutboundMessage::TurnPlayed { pile: state.pile };
-        self.broadcast(msg).await;
-        self.send_deck_reveals(turn.deck_reveals).await;
+    async fn broadcast_classic_turn(&self, state: crate::models::game::DealState) -> bool {
+        self.broadcast(FodinhaOutboundMessage::TurnPlayed { pile: state.pile })
+            .await;
 
         match state.outcome {
             GameOutcome::SetEnded {
@@ -877,14 +837,65 @@ impl MatchActor {
                 next,
                 possible,
             } => {
-                let msg = OutboundMessage::SetEnded { lifes };
+                self.broadcast(FodinhaOutboundMessage::SetEnded { lifes })
+                    .await;
+                self.init_classic_set(decks, upcard, next, possible).await;
+                false
+            }
+            GameOutcome::SetPending { next: _ } => {
+                if let Some(msg) = self.current_phase_message() {
+                    self.broadcast(msg).await;
+                }
+                false
+            }
+            GameOutcome::RoundEnded { rounds, next } => {
+                self.broadcast(FodinhaOutboundMessage::RoundEnded(rounds))
+                    .await;
+                self.broadcast(FodinhaOutboundMessage::PlayerTurn { player_id: next })
+                    .await;
+                false
+            }
+            GameOutcome::TurnPlayed { next } => {
+                self.broadcast(FodinhaOutboundMessage::PlayerTurn { player_id: next })
+                    .await;
+                false
+            }
+            GameOutcome::Ended { lifes } => {
+                self.broadcast(FodinhaOutboundMessage::GameEnded { lifes })
+                    .await;
+                true
+            }
+        }
+    }
+
+    async fn broadcast_power_turn(
+        &self,
+        state: crate::models::game::DealState,
+        changed_lifes: Option<HashMap<PlayerId, usize>>,
+        changed_power_decks: Option<IndexMap<PlayerId, Vec<PowerCardDto>>>,
+        changed_mana: Option<HashMap<PlayerId, PlayerManaDto>>,
+        deck_reveals: Vec<DeckReveal>,
+    ) -> bool {
+        let msg = FodinhaOutboundMessage::TurnPlayed { pile: state.pile };
+        self.broadcast(msg).await;
+        self.send_deck_reveals(deck_reveals).await;
+
+        match state.outcome {
+            GameOutcome::SetEnded {
+                lifes,
+                upcard,
+                decks,
+                next,
+                possible,
+            } => {
+                let msg = FodinhaOutboundMessage::SetEnded { lifes };
                 self.broadcast(msg).await;
 
                 self.init_set(SetInitialization {
                     decks,
-                    lifes: turn.lifes,
-                    power_decks: turn.power_decks,
-                    mana: turn.mana,
+                    lifes: changed_lifes,
+                    power_decks: changed_power_decks,
+                    mana: changed_mana,
                     upcard,
                     next,
                     possible_bids: possible,
@@ -901,22 +912,22 @@ impl MatchActor {
                 false
             }
             GameOutcome::RoundEnded { rounds, next } => {
-                let msg = OutboundMessage::RoundEnded(rounds);
+                let msg = FodinhaOutboundMessage::RoundEnded(rounds);
                 self.broadcast(msg).await;
 
-                let msg = OutboundMessage::PlayerTurn { player_id: next };
+                let msg = FodinhaOutboundMessage::PlayerTurn { player_id: next };
                 self.broadcast(msg).await;
 
                 false
             }
             GameOutcome::TurnPlayed { next } => {
-                let msg = OutboundMessage::PlayerTurn { player_id: next };
+                let msg = FodinhaOutboundMessage::PlayerTurn { player_id: next };
                 self.broadcast(msg).await;
 
                 false
             }
             GameOutcome::Ended { lifes } => {
-                let msg = OutboundMessage::GameEnded { lifes };
+                let msg = FodinhaOutboundMessage::GameEnded { lifes };
                 self.broadcast(msg).await;
 
                 true
@@ -931,7 +942,7 @@ impl MatchActor {
         let power_decks = outcome.power_decks.clone();
         let mana = outcome.mana.clone();
 
-        self.broadcast(OutboundMessage::PowerCardPlayed {
+        self.broadcast(PowerOutboundMessage::PowerCardPlayed {
             player_id: outcome.player_id,
             card: outcome.card,
             targets: outcome.targets,
@@ -942,19 +953,19 @@ impl MatchActor {
 
         if next_set.is_none() {
             if !mana.is_empty() {
-                self.broadcast(OutboundMessage::PlayersManaChanged(mana.clone()))
+                self.broadcast(PowerOutboundMessage::PlayersManaChanged(mana.clone()))
                     .await;
             }
 
             for (player_id, deck) in decks.clone() {
-                self.send_to_player(&player_id, OutboundMessage::PlayerDeck(deck))
+                self.send_to_player(&player_id, FodinhaOutboundMessage::PlayerDeck(deck))
                     .await;
             }
 
             for (player_id, deck) in power_decks.clone() {
                 self.send_to_player(
                     &player_id,
-                    OutboundMessage::PlayerPowerCards(
+                    PowerOutboundMessage::PlayerPowerCards(
                         self.authoritative_power_cards(&player_id, deck),
                     ),
                 )
@@ -963,15 +974,15 @@ impl MatchActor {
         }
 
         if let Some(next_set) = next_set {
-            self.broadcast(OutboundMessage::SetEnded {
+            self.broadcast(FodinhaOutboundMessage::SetEnded {
                 lifes: lifes.clone(),
             })
             .await;
 
-            if let Some(OutboundMessage::PlayerBiddingTurn {
+            if let Some(OutboundPayload::Fodinha(FodinhaOutboundMessage::PlayerBiddingTurn {
                 player_id: next,
                 possible_bids,
-            }) = self.current_phase_message()
+            })) = self.current_phase_message()
             {
                 self.init_set(SetInitialization {
                     decks: decks.into_iter().collect::<IndexMap<_, _>>(),
@@ -985,7 +996,8 @@ impl MatchActor {
                 .await;
             }
         } else if outcome.ended {
-            self.broadcast(OutboundMessage::GameEnded { lifes }).await;
+            self.broadcast(FodinhaOutboundMessage::GameEnded { lifes })
+                .await;
         } else if let Some(msg) = self.current_phase_message() {
             self.broadcast(msg).await;
             self.refresh_power_hands().await;
@@ -1005,7 +1017,7 @@ impl MatchActor {
         let mana = outcome.mana.clone();
 
         if !outcome.changed_lifes.is_empty() {
-            self.broadcast(OutboundMessage::PlayersLifesChanged(
+            self.broadcast(FodinhaOutboundMessage::PlayersLifesChanged(
                 outcome.changed_lifes.clone(),
             ))
             .await;
@@ -1015,19 +1027,19 @@ impl MatchActor {
 
         if next_set.is_none() {
             if !mana.is_empty() {
-                self.broadcast(OutboundMessage::PlayersManaChanged(mana.clone()))
+                self.broadcast(PowerOutboundMessage::PlayersManaChanged(mana.clone()))
                     .await;
             }
 
             for (player_id, deck) in decks.clone() {
-                self.send_to_player(&player_id, OutboundMessage::PlayerDeck(deck))
+                self.send_to_player(&player_id, FodinhaOutboundMessage::PlayerDeck(deck))
                     .await;
             }
 
             for (player_id, deck) in power_decks.clone() {
                 self.send_to_player(
                     &player_id,
-                    OutboundMessage::PlayerPowerCards(
+                    PowerOutboundMessage::PlayerPowerCards(
                         self.authoritative_power_cards(&player_id, deck),
                     ),
                 )
@@ -1036,15 +1048,15 @@ impl MatchActor {
         }
 
         if let Some(next_set) = next_set {
-            self.broadcast(OutboundMessage::SetEnded {
+            self.broadcast(FodinhaOutboundMessage::SetEnded {
                 lifes: lifes.clone(),
             })
             .await;
 
-            if let Some(OutboundMessage::PlayerBiddingTurn {
+            if let Some(OutboundPayload::Fodinha(FodinhaOutboundMessage::PlayerBiddingTurn {
                 player_id: next,
                 possible_bids,
-            }) = self.current_phase_message()
+            })) = self.current_phase_message()
             {
                 self.init_set(SetInitialization {
                     decks: decks.into_iter().collect::<IndexMap<_, _>>(),
@@ -1058,13 +1070,44 @@ impl MatchActor {
                 .await;
             }
         } else if outcome.ended {
-            self.broadcast(OutboundMessage::GameEnded { lifes }).await;
+            self.broadcast(FodinhaOutboundMessage::GameEnded { lifes })
+                .await;
         } else if let Some(msg) = self.current_phase_message() {
             self.broadcast(msg).await;
             self.refresh_power_hands().await;
         }
 
         outcome.ended
+    }
+
+    async fn init_classic_set(
+        &self,
+        decks: IndexMap<PlayerId, Vec<Card>>,
+        upcard: Card,
+        next: PlayerId,
+        possible_bids: Vec<usize>,
+    ) {
+        self.broadcast(FodinhaOutboundMessage::SetStart { upcard })
+            .await;
+
+        for (player, deck) in decks {
+            self.send_to_player(&player, FodinhaOutboundMessage::PlayerDeck(deck))
+                .await;
+        }
+
+        if self.is_finished()
+            && let Some(lifes) = self.current_lifes()
+        {
+            self.broadcast(FodinhaOutboundMessage::GameEnded { lifes })
+                .await;
+            return;
+        }
+
+        self.broadcast(FodinhaOutboundMessage::PlayerBiddingTurn {
+            player_id: next,
+            possible_bids,
+        })
+        .await;
     }
 
     async fn init_set(&self, initialization: SetInitialization) {
@@ -1078,24 +1121,25 @@ impl MatchActor {
             possible_bids,
         } = initialization;
 
-        self.broadcast(OutboundMessage::SetStart { upcard }).await;
+        self.broadcast(FodinhaOutboundMessage::SetStart { upcard })
+            .await;
 
         if let Some(lifes) = lifes
             && !lifes.is_empty()
         {
-            self.broadcast(OutboundMessage::PlayersLifesChanged(lifes))
+            self.broadcast(FodinhaOutboundMessage::PlayersLifesChanged(lifes))
                 .await;
         }
 
         if let Some(mana) = mana
             && !mana.is_empty()
         {
-            self.broadcast(OutboundMessage::PlayersManaChanged(mana))
+            self.broadcast(PowerOutboundMessage::PlayersManaChanged(mana))
                 .await;
         }
 
         for (player, deck) in decks {
-            self.send_to_player(&player, OutboundMessage::PlayerDeck(deck))
+            self.send_to_player(&player, FodinhaOutboundMessage::PlayerDeck(deck))
                 .await;
         }
 
@@ -1103,7 +1147,7 @@ impl MatchActor {
             for (player, deck) in power_decks {
                 self.send_to_player(
                     &player,
-                    OutboundMessage::PlayerPowerCards(
+                    PowerOutboundMessage::PlayerPowerCards(
                         self.authoritative_power_cards(&player, deck),
                     ),
                 )
@@ -1114,18 +1158,19 @@ impl MatchActor {
         if self.is_finished()
             && let Some(lifes) = self.current_lifes()
         {
-            self.broadcast(OutboundMessage::GameEnded { lifes }).await;
+            self.broadcast(FodinhaOutboundMessage::GameEnded { lifes })
+                .await;
             return;
         }
 
-        self.broadcast(OutboundMessage::PlayerBiddingTurn {
+        self.broadcast(FodinhaOutboundMessage::PlayerBiddingTurn {
             player_id: next,
             possible_bids,
         })
         .await;
     }
 
-    fn current_phase_message(&self) -> Option<OutboundMessage> {
+    fn current_phase_message(&self) -> Option<OutboundPayload> {
         let lobby = self.lobby.as_ref()?;
         let LobbyState::Playing(game) = &lobby.state else {
             return None;
@@ -1133,17 +1178,18 @@ impl MatchActor {
         let player_id = game.current_player()?;
 
         match game.get_stage_dto() {
-            crate::services::GameStageDto::Bidding { possible_bids } => {
-                Some(OutboundMessage::PlayerBiddingTurn {
+            crate::services::GameStageDto::Bidding { possible_bids } => Some(
+                FodinhaOutboundMessage::PlayerBiddingTurn {
                     player_id,
                     possible_bids,
-                })
-            }
+                }
+                .into(),
+            ),
             crate::services::GameStageDto::Power { phase } => {
-                Some(OutboundMessage::PlayerPowerTurn { player_id, phase })
+                Some(PowerOutboundMessage::PlayerPowerTurn { player_id, phase }.into())
             }
             crate::services::GameStageDto::Dealing => {
-                Some(OutboundMessage::PlayerTurn { player_id })
+                Some(FodinhaOutboundMessage::PlayerTurn { player_id }.into())
             }
         }
     }
@@ -1157,13 +1203,13 @@ impl MatchActor {
         Some(game.get_lifes())
     }
 
-    async fn send_to_player(&self, player_id: &PlayerId, msg: OutboundMessage) {
+    async fn send_to_player(&self, player_id: &PlayerId, msg: impl Into<OutboundPayload>) {
         let Some(sender) = self.connections.get(player_id).cloned() else {
             tracing::debug!("No active connection for player {player_id:?}");
             return;
         };
 
-        if let Err(e) = sender.send(msg).await {
+        if let Err(e) = sender.send(OutboundMessage::SinglePlayer(msg.into())).await {
             tracing::error!("Error enqueueing message to {player_id:?}: {e}");
         }
     }
@@ -1172,7 +1218,7 @@ impl MatchActor {
         for reveal in reveals {
             self.send_to_player(
                 &PlayerId(reveal.caster_id.into()),
-                OutboundMessage::DeckRevealed {
+                PowerOutboundMessage::DeckRevealed {
                     target_player_id: PlayerId(reveal.target_player_id.into()),
                     cards: reveal.cards,
                 },
@@ -1181,7 +1227,8 @@ impl MatchActor {
         }
     }
 
-    async fn broadcast(&self, msg: OutboundMessage) {
+    async fn broadcast(&self, msg: impl Into<OutboundPayload>) {
+        let msg = OutboundMessage::Public(msg.into());
         let connections: Vec<_> = self
             .connections
             .iter()
@@ -1205,7 +1252,7 @@ impl MatchActor {
         for player_id in player_ids {
             let snapshot = lobby.get_snapshot(&player_id);
 
-            self.send_to_player(&player_id, OutboundMessage::Snapshot(snapshot))
+            self.send_to_player(&player_id, CommonOutboundMessage::Snapshot(snapshot))
                 .await;
         }
     }
@@ -1218,15 +1265,15 @@ impl MatchActor {
             return;
         };
         for player_id in self.connections.keys() {
-            if let Some(cards) = game.get_game_info(player_id).power_cards {
-                self.send_to_player(player_id, OutboundMessage::PlayerPowerCards(cards))
+            if let Some(cards) = game.get_game_info(player_id).into_power_cards() {
+                self.send_to_player(player_id, PowerOutboundMessage::PlayerPowerCards(cards))
                     .await;
             }
         }
     }
 
     async fn close_connections(&self, code: u16, reason: &str) {
-        self.broadcast(OutboundMessage::Close {
+        self.broadcast(CommonOutboundMessage::Close {
             code,
             reason: reason.to_string(),
         })
@@ -1398,7 +1445,7 @@ impl MatchActor {
         self.lobby
             .as_ref()
             .and_then(|lobby| match &lobby.state {
-                LobbyState::Playing(game) => game.get_game_info(player_id).power_cards,
+                LobbyState::Playing(game) => game.get_game_info(player_id).into_power_cards(),
                 LobbyState::NotStarted(_) => None,
             })
             .unwrap_or(fallback)
@@ -1504,21 +1551,6 @@ fn should_project_match_metadata(event: &MatchEvent, match_finished: bool) -> bo
         }))
         | MatchEvent::PlayerStatusChanged { .. } => false,
     }
-}
-
-fn initial_set_state(game: &Game, players: &[PlayerId]) -> (IndexMap<PlayerId, Vec<Card>>, Card) {
-    let mut decks = IndexMap::new();
-    let mut upcard = None;
-
-    for player_id in players {
-        let info = game.get_game_info(player_id);
-        if let Some(deck) = info.deck {
-            decks.insert(player_id.clone(), deck);
-        }
-        upcard = upcard.or(info.upcard);
-    }
-
-    (decks, upcard.expect("started game must have an upcard"))
 }
 
 #[derive(Debug, PartialEq, Eq)]

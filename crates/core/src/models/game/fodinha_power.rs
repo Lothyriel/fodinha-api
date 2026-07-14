@@ -12,7 +12,7 @@ use crate::{
     models::{
         BiddingError, Card, DealError, GameError, Turn,
         game::{
-            BiddingState, DealState, DeckShuffle, NewSet, fodinha_classic,
+            BiddingState, DealState, DeckShuffle, NewSet, fodinha_core,
             power_lua::{
                 DeckReveal, DrawPowerCardsFn, PassiveGameEvent, PassiveScriptInput,
                 PowerScriptError, PowerScriptInput, PowerScriptOutput, ScriptManaState,
@@ -22,7 +22,10 @@ use crate::{
         id::{CardId, DeckId, MercenaryId, PlayerId},
         util::DeterministicRng,
     },
-    services::{GameInfoDto, GameStageDto, PlayerManaDto, PowerCardDto, PowerCardStateDto},
+    services::{
+        GameInfoDetailsDto, GameInfoDto, GameStageDto, PlayerInfoDetailsDto, PlayerManaDto,
+        PowerCardDto, PowerCardStateDto,
+    },
 };
 
 const LIFE_LOSS_PER_BID_DIFFERENCE: usize = 10;
@@ -34,11 +37,11 @@ const MANA_REGEN_PER_BIDDING_TURN: usize = 1;
 pub const DEFAULT_INITIAL_LIFES: usize = 50;
 pub const MIN_INITIAL_LIFES: usize = 10;
 pub const MAX_INITIAL_LIFES: usize = 100;
-pub const MAX_PLAYER_COUNT: usize = fodinha_classic::MAX_PLAYER_COUNT;
+pub const MAX_PLAYER_COUNT: usize = fodinha_core::MAX_PLAYER_COUNT;
 
 #[derive(Debug, Clone)]
 pub struct Game {
-    core: fodinha_classic::Game,
+    core: fodinha_core::Game,
     stage: PowerGameStage,
     power_decks: IndexMap<PlayerId, Vec<PowerCard>>,
     mana: IndexMap<PlayerId, PlayerMana>,
@@ -986,16 +989,16 @@ impl Game {
         draw_seed: i64,
         registry: PowerCardRegistry,
     ) -> Result<Self, GameError> {
-        let classic = fodinha_classic::Game::from_started_with_rules(
+        let classic = fodinha_core::Game::from_started_with_rules(
             players,
             Self::classic_settings(&settings),
             {
-                let event = fodinha_classic::Game::start_match_event_with_seed(
+                let event = fodinha_core::Game::start_match_event_with_seed(
                     players,
                     Self::classic_settings(&settings),
                     seed,
                 )?;
-                let fodinha_classic::MatchEvent::GameStarted { seed, .. } = event else {
+                let fodinha_core::MatchEvent::GameStarted { seed, .. } = event else {
                     unreachable!()
                 };
                 let mut deck = Card::shuffled_deck(seed, 0);
@@ -1005,14 +1008,14 @@ impl Game {
                     .collect();
                 let upcard = deck[0];
                 NewSet {
-                    dealing_mode: fodinha_classic::DealingMode::Increasing,
+                    dealing_mode: fodinha_core::DealingMode::Increasing,
                     cards_count: 1,
                     shuffle: DeckShuffle { seed, sequence: 0 },
                     decks,
                     upcard,
                 }
             },
-            fodinha_classic::GameRules {
+            fodinha_core::GameRules {
                 life_loss_per_bid_difference: LIFE_LOSS_PER_BID_DIFFERENCE,
             },
         )?;
@@ -1072,7 +1075,7 @@ impl Game {
         }
 
         let event = self.core.validate_turn(turn)?;
-        let fodinha_classic::MatchEvent::TurnPlayed { turn } = event else {
+        let fodinha_core::MatchEvent::TurnPlayed { turn } = event else {
             unreachable!("validate_turn only emits TurnPlayed")
         };
         let mut passive_effects = self
@@ -1092,7 +1095,7 @@ impl Game {
             AppliedGameChange::TurnPlayed {
                 state:
                     DealState {
-                        outcome: fodinha_classic::GameOutcome::RoundEnded { next, .. },
+                        outcome: fodinha_core::GameOutcome::RoundEnded { next, .. },
                         pile,
                     },
                 ..
@@ -1210,10 +1213,9 @@ impl Game {
             } if pending_players.len() == 1
         );
         let next_set = if finalizing_set {
-            match &self.pending_set_resolution {
-                Some(pending) => Some(pending.next_set.clone()),
-                None => None,
-            }
+            self.pending_set_resolution
+                .as_ref()
+                .map(|pending| pending.next_set.clone())
         } else {
             None
         };
@@ -1314,10 +1316,9 @@ impl Game {
             } if pending_players.len() == 1
         );
         let next_set = if finalizing_set {
-            match &self.pending_set_resolution {
-                Some(pending) => Some(pending.next_set.clone()),
-                None => None,
-            }
+            self.pending_set_resolution
+                .as_ref()
+                .map(|pending| pending.next_set.clone())
         } else {
             None
         };
@@ -1396,9 +1397,9 @@ impl Game {
             } => {
                 match self
                     .core
-                    .apply_match_event(fodinha_classic::MatchEvent::BidPlaced { player_id, bid })
+                    .apply_match_event(fodinha_core::MatchEvent::BidPlaced { player_id, bid })
                 {
-                    fodinha_classic::AppliedGameChange::BidPlaced {
+                    fodinha_core::AppliedGameChange::BidPlaced {
                         player_id,
                         bid,
                         state,
@@ -1785,10 +1786,17 @@ impl Game {
             .unwrap_or_default();
         info.stage = self.get_stage_dto();
         for player in &mut info.info {
-            player.mana = self.mana.get(&player.id).map(PlayerMana::to_dto);
+            player.game = PlayerInfoDetailsDto::FodinhaPower {
+                mana: self
+                    .mana
+                    .get(&player.id)
+                    .expect("power player has mana state")
+                    .to_dto(),
+            };
         }
-        info.power_cards = Some(
-            self.power_decks
+        info.game = GameInfoDetailsDto::FodinhaPower {
+            power_cards: self
+                .power_decks
                 .get(player_id)
                 .map(|deck| {
                     deck.iter()
@@ -1796,7 +1804,7 @@ impl Game {
                         .collect()
                 })
                 .unwrap_or_default(),
-        );
+        };
 
         info
     }
@@ -2179,8 +2187,8 @@ impl Game {
             .collect()
     }
 
-    fn classic_settings(_settings: &GameSettings) -> fodinha_classic::GameSettings {
-        fodinha_classic::GameSettings {
+    fn classic_settings(_settings: &GameSettings) -> fodinha_core::GameSettings {
+        fodinha_core::GameSettings {
             lifes: DEFAULT_INITIAL_LIFES,
         }
     }
@@ -2501,12 +2509,12 @@ impl Game {
 
     fn mana_after_bid(&self, player_id: &PlayerId, bid: usize) -> HashMap<PlayerId, PlayerMana> {
         let mut core = self.core.clone();
-        let change = core.apply_match_event(fodinha_classic::MatchEvent::BidPlaced {
+        let change = core.apply_match_event(fodinha_core::MatchEvent::BidPlaced {
             player_id: player_id.clone(),
             bid,
         });
 
-        let fodinha_classic::AppliedGameChange::BidPlaced { state, .. } = change else {
+        let fodinha_core::AppliedGameChange::BidPlaced { state, .. } = change else {
             return HashMap::new();
         };
 
@@ -4327,6 +4335,6 @@ return {
 
         let info = game.get_game_info(&player1);
 
-        assert_eq!(info.power_cards.unwrap().len(), 1);
+        assert_eq!(info.into_power_cards().unwrap().len(), 1);
     }
 }

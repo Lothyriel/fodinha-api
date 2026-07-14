@@ -64,24 +64,19 @@ pub(crate) fn project_match_stats(
                 )?);
                 let started_game = game.as_ref().expect("game was just initialized");
                 let started_info = started_game.get_game_info(&player_ids[0]);
-                current_upcard = started_info.upcard;
+                current_upcard = Some(started_info.upcard);
                 current_bids.clear();
                 current_rounds.clear();
                 let decks = player_ids
                     .iter()
-                    .filter_map(|player_id| {
-                        started_game
-                            .get_game_info(player_id)
-                            .deck
-                            .map(|deck| (player_id.clone(), deck))
+                    .map(|player_id| {
+                        (
+                            player_id.clone(),
+                            started_game.get_game_info(player_id).deck,
+                        )
                     })
                     .collect();
-                add_dealt_trumps(
-                    &mut stats,
-                    match_id,
-                    &decks,
-                    started_info.upcard.expect("started game has upcard"),
-                );
+                add_dealt_trumps(&mut stats, match_id, &decks, started_info.upcard);
             }
             MatchEvent::Game(GameEvent::FodinhaClassic(
                 event @ fodinha_classic::MatchEvent::BidPlaced { player_id, bid },

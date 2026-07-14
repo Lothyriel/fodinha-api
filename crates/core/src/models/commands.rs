@@ -51,12 +51,13 @@ pub struct WaitingLobbySnapshot {
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Clone)]
-pub struct WaitingLobbySettingsDto {
-    pub game_type: GameType,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub power_deck_id: Option<DeckId>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub life_multiplier: Option<f64>,
+#[serde(tag = "game_type", rename_all = "snake_case")]
+pub enum WaitingLobbySettingsDto {
+    FodinhaClassic,
+    FodinhaPower {
+        power_deck_id: DeckId,
+        life_multiplier: f64,
+    },
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, Clone)]
@@ -137,4 +138,40 @@ pub enum ServerMessage {
     Error {
         msg: String,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::*;
+
+    #[test]
+    fn classic_waiting_settings_have_no_power_placeholders() {
+        let value = serde_json::to_value(WaitingLobbySettingsDto::FodinhaClassic).unwrap();
+
+        assert_eq!(value, serde_json::json!({ "game_type": "fodinha_classic" }));
+    }
+
+    #[test]
+    fn power_waiting_settings_round_trip_as_typed_payload() {
+        let settings = WaitingLobbySettingsDto::FodinhaPower {
+            power_deck_id: DeckId(Arc::from("starter")),
+            life_multiplier: 2.0,
+        };
+        let value = serde_json::to_value(&settings).unwrap();
+
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "game_type": "fodinha_power",
+                "power_deck_id": "starter",
+                "life_multiplier": 2.0
+            })
+        );
+        assert_eq!(
+            serde_json::from_value::<WaitingLobbySettingsDto>(value).unwrap(),
+            settings
+        );
+    }
 }

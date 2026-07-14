@@ -228,6 +228,7 @@ mod tests {
             Card,
             commands::{
                 ClientCommand, CreateLobbyResponse, LobbyInfo, MatchSnapshot, ServerMessage,
+                WaitingLobbySettingsDto,
             },
             game::{GameCommand, GameSettings, GameType, fodinha_classic, fodinha_power},
             id::{CardId, DeckId, LobbyId, MercenaryId, PlayerId},
@@ -1552,8 +1553,13 @@ return {
 
         match lobby {
             LobbyInfo::NotStarted(waiting) => {
-                assert_eq!(waiting.settings.game_type, GameType::FodinhaPower);
-                assert_eq!(waiting.settings.life_multiplier, Some(2.5));
+                assert!(matches!(
+                    waiting.settings,
+                    WaitingLobbySettingsDto::FodinhaPower {
+                        life_multiplier: 2.5,
+                        ..
+                    }
+                ));
             }
             other => panic!("expected waiting lobby info, got {other:?}"),
         }
@@ -1585,8 +1591,15 @@ return {
                 MatchSnapshot::Playing(data) => {
                     assert_eq!(data.game.info.len(), 2);
                     assert!(data.game.info.iter().all(|player| player.lifes == 50));
-                    assert!(data.game.info.iter().all(|player| player.mana.is_some()));
-                    assert_eq!(data.game.power_cards.as_ref().unwrap().len(), 1);
+                    assert!(data.game.info.iter().all(|player| matches!(
+                        player.game,
+                        fodinha_core::services::PlayerInfoDetailsDto::FodinhaPower { .. }
+                    )));
+                    assert!(matches!(
+                        &data.game.game,
+                        fodinha_core::services::GameInfoDetailsDto::FodinhaPower { power_cards }
+                            if power_cards.len() == 1
+                    ));
                 }
                 snapshot => panic!("Expected playing snapshot, got {snapshot:?}"),
             }

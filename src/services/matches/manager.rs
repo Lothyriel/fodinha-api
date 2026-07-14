@@ -36,8 +36,9 @@ use crate::{
             PowerDeckResponse, UpdateCardDefinitionInput, UpdatePowerDeckInput,
         },
         matches::{
-            MatchActor, MatchActorContext, MatchActorMessage, MatchActorResources, MatchReceiver,
-            MatchRegistry, MatchSender, OutboundMessage, PlayerReceiver, PlayerSender,
+            CommonOutboundMessage, FodinhaOutboundMessage, MatchActor, MatchActorContext,
+            MatchActorMessage, MatchActorResources, MatchReceiver, MatchRegistry, MatchSender,
+            OutboundMessage, OutboundPayload, PlayerReceiver, PlayerSender, PowerOutboundMessage,
             SenderLookup,
         },
         mercenaries::{
@@ -99,15 +100,10 @@ fn fallback_user_claims(player_id: &PlayerId) -> UserClaims {
 
 fn waiting_lobby_settings(settings: GameSettings) -> WaitingLobbySettingsDto {
     match settings {
-        GameSettings::FodinhaClassic(_) => WaitingLobbySettingsDto {
-            game_type: GameType::FodinhaClassic,
-            power_deck_id: None,
-            life_multiplier: None,
-        },
-        GameSettings::FodinhaPower(settings) => WaitingLobbySettingsDto {
-            game_type: GameType::FodinhaPower,
-            power_deck_id: Some(settings.power_deck_id),
-            life_multiplier: Some(settings.life_multiplier),
+        GameSettings::FodinhaClassic(_) => WaitingLobbySettingsDto::FodinhaClassic,
+        GameSettings::FodinhaPower(settings) => WaitingLobbySettingsDto::FodinhaPower {
+            power_deck_id: settings.power_deck_id,
+            life_multiplier: settings.life_multiplier,
         },
     }
 }
@@ -636,76 +632,96 @@ impl ManagerHandle {
         &self,
         msg: OutboundMessage,
     ) -> Result<ServerMessage, ManagerError> {
-        match msg {
-            OutboundMessage::Close { reason, .. } => Err(ManagerError::PlayerDisconnected(reason)),
-            OutboundMessage::PlayerTurn { player_id } => {
-                Ok(ServerMessage::PlayerTurn { player_id })
-            }
-            OutboundMessage::TurnPlayed { pile } => Ok(ServerMessage::TurnPlayed { pile }),
-            OutboundMessage::PlayerBidded { player_id, bid } => {
-                Ok(ServerMessage::PlayerBidded { player_id, bid })
-            }
-            OutboundMessage::PlayersManaChanged(mana) => {
-                Ok(ServerMessage::PlayersManaChanged(mana))
-            }
-            OutboundMessage::PlayersLifesChanged(lifes) => {
-                Ok(ServerMessage::PlayersLifesChanged(lifes))
-            }
-            OutboundMessage::PlayerBiddingTurn {
-                player_id,
-                possible_bids,
-            } => Ok(ServerMessage::PlayerBiddingTurn {
-                player_id,
-                possible_bids,
-            }),
-            OutboundMessage::PlayerPowerTurn { player_id, phase } => {
-                Ok(ServerMessage::PlayerPowerTurn { player_id, phase })
-            }
-            OutboundMessage::PlayerStatusChange { player_id, ready } => {
-                Ok(ServerMessage::PlayerStatusChange { player_id, ready })
-            }
-            OutboundMessage::PlayerMercenarySelected {
-                player_id,
-                mercenary_id,
-            } => Ok(ServerMessage::PlayerMercenarySelected {
-                player_id,
-                mercenary_id,
-            }),
-            OutboundMessage::RoundEnded(rounds) => Ok(ServerMessage::RoundEnded(rounds)),
-            OutboundMessage::PlayerDeck(deck) => Ok(ServerMessage::PlayerDeck(deck)),
-            OutboundMessage::DeckRevealed {
-                target_player_id,
-                cards,
-            } => Ok(ServerMessage::DeckRevealed {
-                target_player_id,
-                cards,
-            }),
-            OutboundMessage::PlayerPowerCards(deck) => Ok(ServerMessage::PlayerPowerCards(deck)),
-            OutboundMessage::PowerCardPlayed {
-                player_id,
-                card,
-                targets,
-                lifes,
-            } => Ok(ServerMessage::PowerCardPlayed {
-                player_id,
-                card,
-                targets,
-                lifes,
-            }),
-            OutboundMessage::SetStart { upcard } => Ok(ServerMessage::SetStart { upcard }),
-            OutboundMessage::SetEnded { lifes } => Ok(ServerMessage::SetEnded { lifes }),
-            OutboundMessage::GameEnded { lifes } => Ok(ServerMessage::GameEnded { lifes }),
-            OutboundMessage::PlayerJoined(player_id) => {
-                let player = self.user_or_fallback(&player_id).await?;
+        let payload = match msg {
+            OutboundMessage::Public(payload) | OutboundMessage::SinglePlayer(payload) => payload,
+        };
 
+        match payload {
+            OutboundPayload::Common(CommonOutboundMessage::Close { reason, .. }) => {
+                Err(ManagerError::PlayerDisconnected(reason))
+            }
+            OutboundPayload::Common(CommonOutboundMessage::PlayerStatusChange {
+                player_id,
+                ready,
+            }) => Ok(ServerMessage::PlayerStatusChange { player_id, ready }),
+            OutboundPayload::Common(CommonOutboundMessage::PlayerMercenarySelected {
+                player_id,
+                mercenary_id,
+            }) => Ok(ServerMessage::PlayerMercenarySelected {
+                player_id,
+                mercenary_id,
+            }),
+            OutboundPayload::Common(CommonOutboundMessage::PlayerJoined(player_id)) => {
+                let player = self.user_or_fallback(&player_id).await?;
                 Ok(ServerMessage::PlayerJoined(player))
             }
-            OutboundMessage::PlayerLeft { player_id } => {
+            OutboundPayload::Common(CommonOutboundMessage::PlayerLeft { player_id }) => {
                 Ok(ServerMessage::PlayerLeft { player_id })
             }
-            OutboundMessage::Snapshot(snapshot) => Ok(ServerMessage::Snapshot(
-                self.hydrate_snapshot(snapshot).await?,
-            )),
+            OutboundPayload::Common(CommonOutboundMessage::Snapshot(snapshot)) => Ok(
+                ServerMessage::Snapshot(self.hydrate_snapshot(snapshot).await?),
+            ),
+            OutboundPayload::Fodinha(FodinhaOutboundMessage::PlayerTurn { player_id }) => {
+                Ok(ServerMessage::PlayerTurn { player_id })
+            }
+            OutboundPayload::Fodinha(FodinhaOutboundMessage::TurnPlayed { pile }) => {
+                Ok(ServerMessage::TurnPlayed { pile })
+            }
+            OutboundPayload::Fodinha(FodinhaOutboundMessage::PlayerBidded { player_id, bid }) => {
+                Ok(ServerMessage::PlayerBidded { player_id, bid })
+            }
+            OutboundPayload::Fodinha(FodinhaOutboundMessage::PlayersLifesChanged(lifes)) => {
+                Ok(ServerMessage::PlayersLifesChanged(lifes))
+            }
+            OutboundPayload::Fodinha(FodinhaOutboundMessage::PlayerBiddingTurn {
+                player_id,
+                possible_bids,
+            }) => Ok(ServerMessage::PlayerBiddingTurn {
+                player_id,
+                possible_bids,
+            }),
+            OutboundPayload::Fodinha(FodinhaOutboundMessage::RoundEnded(rounds)) => {
+                Ok(ServerMessage::RoundEnded(rounds))
+            }
+            OutboundPayload::Fodinha(FodinhaOutboundMessage::PlayerDeck(deck)) => {
+                Ok(ServerMessage::PlayerDeck(deck))
+            }
+            OutboundPayload::Fodinha(FodinhaOutboundMessage::SetStart { upcard }) => {
+                Ok(ServerMessage::SetStart { upcard })
+            }
+            OutboundPayload::Fodinha(FodinhaOutboundMessage::SetEnded { lifes }) => {
+                Ok(ServerMessage::SetEnded { lifes })
+            }
+            OutboundPayload::Fodinha(FodinhaOutboundMessage::GameEnded { lifes }) => {
+                Ok(ServerMessage::GameEnded { lifes })
+            }
+            OutboundPayload::Power(PowerOutboundMessage::PlayersManaChanged(mana)) => {
+                Ok(ServerMessage::PlayersManaChanged(mana))
+            }
+            OutboundPayload::Power(PowerOutboundMessage::PlayerPowerTurn { player_id, phase }) => {
+                Ok(ServerMessage::PlayerPowerTurn { player_id, phase })
+            }
+            OutboundPayload::Power(PowerOutboundMessage::DeckRevealed {
+                target_player_id,
+                cards,
+            }) => Ok(ServerMessage::DeckRevealed {
+                target_player_id,
+                cards,
+            }),
+            OutboundPayload::Power(PowerOutboundMessage::PlayerPowerCards(deck)) => {
+                Ok(ServerMessage::PlayerPowerCards(deck))
+            }
+            OutboundPayload::Power(PowerOutboundMessage::PowerCardPlayed {
+                player_id,
+                card,
+                targets,
+                lifes,
+            }) => Ok(ServerMessage::PowerCardPlayed {
+                player_id,
+                card,
+                targets,
+                lifes,
+            }),
         }
     }
 

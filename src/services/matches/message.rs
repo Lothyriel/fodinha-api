@@ -26,10 +26,61 @@ type PlayerMana = HashMap<PlayerId, PlayerManaDto>;
 
 #[derive(Clone, Debug)]
 pub enum OutboundMessage {
+    Public(OutboundPayload),
+    SinglePlayer(OutboundPayload),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OutboundAudience {
+    Public,
+    SinglePlayer,
+}
+
+impl OutboundMessage {
+    pub fn audience(&self) -> OutboundAudience {
+        match self {
+            Self::Public(_) => OutboundAudience::Public,
+            Self::SinglePlayer(_) => OutboundAudience::SinglePlayer,
+        }
+    }
+
+    pub fn payload(&self) -> &OutboundPayload {
+        match self {
+            Self::Public(payload) | Self::SinglePlayer(payload) => payload,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub enum OutboundPayload {
+    Common(CommonOutboundMessage),
+    Fodinha(FodinhaOutboundMessage),
+    Power(PowerOutboundMessage),
+}
+
+#[derive(Clone, Debug)]
+pub enum CommonOutboundMessage {
     Close {
         code: u16,
         reason: String,
     },
+    PlayerStatusChange {
+        player_id: PlayerId,
+        ready: bool,
+    },
+    PlayerMercenarySelected {
+        player_id: PlayerId,
+        mercenary_id: MercenaryId,
+    },
+    PlayerJoined(PlayerId),
+    PlayerLeft {
+        player_id: PlayerId,
+    },
+    Snapshot(MatchSnapshotInternal),
+}
+
+#[derive(Clone, Debug)]
+pub enum FodinhaOutboundMessage {
     PlayerTurn {
         player_id: PlayerId,
     },
@@ -40,26 +91,31 @@ pub enum OutboundMessage {
         player_id: PlayerId,
         bid: usize,
     },
-    PlayersManaChanged(PlayerMana),
     PlayersLifesChanged(PlayerPoints),
     PlayerBiddingTurn {
         player_id: PlayerId,
         possible_bids: Vec<usize>,
     },
+    RoundEnded(PlayerPoints),
+    PlayerDeck(Vec<Card>),
+    SetStart {
+        upcard: Card,
+    },
+    SetEnded {
+        lifes: PlayerPoints,
+    },
+    GameEnded {
+        lifes: PlayerPoints,
+    },
+}
+
+#[derive(Clone, Debug)]
+pub enum PowerOutboundMessage {
+    PlayersManaChanged(PlayerMana),
     PlayerPowerTurn {
         player_id: PlayerId,
         phase: crate::services::PowerPhaseDto,
     },
-    PlayerStatusChange {
-        player_id: PlayerId,
-        ready: bool,
-    },
-    PlayerMercenarySelected {
-        player_id: PlayerId,
-        mercenary_id: MercenaryId,
-    },
-    RoundEnded(PlayerPoints),
-    PlayerDeck(Vec<Card>),
     DeckRevealed {
         target_player_id: PlayerId,
         cards: Vec<Card>,
@@ -71,20 +127,24 @@ pub enum OutboundMessage {
         targets: Vec<PlayerId>,
         lifes: PlayerPoints,
     },
-    SetStart {
-        upcard: Card,
-    },
-    SetEnded {
-        lifes: PlayerPoints,
-    },
-    GameEnded {
-        lifes: PlayerPoints,
-    },
-    PlayerJoined(PlayerId),
-    PlayerLeft {
-        player_id: PlayerId,
-    },
-    Snapshot(MatchSnapshotInternal),
+}
+
+impl From<CommonOutboundMessage> for OutboundPayload {
+    fn from(message: CommonOutboundMessage) -> Self {
+        Self::Common(message)
+    }
+}
+
+impl From<FodinhaOutboundMessage> for OutboundPayload {
+    fn from(message: FodinhaOutboundMessage) -> Self {
+        Self::Fodinha(message)
+    }
+}
+
+impl From<PowerOutboundMessage> for OutboundPayload {
+    fn from(message: PowerOutboundMessage) -> Self {
+        Self::Power(message)
+    }
 }
 
 pub enum MatchActorMessage {
@@ -139,5 +199,40 @@ impl MatchActorMessage {
             Self::GameCommand { command, .. } => command.kind(),
             Self::GetLobbySummary { .. } => "get_lobby_summary",
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::*;
+
+    #[test]
+    fn audience_is_independent_from_game_payload() {
+        let payload = OutboundPayload::Fodinha(FodinhaOutboundMessage::PlayerTurn {
+            player_id: PlayerId(Arc::from("player-1")),
+        });
+        let public = OutboundMessage::Public(payload.clone());
+        let private = OutboundMessage::SinglePlayer(payload);
+
+        assert_eq!(public.audience(), OutboundAudience::Public);
+        assert_eq!(private.audience(), OutboundAudience::SinglePlayer);
+        assert!(matches!(
+            public.payload(),
+            OutboundPayload::Fodinha(FodinhaOutboundMessage::PlayerTurn { .. })
+        ));
+        assert!(matches!(
+            private.payload(),
+            OutboundPayload::Fodinha(FodinhaOutboundMessage::PlayerTurn { .. })
+        ));
+    }
+
+    #[test]
+    fn power_payload_cannot_be_constructed_as_classic_placeholder() {
+        let payload =
+            OutboundPayload::Power(PowerOutboundMessage::PlayersManaChanged(HashMap::new()));
+
+        assert!(matches!(payload, OutboundPayload::Power(_)));
     }
 }

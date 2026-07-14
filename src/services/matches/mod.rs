@@ -9,7 +9,8 @@ pub(crate) use manager::ManagerResources;
 pub use manager::{ManagerHandle, PlayerConnectionContext};
 pub use message::WAITING_LOBBY_INACTIVITY_CLOSE_CODE;
 pub(crate) use message::{
-    MatchActorMessage, MatchReceiver, MatchSender, OutboundMessage, PlayerReceiver, PlayerSender,
+    CommonOutboundMessage, FodinhaOutboundMessage, MatchActorMessage, MatchReceiver, MatchSender,
+    OutboundMessage, OutboundPayload, PlayerReceiver, PlayerSender, PowerOutboundMessage,
     WAITING_LOBBY_INACTIVITY_CLOSE_REASON,
 };
 pub(crate) use projection::project_match_metadata;

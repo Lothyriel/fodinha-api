@@ -10,12 +10,28 @@ use crate::{
 #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, Clone)]
 pub struct GameInfoDto {
     pub info: Vec<PlayerInfoDto>,
-    pub deck: Option<Vec<Card>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub power_cards: Option<Vec<PowerCardDto>>,
-    pub upcard: Option<Card>,
+    pub deck: Vec<Card>,
+    pub upcard: Card,
     pub current_player: String,
     pub stage: GameStageDto,
+    #[serde(flatten)]
+    pub game: GameInfoDetailsDto,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, Clone)]
+#[serde(tag = "game_type", rename_all = "snake_case")]
+pub enum GameInfoDetailsDto {
+    FodinhaClassic,
+    FodinhaPower { power_cards: Vec<PowerCardDto> },
+}
+
+impl GameInfoDto {
+    pub fn into_power_cards(self) -> Option<Vec<PowerCardDto>> {
+        match self.game {
+            GameInfoDetailsDto::FodinhaClassic => None,
+            GameInfoDetailsDto::FodinhaPower { power_cards } => Some(power_cards),
+        }
+    }
 }
 #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, Clone)]
 pub struct PowerCardDto {
@@ -57,10 +73,26 @@ pub enum PowerPhaseDto {
 pub struct PlayerInfoDto {
     pub id: PlayerId,
     pub lifes: usize,
-    pub rounds: Option<usize>,
+    pub rounds: usize,
     pub bid: Option<usize>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub mana: Option<PlayerManaDto>,
+    #[serde(flatten)]
+    pub game: PlayerInfoDetailsDto,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, Clone)]
+#[serde(tag = "game_type", rename_all = "snake_case")]
+pub enum PlayerInfoDetailsDto {
+    FodinhaClassic,
+    FodinhaPower { mana: PlayerManaDto },
+}
+
+impl PlayerInfoDto {
+    pub fn into_mana(self) -> Option<PlayerManaDto> {
+        match self.game {
+            PlayerInfoDetailsDto::FodinhaClassic => None,
+            PlayerInfoDetailsDto::FodinhaPower { mana } => Some(mana),
+        }
+    }
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -99,4 +131,51 @@ pub struct PlayerStatsResponse {
     pub win_rate: f64,
     pub favorite_card: Option<Card>,
     pub favorite_card_wins: i64,
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::*;
+
+    fn player_id() -> PlayerId {
+        PlayerId(Arc::from("player-1"))
+    }
+
+    #[test]
+    fn classic_player_info_has_no_power_placeholder() {
+        let dto = PlayerInfoDto {
+            id: player_id(),
+            lifes: 5,
+            rounds: 1,
+            bid: None,
+            game: PlayerInfoDetailsDto::FodinhaClassic,
+        };
+
+        let value = serde_json::to_value(dto).unwrap();
+
+        assert_eq!(value["game_type"], "fodinha_classic");
+        assert!(value.get("mana").is_none());
+        assert_eq!(value["rounds"], 1);
+    }
+
+    #[test]
+    fn power_player_info_requires_mana() {
+        let dto = PlayerInfoDto {
+            id: player_id(),
+            lifes: 50,
+            rounds: 0,
+            bid: Some(1),
+            game: PlayerInfoDetailsDto::FodinhaPower {
+                mana: PlayerManaDto { current: 2, max: 5 },
+            },
+        };
+
+        let value = serde_json::to_value(&dto).unwrap();
+
+        assert_eq!(value["game_type"], "fodinha_power");
+        assert_eq!(value["mana"], serde_json::json!({ "current": 2, "max": 5 }));
+        assert_eq!(serde_json::from_value::<PlayerInfoDto>(value).unwrap(), dto);
+    }
 }
