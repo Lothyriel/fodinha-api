@@ -684,12 +684,12 @@ impl ManagerHandle {
             OutboundMessage::PowerCardPlayed {
                 player_id,
                 card,
-                target_player_id,
+                targets,
                 lifes,
             } => Ok(ServerMessage::PowerCardPlayed {
                 player_id,
                 card,
-                target_player_id,
+                targets,
                 lifes,
             }),
             OutboundMessage::SetStart { upcard } => Ok(ServerMessage::SetStart { upcard }),

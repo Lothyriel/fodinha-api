@@ -68,7 +68,7 @@ pub enum OutboundMessage {
     PowerCardPlayed {
         player_id: PlayerId,
         card: PowerCardDto,
-        target_player_id: Option<PlayerId>,
+        targets: Vec<PlayerId>,
         lifes: PlayerPoints,
     },
     SetStart {

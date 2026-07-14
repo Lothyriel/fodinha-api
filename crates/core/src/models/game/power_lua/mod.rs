@@ -58,7 +58,7 @@ pub struct PowerScriptInput {
     pub card_id: String,
     pub mana_cost: usize,
     pub owner_id: PlayerId,
-    pub target_player_id: Option<PlayerId>,
+    pub targets: Vec<PlayerId>,
     pub players: HashMap<PlayerId, ScriptPlayerState>,
     pub draw_power_cards: DrawPowerCardsFn,
     pub event: Option<PassiveGameEvent>,
@@ -72,7 +72,7 @@ impl std::fmt::Debug for PowerScriptInput {
             .field("card_id", &self.card_id)
             .field("mana_cost", &self.mana_cost)
             .field("owner_id", &self.owner_id)
-            .field("target_player_id", &self.target_player_id)
+            .field("targets", &self.targets)
             .field("players", &self.players)
             .finish_non_exhaustive()
     }
@@ -167,7 +167,7 @@ pub enum PassiveGameEvent {
     PowerCardPlayed {
         player_id: PlayerId,
         card_id: String,
-        target_player_id: Option<PlayerId>,
+        targets: Vec<PlayerId>,
     },
     #[lua_api_event(description = "Passive event emitted when a round starts.")]
     RoundStart,
@@ -256,14 +256,14 @@ mod tests {
 
     fn script_input(
         owner_id: PlayerId,
-        target_player_id: Option<PlayerId>,
+        targets: Vec<PlayerId>,
         players: HashMap<PlayerId, ScriptPlayerState>,
     ) -> PowerScriptInput {
         PowerScriptInput {
             card_id: "test_card".to_string(),
             mana_cost: 2,
             owner_id,
-            target_player_id,
+            targets,
             players,
             draw_power_cards: no_power_card_draws(),
             event: None,
@@ -294,7 +294,7 @@ mod tests {
         let player = PlayerId(Arc::from("P1"));
         let input = script_input(
             player.clone(),
-            None,
+            vec![],
             HashMap::from([(player.clone(), script_player(50))]),
         );
         let players = Rc::new(RefCell::new(
@@ -346,7 +346,7 @@ mod tests {
             assert_eq!(lua_type, "function", "{name} should be callable");
         }
 
-        for name in ["id", "mana_cost", "owner_id", "target_player_id"] {
+        for name in ["id", "mana_cost", "owner_id", "targets"] {
             let source = format!("return function(card) return card.{name} ~= nil end");
             let check: mlua::Function = lua.load(source).eval().unwrap();
             let _: bool = check.call(card.clone()).unwrap();
@@ -443,6 +443,7 @@ mod tests {
             definitions
                 .contains("---@field add_mana_cost fun(self: PowerCard, delta: integer): integer")
         );
+        assert!(definitions.contains("---@field targets PlayerId[]"));
         assert!(
             definitions.contains("---@field set_usable fun(self: PowerCardState, usable: boolean)")
         );
@@ -626,6 +627,40 @@ mod tests {
     }
 
     #[test]
+    fn multi_targetable_script_receives_all_targets() {
+        let owner = PlayerId(Arc::from("P1"));
+        let first = PlayerId(Arc::from("P2"));
+        let second = PlayerId(Arc::from("P3"));
+        let output = run_power_card_script(
+            r#"
+            return {
+                type = PowerCardType.MultiTargetable,
+                mana_cost = 1,
+                quantity = 1,
+                effect = function(game, card)
+                    for _, target in ipairs(card.targets) do
+                        game.add_lives(target, -5)
+                    end
+                end,
+            }
+            "#,
+            script_input(
+                owner.clone(),
+                vec![second.clone(), first.clone()],
+                HashMap::from([
+                    (owner, script_player(50)),
+                    (first.clone(), script_player(50)),
+                    (second.clone(), script_player(50)),
+                ]),
+            ),
+        )
+        .unwrap();
+
+        assert_eq!(output.lifes.get(&first), Some(&45));
+        assert_eq!(output.lifes.get(&second), Some(&45));
+    }
+
+    #[test]
     fn mercenary_passive_definition_is_extracted_from_lua() {
         let definition = parse_mercenary_passive_definition(
             r#"
@@ -653,13 +688,13 @@ mod tests {
                 mana_cost = 2,
                 quantity = 1,
                 effect = function(game, card)
-                    game.add_lives(card.target_player_id, -10)
+                    game.add_lives(card.targets[1], -10)
                 end,
             }
             "#,
             script_input(
                 player1.clone(),
-                Some(player2.clone()),
+                vec![player2.clone()],
                 HashMap::from([
                     (player1, script_player(50)),
                     (player2.clone(), script_player(50)),
@@ -687,7 +722,7 @@ mod tests {
             "#,
             script_input(
                 player.clone(),
-                None,
+                vec![],
                 HashMap::from([(player.clone(), script_player(50))]),
             ),
         )
@@ -711,13 +746,13 @@ mod tests {
                 mana_cost = 0,
                 quantity = 1,
                 effect = function(game, card)
-                    game:reveal_deck(card.owner_id, card.target_player_id)
+                    game:reveal_deck(card.owner_id, card.targets[1])
                 end,
             }
             "#,
             script_input(
                 caster.clone(),
-                Some(target.clone()),
+                vec![target.clone()],
                 HashMap::from([(caster, script_player(50)), (target, target_state)]),
             ),
         )
@@ -769,7 +804,7 @@ mod tests {
             "#,
             script_input(
                 player.clone(),
-                None,
+                vec![],
                 HashMap::from([(player.clone(), script_player(50))]),
             ),
         )
@@ -795,7 +830,7 @@ mod tests {
             "#,
             script_input(
                 player.clone(),
-                None,
+                vec![],
                 HashMap::from([(player.clone(), script_player(50))]),
             ),
         )
@@ -822,7 +857,7 @@ mod tests {
             "#,
             script_input(
                 player.clone(),
-                None,
+                vec![],
                 HashMap::from([(player.clone(), script_player(50))]),
             ),
         )
@@ -854,7 +889,7 @@ mod tests {
             "#,
             script_input(
                 player.clone(),
-                None,
+                vec![],
                 HashMap::from([(player.clone(), script_player(50))]),
             ),
         )
@@ -882,7 +917,7 @@ mod tests {
             "#,
             script_input(
                 player.clone(),
-                None,
+                vec![],
                 HashMap::from([(player.clone(), script_player(50))]),
             ),
         )
@@ -896,7 +931,7 @@ mod tests {
         let player = PlayerId(Arc::from("P1"));
         let mut input = script_input(
             player.clone(),
-            None,
+            vec![],
             HashMap::from([(player.clone(), script_player(50))]),
         );
         input.draw_power_cards = Rc::new(|player_id, count| {
@@ -953,14 +988,14 @@ mod tests {
                 quantity = 1,
                 effect = function(game, card)
                     local mine = game.get_cards(card.owner_id)[1]
-                    local theirs = game.get_cards(card.target_player_id)[1]
-                    game.switch_cards(card.owner_id, mine, card.target_player_id, theirs)
+                    local theirs = game.get_cards(card.targets[1])[1]
+                    game.switch_cards(card.owner_id, mine, card.targets[1], theirs)
                 end,
             }
             "#,
             script_input(
                 player1.clone(),
-                Some(player2.clone()),
+                vec![player2.clone()],
                 HashMap::from([
                     (player1.clone(), first_state),
                     (player2.clone(), second_state),
@@ -995,14 +1030,14 @@ mod tests {
                 mana_cost = 2,
                 quantity = 1,
                 effect = function(game, card)
-                    local cards = game.get_power_cards(card.target_player_id)
-                    game.steal_power_card(card.target_player_id, cards[1].id, card.owner_id)
+                    local cards = game.get_power_cards(card.targets[1])
+                    game.steal_power_card(card.targets[1], cards[1].id, card.owner_id)
                 end,
             }
             "#,
             script_input(
                 player1.clone(),
-                Some(player2.clone()),
+                vec![player2.clone()],
                 HashMap::from([
                     (player1.clone(), first_state),
                     (player2.clone(), second_state),
@@ -1031,7 +1066,7 @@ mod tests {
             "#,
             script_input(
                 player.clone(),
-                None,
+                vec![],
                 HashMap::from([(player, script_player(50))]),
             ),
         )
@@ -1056,7 +1091,7 @@ mod tests {
             "#,
             script_input(
                 player.clone(),
-                None,
+                vec![],
                 HashMap::from([(player, script_player(50))]),
             ),
         )

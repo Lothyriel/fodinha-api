@@ -219,7 +219,7 @@ pub enum InferredGameCommand {
     },
     UsePowerCard {
         card_id: CardId,
-        target_player_id: Option<PlayerId>,
+        targets: Vec<PlayerId>,
     },
     SkipPowerPhase,
 }
@@ -266,14 +266,8 @@ impl InferredGameCommand {
                 Self::PutBid { bid } => Ok(GameCommand::FodinhaPower(
                     fodinha_power::GameCommand::PutBid { bid },
                 )),
-                Self::UsePowerCard {
-                    card_id,
-                    target_player_id,
-                } => Ok(GameCommand::FodinhaPower(
-                    fodinha_power::GameCommand::UsePowerCard {
-                        card_id,
-                        target_player_id,
-                    },
+                Self::UsePowerCard { card_id, targets } => Ok(GameCommand::FodinhaPower(
+                    fodinha_power::GameCommand::UsePowerCard { card_id, targets },
                 )),
                 Self::SkipPowerPhase => Ok(GameCommand::FodinhaPower(
                     fodinha_power::GameCommand::SkipPowerPhase,
@@ -550,11 +544,8 @@ impl Game {
                     .map(GameEvent::FodinhaPower)
                     .map(MatchEvent::Game)
                     .map_err(GameCommandError::Bid),
-                fodinha_power::GameCommand::UsePowerCard {
-                    card_id,
-                    target_player_id,
-                } => game
-                    .validate_power_card(player_id, &card_id, target_player_id)
+                fodinha_power::GameCommand::UsePowerCard { card_id, targets } => game
+                    .validate_power_card(player_id, &card_id, targets)
                     .map(GameEvent::FodinhaPower)
                     .map(MatchEvent::Game)
                     .map_err(GameCommandError::Power),
@@ -646,6 +637,64 @@ mod tests {
     }
 
     #[test]
+    fn power_card_command_deserializes_plural_targets() {
+        let message = serde_json::json!({
+            "type": "GameCommand",
+            "data": {
+                "command": {
+                    "type": "UsePowerCard",
+                    "data": {
+                        "card_id": "multi_strike",
+                        "targets": ["player-2", "player-3"]
+                    }
+                }
+            }
+        });
+
+        let command = match serde_json::from_value::<crate::models::commands::ClientCommand>(
+            message,
+        )
+        .unwrap()
+        {
+            crate::models::commands::ClientCommand::GameCommand(command) => command,
+            command => panic!("unexpected command: {command:?}"),
+        };
+        let command = command.into_typed(GameType::FodinhaPower).unwrap();
+
+        match command {
+            GameCommand::FodinhaPower(fodinha_power::GameCommand::UsePowerCard {
+                card_id,
+                targets,
+            }) => {
+                assert_eq!(card_id.as_str(), "multi_strike");
+                assert_eq!(
+                    targets.iter().map(PlayerId::as_str).collect::<Vec<_>>(),
+                    vec!["player-2", "player-3"]
+                );
+            }
+            command => panic!("unexpected command: {command:?}"),
+        }
+    }
+
+    #[test]
+    fn singular_power_card_target_is_rejected() {
+        let message = serde_json::json!({
+            "type": "GameCommand",
+            "data": {
+                "command": {
+                    "type": "UsePowerCard",
+                    "data": {
+                        "card_id": "strike_10",
+                        "target_player_id": "player-2"
+                    }
+                }
+            }
+        });
+
+        assert!(serde_json::from_value::<crate::models::commands::ClientCommand>(message).is_err());
+    }
+
+    #[test]
     fn typed_game_command_deserializes_existing_envelope() {
         let command = serde_json::json!({
             "game_type": "fodinha_classic",
@@ -669,7 +718,7 @@ mod tests {
     fn inferred_power_card_command_is_rejected_for_classic() {
         let command = GameCommand::Inferred(InferredGameCommand::UsePowerCard {
             card_id: crate::models::id::CardId(Arc::from("heal_10")),
-            target_player_id: None,
+            targets: vec![],
         });
 
         let error = command.into_typed(GameType::FodinhaClassic).unwrap_err();
@@ -713,6 +762,7 @@ mod tests {
     #[test]
     fn power_game_event_round_trips_through_bson() {
         let player_id = PlayerId(Arc::from("player-1"));
+        let target_id = PlayerId(Arc::from("player-2"));
         let event = MatchEvent::Game(GameEvent::FodinhaPower(
             fodinha_power::MatchEvent::PowerCardPlayed {
                 player_id: player_id.clone(),
@@ -721,11 +771,11 @@ mod tests {
                     name: "Heal 10".to_string(),
                     description: "Restore 10 lives to yourself.".to_string(),
                     mana_cost: 2,
-                    card_type: fodinha_power::PowerCardType::Instant,
+                    card_type: fodinha_power::PowerCardType::Targetable,
                     image_url: None,
                     usable: true,
                 },
-                target_player_id: None,
+                targets: vec![target_id.clone()],
                 effects: fodinha_power::PowerCardEffects {
                     lifes: HashMap::from([(player_id.clone(), 60)]),
                     mana: HashMap::new(),
@@ -749,11 +799,13 @@ mod tests {
             MatchEvent::Game(GameEvent::FodinhaPower(
                 fodinha_power::MatchEvent::PowerCardPlayed {
                     player_id: decoded_player_id,
+                    targets,
                     effects,
                     ..
                 },
             )) => {
                 assert_eq!(decoded_player_id, player_id);
+                assert_eq!(targets, vec![target_id]);
                 assert_eq!(effects.lifes.get(&player_id), Some(&60));
                 assert_eq!(effects.deck_reveals.len(), 1);
                 assert_eq!(effects.deck_reveals[0].caster_id, "player-1");

@@ -934,7 +934,7 @@ impl MatchActor {
         self.broadcast(OutboundMessage::PowerCardPlayed {
             player_id: outcome.player_id,
             card: outcome.card,
-            target_player_id: outcome.target_player_id,
+            targets: outcome.targets,
             lifes: outcome.lifes,
         })
         .await;

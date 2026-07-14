@@ -657,7 +657,7 @@ pub struct LuaPowerCard {
     #[field(readonly)]
     pub owner_id: String,
     #[field(readonly)]
-    pub target_player_id: Option<String>,
+    pub targets: Vec<String>,
 }
 
 impl LuaPowerCard {
@@ -839,11 +839,12 @@ pub(crate) fn build_power_card(input: &PowerScriptInput) -> LuaPowerCard {
         base_mana_cost: input.mana_cost,
         mana_cost_delta: Rc::new(Cell::new(0)),
         owner_id: input.owner_id.as_str().to_string(),
-        target_player_id: input
-            .target_player_id
-            .as_ref()
+        targets: input
+            .targets
+            .iter()
             .map(PlayerId::as_str)
-            .map(ToString::to_string),
+            .map(ToString::to_string)
+            .collect(),
     }
 }
 
@@ -888,13 +889,13 @@ pub(crate) fn build_event_table(lua: &Lua, event: &PassiveGameEvent) -> mlua::Re
         PassiveGameEvent::PowerCardPlayed {
             player_id,
             card_id,
-            target_player_id,
+            targets,
         } => {
             table.set("player_id", player_id.as_str())?;
             table.set("card_id", card_id.as_str())?;
             table.set(
-                "target_player_id",
-                target_player_id.as_ref().map(PlayerId::as_str),
+                "targets",
+                targets.iter().map(PlayerId::as_str).collect::<Vec<_>>(),
             )?;
         }
         PassiveGameEvent::TurnPlayed { player_id, card } => {

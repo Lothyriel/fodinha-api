@@ -376,6 +376,7 @@ fn is_player_id_name(name: &str) -> bool {
         "caster_id"
             | "player_id"
             | "owner_id"
+            | "targets"
             | "target_player_id"
             | "first_player_id"
             | "second_player_id"

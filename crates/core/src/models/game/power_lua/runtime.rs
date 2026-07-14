@@ -34,10 +34,19 @@ pub fn validate_power_card_script_execution(source: &str, path: &str) -> Result<
         .map_err(|error| contextual_error(path, "definition", error))?;
     let owner = PlayerId(Arc::from("validator-owner"));
     let target = PlayerId(Arc::from("validator-target"));
+    let second_target = PlayerId(Arc::from("validator-second-target"));
+    let targets = match definition.card_type {
+        crate::models::game::fodinha_power::PowerCardType::Instant
+        | crate::models::game::fodinha_power::PowerCardType::Interactive => Vec::new(),
+        crate::models::game::fodinha_power::PowerCardType::Targetable => vec![target.clone()],
+        crate::models::game::fodinha_power::PowerCardType::MultiTargetable => {
+            vec![target.clone(), second_target]
+        }
+    };
 
     run_power_card_script(
         source,
-        smoke_power_input(&owner, Some(&target), definition.mana_cost, None),
+        smoke_power_input(&owner, &targets, definition.mana_cost, None),
     )
     .map_err(|error| contextual_error(path, "effect", error))?;
 
@@ -47,7 +56,7 @@ pub fn validate_power_card_script_execution(source: &str, path: &str) -> Result<
             source,
             smoke_power_input(
                 &owner,
-                Some(&target),
+                &targets,
                 definition.mana_cost,
                 Some((event, smoke_power_card_state())),
             ),
@@ -103,7 +112,7 @@ fn handler_is_present(source: &str, handler: &str) -> Result<bool, mlua::Error> 
     Ok(matches!(table.get::<Value>(handler)?, Value::Function(_)))
 }
 
-fn smoke_players(owner: &PlayerId, target: &PlayerId) -> HashMap<PlayerId, ScriptPlayerState> {
+fn smoke_players(owner: &PlayerId, targets: &[PlayerId]) -> HashMap<PlayerId, ScriptPlayerState> {
     let card = Card::new(Rank::One, Suit::Clubs);
     let power_card = ScriptPowerCardState {
         id: "validator-power-card".to_string(),
@@ -114,36 +123,37 @@ fn smoke_players(owner: &PlayerId, target: &PlayerId) -> HashMap<PlayerId, Scrip
         image_url: None,
         usable: true,
     };
-    HashMap::from([
-        (
-            owner.clone(),
-            ScriptPlayerState {
-                lifes: 50,
-                bid: Some(1),
-                rounds: 1,
-                mana: ScriptManaState {
-                    current: 5,
-                    max: 10,
-                },
-                cards: vec![card],
-                power_cards: vec![power_card.clone()],
+    let mut players = HashMap::from([(
+        owner.clone(),
+        ScriptPlayerState {
+            lifes: 50,
+            bid: Some(1),
+            rounds: 1,
+            mana: ScriptManaState {
+                current: 5,
+                max: 10,
             },
-        ),
-        (
+            cards: vec![card],
+            power_cards: vec![power_card.clone()],
+        },
+    )]);
+    for (index, target) in targets.iter().enumerate() {
+        players.insert(
             target.clone(),
             ScriptPlayerState {
                 lifes: 45,
-                bid: Some(2),
-                rounds: 2,
+                bid: Some(index + 2),
+                rounds: index + 2,
                 mana: ScriptManaState {
                     current: 4,
                     max: 10,
                 },
                 cards: vec![Card::new(Rank::Two, Suit::Golds)],
-                power_cards: vec![power_card],
+                power_cards: vec![power_card.clone()],
             },
-        ),
-    ])
+        );
+    }
+    players
 }
 
 fn smoke_draw(_: &str, count: usize) -> Result<Vec<ScriptPowerCardState>, String> {
@@ -174,18 +184,23 @@ fn smoke_power_card_state() -> ScriptPowerCardState {
 
 fn smoke_power_input(
     owner: &PlayerId,
-    target: Option<&PlayerId>,
+    targets: &[PlayerId],
     mana_cost: usize,
     event: Option<(PassiveGameEvent, ScriptPowerCardState)>,
 ) -> PowerScriptInput {
     let (event, card_state) =
         event.map_or((None, None), |(event, state)| (Some(event), Some(state)));
+    let player_targets = if targets.is_empty() {
+        vec![PlayerId(Arc::from("validator-target"))]
+    } else {
+        targets.to_vec()
+    };
     PowerScriptInput {
         card_id: "validator-card".to_string(),
         mana_cost,
         owner_id: owner.clone(),
-        target_player_id: target.cloned(),
-        players: smoke_players(owner, target.unwrap()),
+        targets: targets.to_vec(),
+        players: smoke_players(owner, &player_targets),
         draw_power_cards: Rc::new(smoke_draw),
         event,
         card_state,
@@ -205,7 +220,7 @@ fn smoke_passive_input(
         base_life: definition.base_life,
         initial_mana: definition.initial_mana,
         event,
-        players: smoke_players(owner, &target),
+        players: smoke_players(owner, std::slice::from_ref(&target)),
         draw_power_cards: Rc::new(smoke_draw),
         current_trump: Rank::Four,
     }
@@ -226,7 +241,7 @@ fn smoke_event_for_handler(
         "on_power_card_played" => PassiveGameEvent::PowerCardPlayed {
             player_id: owner.clone(),
             card_id: "validator-card".into(),
-            target_player_id: Some(target.clone()),
+            targets: vec![target.clone()],
         },
         "on_round_start" => PassiveGameEvent::RoundStart,
         "on_turn_played" => PassiveGameEvent::TurnPlayed {

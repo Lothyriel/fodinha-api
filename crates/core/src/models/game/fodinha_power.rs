@@ -154,18 +154,20 @@ impl From<ScriptManaState> for PlayerMana {
 pub enum PowerCardType {
     Instant,
     Targetable,
+    MultiTargetable,
     Interactive,
 }
 
 impl PowerCardType {
     pub fn needs_target(self) -> bool {
-        matches!(self, Self::Targetable)
+        matches!(self, Self::Targetable | Self::MultiTargetable)
     }
 
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Instant => "instant",
             Self::Targetable => "targetable",
+            Self::MultiTargetable => "multi_targetable",
             Self::Interactive => "interactive",
         }
     }
@@ -178,8 +180,11 @@ impl std::str::FromStr for PowerCardType {
         match value.trim() {
             "instant" => Ok(Self::Instant),
             "targetable" => Ok(Self::Targetable),
+            "multi_targetable" => Ok(Self::MultiTargetable),
             "interactive" => Ok(Self::Interactive),
-            _ => Err("type must be instant, targetable, or interactive".to_string()),
+            _ => Err(
+                "type must be instant, targetable, multi_targetable, or interactive".to_string(),
+            ),
         }
     }
 }
@@ -233,7 +238,7 @@ pub enum GameCommand {
     },
     UsePowerCard {
         card_id: CardId,
-        target_player_id: Option<PlayerId>,
+        targets: Vec<PlayerId>,
     },
     SkipPowerPhase,
 }
@@ -274,7 +279,7 @@ pub enum MatchEvent {
     PowerCardPlayed {
         player_id: PlayerId,
         card: PowerCard,
-        target_player_id: Option<PlayerId>,
+        targets: Vec<PlayerId>,
         effects: PowerCardEffects,
         set_ended_effects: PowerCardEffects,
         set_started_effects: PowerCardEffects,
@@ -331,7 +336,7 @@ pub enum AppliedGameChange {
 pub struct PowerCardOutcome {
     pub player_id: PlayerId,
     pub card: PowerCardDto,
-    pub target_player_id: Option<PlayerId>,
+    pub targets: Vec<PlayerId>,
     pub lifes: HashMap<PlayerId, usize>,
     pub mana: HashMap<PlayerId, PlayerManaDto>,
     pub decks: HashMap<PlayerId, Vec<Card>>,
@@ -1116,7 +1121,7 @@ impl Game {
         &self,
         player_id: &PlayerId,
         card_id: &CardId,
-        target_player_id: Option<PlayerId>,
+        targets: Vec<PlayerId>,
     ) -> Result<MatchEvent, PowerCardError> {
         if !matches!(self.stage, PowerGameStage::Power { .. }) {
             return Err(PowerCardError::PowerStageRequired);
@@ -1146,17 +1151,30 @@ impl Game {
             .power_card_definition(&self.power_deck_id, &card.id)?
             .ok_or(PowerCardError::InvalidPowerCard)?;
 
-        if definition.card_type.needs_target() && target_player_id.is_none() {
+        if definition.card_type.needs_target() && targets.is_empty() {
             return Err(PowerCardError::TargetRequired);
         }
 
-        if let Some(target_player_id) = target_player_id.as_ref()
-            && !self.core.is_player_alive(target_player_id)
+        let valid_target_count = match definition.card_type {
+            PowerCardType::Instant | PowerCardType::Interactive => targets.is_empty(),
+            PowerCardType::Targetable => targets.len() == 1,
+            PowerCardType::MultiTargetable => !targets.is_empty(),
+        };
+        let targets_are_unique = targets
+            .iter()
+            .collect::<std::collections::HashSet<_>>()
+            .len()
+            == targets.len();
+        if !valid_target_count
+            || !targets_are_unique
+            || targets
+                .iter()
+                .any(|target| !self.core.is_player_alive(target))
         {
             return Err(PowerCardError::InvalidTarget);
         }
 
-        let output = self.run_power_script(&definition, player_id, target_player_id.clone())?;
+        let output = self.run_power_script(&definition, player_id, targets.clone())?;
         let mana_cost = output
             .mana_cost
             .unwrap_or_else(|| i64::try_from(definition.mana_cost).unwrap_or(i64::MAX));
@@ -1179,7 +1197,7 @@ impl Game {
             self.passive_effects(PassiveGameEvent::PowerCardPlayed {
                 player_id: player_id.clone(),
                 card_id: definition.id.as_str().to_string(),
-                target_player_id: target_player_id.clone(),
+                targets: targets.clone(),
             })
             .map_err(PowerCardError::Script)?,
         );
@@ -1240,7 +1258,7 @@ impl Game {
         preview.apply_match_event(MatchEvent::PowerCardPlayed {
             player_id: player_id.clone(),
             card: card.clone(),
-            target_player_id: target_player_id.clone(),
+            targets: targets.clone(),
             effects: effects.clone(),
             set_ended_effects: set_ended_effects.clone(),
             set_started_effects: PowerCardEffects::default(),
@@ -1265,7 +1283,7 @@ impl Game {
         Ok(MatchEvent::PowerCardPlayed {
             player_id: player_id.clone(),
             card,
-            target_player_id,
+            targets,
             effects,
             set_ended_effects,
             set_started_effects: next_set_passive_effects,
@@ -1460,7 +1478,7 @@ impl Game {
             MatchEvent::PowerCardPlayed {
                 player_id,
                 card,
-                target_player_id,
+                targets,
                 effects,
                 set_ended_effects,
                 set_started_effects,
@@ -1509,7 +1527,7 @@ impl Game {
                         return AppliedGameChange::PowerCardPlayed(PowerCardOutcome {
                             player_id,
                             card: card.to_dto(),
-                            target_player_id,
+                            targets,
                             lifes: self.core.get_lifes(),
                             mana: mana_to_dto(&self.mana),
                             decks: self
@@ -1546,7 +1564,7 @@ impl Game {
                     return AppliedGameChange::PowerCardPlayed(PowerCardOutcome {
                         player_id,
                         card: card.to_dto(),
-                        target_player_id,
+                        targets,
                         lifes: self.core.get_lifes(),
                         mana: mana_to_dto(&self.mana),
                         decks: self
@@ -1582,7 +1600,7 @@ impl Game {
                 AppliedGameChange::PowerCardPlayed(PowerCardOutcome {
                     player_id,
                     card: card.to_dto(),
-                    target_player_id,
+                    targets,
                     lifes: self.core.get_lifes(),
                     mana,
                     decks: effects.decks,
@@ -1829,7 +1847,7 @@ impl Game {
         &self,
         definition: &PowerCardDefinition,
         owner_id: &PlayerId,
-        target_player_id: Option<PlayerId>,
+        targets: Vec<PlayerId>,
     ) -> Result<PowerScriptOutput, PowerCardError> {
         let players = self.script_players(Some((owner_id, &definition.id)));
         let draw_power_cards = self.power_card_drawer();
@@ -1840,7 +1858,7 @@ impl Game {
                 card_id: definition.id.as_str().to_string(),
                 mana_cost: definition.mana_cost,
                 owner_id: owner_id.clone(),
-                target_player_id,
+                targets,
                 players,
                 draw_power_cards,
                 event: None,
@@ -1863,7 +1881,7 @@ impl Game {
                 card_id: definition.id.as_str().to_string(),
                 mana_cost: definition.mana_cost,
                 owner_id: owner_id.clone(),
-                target_player_id: None,
+                targets: Vec::new(),
                 players: self.script_players(None),
                 draw_power_cards: self.power_card_drawer(),
                 event: Some(event),
@@ -2591,7 +2609,20 @@ return {
     mana_cost = 3,
     quantity = 1,
     effect = function(game, card)
-        game.add_lives(card.target_player_id, -10)
+        game.add_lives(card.targets[1], -10)
+    end,
+}
+"#;
+
+    const MULTI_STRIKE_SCRIPT: &str = r#"
+return {
+    type = PowerCardType.MultiTargetable,
+    mana_cost = 1,
+    quantity = 1,
+    effect = function(game, card)
+        for _, target in ipairs(card.targets) do
+            game.add_lives(target, -10)
+        end
     end,
 }
 "#;
@@ -2914,7 +2945,9 @@ return {
                     .to_card(),
             ],
         );
-        let event = game.validate_power_card(player_id, draw_id, None).unwrap();
+        let event = game
+            .validate_power_card(player_id, draw_id, vec![])
+            .unwrap();
         let AppliedGameChange::PowerCardPlayed(outcome) = game.apply_match_event(event) else {
             panic!("expected power card outcome");
         };
@@ -3490,7 +3523,7 @@ return {
         let card = registry_power_card(&game.registry, "heal_10");
         game.power_decks.insert(player_id.clone(), vec![card]);
         let event = game
-            .validate_power_card(&player_id, &card_id("heal_10"), None)
+            .validate_power_card(&player_id, &card_id("heal_10"), vec![])
             .unwrap();
         let MatchEvent::PowerCardPlayed {
             set_ended_effects, ..
@@ -3561,7 +3594,7 @@ return {
             .insert(player1.clone(), PlayerMana { current: 3, max: 3 });
 
         let event = game
-            .validate_power_card(&player1, &card_id("strike_10"), Some(player2.clone()))
+            .validate_power_card(&player1, &card_id("strike_10"), vec![player2.clone()])
             .unwrap();
         let AppliedGameChange::PowerCardPlayed(outcome) = game.apply_match_event(event) else {
             panic!("expected power card outcome");
@@ -3592,7 +3625,7 @@ return {
             .insert(player1.clone(), PlayerMana { current: 5, max: 5 });
 
         let event = game
-            .validate_power_card(&player1, &card_id("strike_10"), Some(player2))
+            .validate_power_card(&player1, &card_id("strike_10"), vec![player2])
             .unwrap();
         let AppliedGameChange::PowerCardPlayed(outcome) = game.apply_match_event(event) else {
             panic!("expected power card outcome");
@@ -3649,7 +3682,7 @@ return {
             .insert(player1.clone(), PlayerMana { current: 1, max: 3 });
 
         let event = game
-            .validate_power_card(&player1, &discounted_id, None)
+            .validate_power_card(&player1, &discounted_id, vec![])
             .unwrap();
         let AppliedGameChange::PowerCardPlayed(outcome) = game.apply_match_event(event) else {
             panic!("expected power card outcome");
@@ -3703,7 +3736,7 @@ return {
             .insert(player1.clone(), PlayerMana { current: 1, max: 5 });
 
         let event = game
-            .validate_power_card(&player1, &refund_id, None)
+            .validate_power_card(&player1, &refund_id, vec![])
             .unwrap();
         let AppliedGameChange::PowerCardPlayed(outcome) = game.apply_match_event(event) else {
             panic!("expected power card outcome");
@@ -3757,7 +3790,7 @@ return {
             .insert(player1.clone(), PlayerMana { current: 4, max: 4 });
 
         let event = game
-            .validate_power_card(&player1, &surcharge_id, None)
+            .validate_power_card(&player1, &surcharge_id, vec![])
             .unwrap();
         let AppliedGameChange::PowerCardPlayed(outcome) = game.apply_match_event(event) else {
             panic!("expected power card outcome");
@@ -3811,7 +3844,7 @@ return {
             .insert(player1.clone(), PlayerMana { current: 4, max: 4 });
 
         assert!(matches!(
-            game.validate_power_card(&player1, &expensive_id, None),
+            game.validate_power_card(&player1, &expensive_id, vec![]),
             Err(PowerCardError::NotEnoughMana)
         ));
         assert_eq!(game.mana[&player1].current, 4);
@@ -3882,7 +3915,9 @@ return {
             ],
         );
 
-        let event = game.validate_power_card(&player1, &draw_id, None).unwrap();
+        let event = game
+            .validate_power_card(&player1, &draw_id, vec![])
+            .unwrap();
         let AppliedGameChange::PowerCardPlayed(outcome) = game.apply_match_event(event) else {
             panic!("expected power card outcome");
         };
@@ -3909,7 +3944,7 @@ return {
         );
 
         assert!(matches!(
-            game.validate_power_card(&player1, &card_id("strike_10"), Some(player2)),
+            game.validate_power_card(&player1, &card_id("strike_10"), vec![player2]),
             Err(PowerCardError::NotEnoughMana)
         ));
     }
@@ -3951,7 +3986,7 @@ return {
             .insert(player1.clone(), PlayerMana { current: 3, max: 3 });
 
         let event = game
-            .validate_power_card(&player1, &card_id("strike_10"), Some(player2.clone()))
+            .validate_power_card(&player1, &card_id("strike_10"), vec![player2.clone()])
             .unwrap();
         let AppliedGameChange::PowerCardPlayed(outcome) = game.apply_match_event(event) else {
             panic!("expected power card outcome");
@@ -3967,11 +4002,13 @@ return {
         let players = [player1.clone(), player2.clone()];
         let mut game = new_test_game(&players);
         let card = registry_power_card(&game.registry, "strike_10");
+        let instant_card = registry_power_card(&game.registry, "heal_10");
 
-        game.power_decks.insert(player1.clone(), vec![card]);
+        game.power_decks
+            .insert(player1.clone(), vec![card, instant_card]);
 
         assert!(matches!(
-            game.validate_power_card(&player1, &card_id("strike_10"), Some(player2.clone())),
+            game.validate_power_card(&player1, &card_id("strike_10"), vec![player2.clone()]),
             Err(PowerCardError::PowerStageRequired)
         ));
 
@@ -3979,17 +4016,31 @@ return {
         game.apply_match_event(game.validate_bid(&player2, 1).unwrap());
 
         assert!(matches!(
-            game.validate_power_card(&player1, &card_id("strike_10"), None),
+            game.validate_power_card(&player1, &card_id("strike_10"), vec![]),
             Err(PowerCardError::TargetRequired)
         ));
 
         assert!(matches!(
-            game.validate_power_card(&player1, &card_id("missing"), Some(player2.clone())),
+            game.validate_power_card(
+                &player1,
+                &card_id("strike_10"),
+                vec![player1.clone(), player2.clone()]
+            ),
+            Err(PowerCardError::InvalidTarget)
+        ));
+
+        assert!(matches!(
+            game.validate_power_card(&player1, &card_id("heal_10"), vec![player2.clone()]),
+            Err(PowerCardError::InvalidTarget)
+        ));
+
+        assert!(matches!(
+            game.validate_power_card(&player1, &card_id("missing"), vec![player2.clone()]),
             Err(PowerCardError::InvalidPowerCard)
         ));
 
         assert!(matches!(
-            game.validate_power_card(&player2, &card_id("strike_10"), Some(player1.clone())),
+            game.validate_power_card(&player2, &card_id("strike_10"), vec![player1.clone()]),
             Err(PowerCardError::NotYourTurn)
         ));
 
@@ -3997,9 +4048,71 @@ return {
         game.apply_match_event(game.validate_skip_power_phase(&player2).unwrap());
 
         assert!(matches!(
-            game.validate_power_card(&player1, &card_id("strike_10"), Some(player2)),
+            game.validate_power_card(&player1, &card_id("strike_10"), vec![player2]),
             Err(PowerCardError::PowerStageRequired)
         ));
+    }
+
+    #[test]
+    fn multi_targetable_card_validates_and_applies_ordered_unique_targets() {
+        let registry = registry_with_power_card_definitions(vec![PowerCardDefinitionInput {
+            id: card_id("multi_strike"),
+            name: "Multi Strike".to_string(),
+            description: "Remove 10 lives from each target.".to_string(),
+            mana_cost: 1,
+            quantity: 1,
+            card_type: PowerCardType::MultiTargetable,
+            image_url: None,
+            script: MULTI_STRIKE_SCRIPT.to_string(),
+            source: "test/multi_strike.lua".to_string(),
+        }]);
+        let player1 = PlayerId(Arc::from("P1"));
+        let player2 = PlayerId(Arc::from("P2"));
+        let player3 = PlayerId(Arc::from("P3"));
+        let players = [player1.clone(), player2.clone(), player3.clone()];
+        let mut game = Game::new_with_seed(&players, test_settings(), 42, registry).unwrap();
+        set_power_phase(&mut game, &players);
+        let card = registry_power_card(&game.registry, "multi_strike");
+        game.power_decks.insert(player1.clone(), vec![card]);
+
+        assert!(matches!(
+            game.validate_power_card(&player1, &card_id("multi_strike"), vec![]),
+            Err(PowerCardError::TargetRequired)
+        ));
+        assert!(matches!(
+            game.validate_power_card(
+                &player1,
+                &card_id("multi_strike"),
+                vec![player2.clone(), player2.clone()]
+            ),
+            Err(PowerCardError::InvalidTarget)
+        ));
+        assert!(matches!(
+            game.validate_power_card(
+                &player1,
+                &card_id("multi_strike"),
+                vec![PlayerId(Arc::from("missing"))]
+            ),
+            Err(PowerCardError::InvalidTarget)
+        ));
+        game.validate_power_card(&player1, &card_id("multi_strike"), vec![player1.clone()])
+            .expect("self-targeting remains valid");
+
+        let expected_targets = vec![player3.clone(), player2.clone()];
+        let event = game
+            .validate_power_card(&player1, &card_id("multi_strike"), expected_targets.clone())
+            .unwrap();
+        let MatchEvent::PowerCardPlayed { targets, .. } = &event else {
+            panic!("expected power card event");
+        };
+        assert_eq!(targets, &expected_targets);
+
+        let AppliedGameChange::PowerCardPlayed(outcome) = game.apply_match_event(event) else {
+            panic!("expected power card outcome");
+        };
+        assert_eq!(outcome.targets, expected_targets);
+        assert_eq!(outcome.lifes.get(&player2), Some(&40));
+        assert_eq!(outcome.lifes.get(&player3), Some(&40));
     }
 
     #[test]
@@ -4016,7 +4129,7 @@ return {
             game.apply_match_event(MatchEvent::PowerCardPlayed {
                 player_id: player1.clone(),
                 card,
-                target_player_id: Some(player2.clone()),
+                targets: vec![player2.clone()],
                 effects: PowerCardEffects {
                     lifes: HashMap::from([(player2.clone(), 0)]),
                     mana: HashMap::new(),

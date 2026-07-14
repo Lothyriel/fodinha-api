@@ -281,7 +281,20 @@ return {
     mana_cost = 2,
     quantity = 1,
     effect = function(game, card)
-        game.add_lives(card.target_player_id, -10)
+        game.add_lives(card.targets[1], -10)
+    end,
+}
+"#;
+
+    const TEST_MULTI_STRIKE_SCRIPT: &str = r#"
+return {
+    type = PowerCardType.MultiTargetable,
+    mana_cost = 1,
+    quantity = 1,
+    effect = function(game, card)
+        for _, target in ipairs(card.targets) do
+            game.add_lives(target, -10)
+        end
     end,
 }
 "#;
@@ -292,7 +305,7 @@ return {
     mana_cost = 0,
     quantity = 1,
     effect = function(game, card)
-        game:reveal_deck(card.owner_id, card.target_player_id)
+        game:reveal_deck(card.owner_id, card.targets[1])
     end,
 }
 "#;
@@ -1638,20 +1651,25 @@ return {
         }
 
         let card = power_cards_by_player[&power_player][0].clone();
-        let target_player_id = card.card_type.needs_target().then(|| {
-            player_data
-                .keys()
-                .find(|player_id| **player_id != power_player)
-                .cloned()
-                .expect("expected target player")
-        });
+        let targets = card
+            .card_type
+            .needs_target()
+            .then(|| {
+                player_data
+                    .keys()
+                    .find(|player_id| **player_id != power_player)
+                    .cloned()
+                    .expect("expected target player")
+            })
+            .into_iter()
+            .collect::<Vec<_>>();
 
         send_msg(
             &mut player_data.get_mut(&power_player).unwrap().connection,
             ClientCommand::GameCommand(GameCommand::FodinhaPower(
                 fodinha_power::GameCommand::UsePowerCard {
                     card_id: card.id.clone(),
-                    target_player_id: target_player_id.clone(),
+                    targets: targets.clone(),
                 },
             )),
         )
@@ -1662,20 +1680,113 @@ return {
                 ServerMessage::PowerCardPlayed {
                     player_id,
                     card: played_card,
-                    target_player_id: played_target,
+                    targets: played_targets,
                     lifes,
                 } => {
                     assert_eq!(player_id, power_player);
                     assert_eq!(played_card.id, card.id);
-                    assert_eq!(played_target, target_player_id);
+                    assert_eq!(played_targets, targets);
 
                     if card.card_type.needs_target() {
-                        assert_eq!(lifes.get(target_player_id.as_ref().unwrap()), Some(&40));
+                        assert_eq!(lifes.get(&targets[0]), Some(&40));
                     } else {
                         assert_eq!(lifes.get(&power_player), Some(&60));
                     }
                 }
                 msg => panic!("Expected PowerCardPlayed, got {msg:?}"),
+            }
+        }
+
+        drop(player_data);
+        server.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn test_fodinha_power_uses_multi_target_card_over_websocket() {
+        let server = TestServer::start().await;
+        server
+            .manager
+            .power_card_registry()
+            .replace_power_card_definitions(
+                DeckId(TEST_POWER_DECK_ID.into()),
+                vec![fodinha_power::PowerCardDefinitionInput {
+                    id: CardId("multi_strike".into()),
+                    name: "Multi Strike".to_string(),
+                    description: "Damage multiple targets.".to_string(),
+                    mana_cost: 1,
+                    quantity: 1,
+                    card_type: fodinha_power::PowerCardType::MultiTargetable,
+                    image_url: None,
+                    script: TEST_MULTI_STRIKE_SCRIPT.to_string(),
+                    source: "test/multi_strike.lua".to_string(),
+                }],
+            )
+            .unwrap();
+
+        let client = http_client();
+        let tokens = get_players(&client, &server, 3).await;
+        let lobby_id = create_power_lobby(&client, &server, &tokens[0]).await;
+        for token in &tokens {
+            join_lobby_http(&client, &server, token, &lobby_id).await;
+        }
+
+        let mut player_data = connect_players(&server, tokens).await;
+        select_test_mercenaries(&mut player_data).await;
+        ready(&mut player_data).await;
+        for player in player_data.values_mut() {
+            assert_game_msg(&mut player.connection, validate_set_start).await;
+            assert_eq!(get_players_mana(&mut player.connection).await.len(), 3);
+        }
+
+        let mut power_cards_by_player = HashMap::new();
+        for (player_id, player) in player_data.iter_mut() {
+            player.deck = get_deck(&mut player.connection).await;
+            power_cards_by_player.insert(
+                player_id.clone(),
+                get_power_cards(&mut player.connection).await,
+            );
+        }
+
+        power_bidding(&mut player_data, 1).await;
+        let first_connection = player_data.values_mut().next().unwrap();
+        let power_player = get_next_power_player(&mut first_connection.connection).await;
+        for player in player_data.values_mut().skip(1) {
+            get_next_power_player(&mut player.connection).await;
+        }
+
+        let card = power_cards_by_player[&power_player][0].clone();
+        let targets = player_data
+            .keys()
+            .filter(|player_id| **player_id != power_player)
+            .cloned()
+            .collect::<Vec<_>>();
+        assert_eq!(targets.len(), 2);
+
+        send_msg(
+            &mut player_data.get_mut(&power_player).unwrap().connection,
+            ClientCommand::GameCommand(GameCommand::FodinhaPower(
+                fodinha_power::GameCommand::UsePowerCard {
+                    card_id: card.id.clone(),
+                    targets: targets.clone(),
+                },
+            )),
+        )
+        .await;
+
+        for player in player_data.values_mut() {
+            match assert_game_msg(&mut player.connection, validate_power_card_played).await {
+                ServerMessage::PowerCardPlayed {
+                    player_id,
+                    card: played_card,
+                    targets: played_targets,
+                    lifes,
+                } => {
+                    assert_eq!(player_id, power_player);
+                    assert_eq!(played_card.id, card.id);
+                    assert_eq!(played_targets, targets);
+                    assert!(targets.iter().all(|target| lifes.get(target) == Some(&40)));
+                }
+                message => panic!("Expected PowerCardPlayed, got {message:?}"),
             }
         }
 
@@ -1754,7 +1865,7 @@ return {
             ClientCommand::GameCommand(GameCommand::FodinhaPower(
                 fodinha_power::GameCommand::UsePowerCard {
                     card_id: card.id,
-                    target_player_id: Some(target_id.clone()),
+                    targets: vec![target_id.clone()],
                 },
             )),
         )
