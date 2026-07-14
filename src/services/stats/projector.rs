@@ -12,7 +12,11 @@ use tokio::{
 };
 
 use crate::{
-    models::{game::MatchEvent, id::MatchId},
+    infra::{AnonymousUserClaims, UserClaims},
+    models::{
+        game::MatchEvent,
+        id::{MatchId, PlayerId},
+    },
     services::{
         repositories::{matches::MatchesRepository, stats::StatsRepository},
         stats::project_match_stats,
@@ -122,21 +126,41 @@ struct StatsProjectorTask {
 
 impl StatsProjectorTask {
     async fn run(mut self) {
-        self.project_finished_matches().await;
+        let matches_repo = self.matches_repo.clone();
+        let mut finished_matches = Box::pin(matches_repo.finished_match_ids());
+        let mut startup_scan_pending = true;
 
-        while let Some(message) = self.rx.recv().await {
-            match message {
-                StatsProjectorMessage::Project(match_id) => self.project_match(match_id).await,
-                StatsProjectorMessage::Shutdown { respond } => {
-                    let _ = respond.send(());
-                    break;
+        loop {
+            tokio::select! {
+                result = &mut finished_matches, if startup_scan_pending => {
+                    startup_scan_pending = false;
+                    self.project_finished_matches(result).await;
+                }
+                message = self.rx.recv() => {
+                    let Some(message) = message else { break };
+                    if self.handle_message(message).await {
+                        break;
+                    }
                 }
             }
         }
     }
 
-    async fn project_finished_matches(&self) {
-        match self.matches_repo.finished_match_ids().await {
+    async fn handle_message(&mut self, message: StatsProjectorMessage) -> bool {
+        match message {
+            StatsProjectorMessage::Project(match_id) => {
+                self.project_match(match_id).await;
+                false
+            }
+            StatsProjectorMessage::Shutdown { respond } => {
+                let _ = respond.send(());
+                true
+            }
+        }
+    }
+
+    async fn project_finished_matches(&mut self, result: mongodb::error::Result<Vec<MatchId>>) {
+        match result {
             Ok(match_ids) => {
                 for match_id in match_ids {
                     self.project_match(match_id).await;
@@ -156,7 +180,7 @@ impl StatsProjectorTask {
             }
         }
 
-        let events = match self.matches_repo.load_events(&match_id).await {
+        let mut events = match self.matches_repo.load_events(&match_id).await {
             Ok(events) => events
                 .into_iter()
                 .map(|dto| dto.event)
@@ -166,6 +190,33 @@ impl StatsProjectorTask {
                 return;
             }
         };
+        let metadata = match self.matches_repo.metadata(&match_id).await {
+            Ok(Some(metadata)) => metadata,
+            Ok(None) => {
+                tracing::error!("Match metadata missing for stats projection {match_id:?}");
+                return;
+            }
+            Err(e) => {
+                tracing::error!(
+                    "Error loading match metadata for stats projection {match_id:?}: {e}"
+                );
+                return;
+            }
+        };
+
+        let mut player_events = metadata
+            .players
+            .into_iter()
+            .map(|player_id| MatchEvent::PlayerJoined {
+                user_claims: UserClaims::Anonymous(AnonymousUserClaims {
+                    id: PlayerId(player_id.into()),
+                    data: serde_json::Value::Null,
+                    role: Default::default(),
+                }),
+            })
+            .collect::<Vec<_>>();
+        player_events.append(&mut events);
+        events = player_events;
 
         let stats = match project_match_stats(&match_id, &events) {
             Ok(stats) => stats,
@@ -174,6 +225,11 @@ impl StatsProjectorTask {
                 return;
             }
         };
+
+        if stats.is_empty() {
+            tracing::error!("Stats projection for {match_id:?} produced no rows");
+            return;
+        }
 
         for player_stats in stats {
             match self
@@ -188,7 +244,7 @@ impl StatsProjectorTask {
                         "Error checking stats projection for {match_id:?}/{}: {e}",
                         player_stats.player_id
                     );
-                    continue;
+                    return;
                 }
             }
 
@@ -197,7 +253,7 @@ impl StatsProjectorTask {
                     "Error storing match stats for {match_id:?}/{}: {e}",
                     player_stats.player_id
                 );
-                continue;
+                return;
             }
 
             if let Err(e) = self.stats_repo.apply_match_stats(&player_stats).await {
@@ -205,6 +261,7 @@ impl StatsProjectorTask {
                     "Error updating player stats for {match_id:?}/{}: {e}",
                     player_stats.player_id
                 );
+                return;
             }
         }
 

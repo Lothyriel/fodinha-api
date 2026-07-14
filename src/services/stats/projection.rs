@@ -267,9 +267,7 @@ mod tests {
         infra::{AnonymousUserClaims, UserClaims},
         models::{
             Card,
-            game::fodinha_classic::{
-                GameSettings, MatchEvent as FodinhaEvent,
-            },
+            game::fodinha_classic::{GameSettings, MatchEvent as FodinhaEvent},
             id::{LobbyId, PlayerId},
         },
     };

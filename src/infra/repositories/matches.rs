@@ -329,6 +329,18 @@ impl MatchesRepository {
         .await
     }
 
+    pub async fn metadata(
+        &self,
+        match_id: &MatchId,
+    ) -> mongodb::error::Result<Option<MatchMetadataDto>> {
+        telemetry::db_query("MatchMetadata", "find_one.by_match", async {
+            self.metadata
+                .find_one(doc! { "match_id": match_id.as_str() })
+                .await
+        })
+        .await
+    }
+
     pub async fn active_metadata_for_player(
         &self,
         player_id: &PlayerId,
