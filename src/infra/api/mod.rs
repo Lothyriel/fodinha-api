@@ -240,6 +240,7 @@ mod tests {
                     CardDeckDto, CardDeckKind, CardDeckStatus, CardDecksRepository, NewCardDeck,
                 },
                 get_mongo_client,
+                matches::MatchMetadataDto,
             },
             stats::PlayerStatsResponse,
         },
@@ -1356,11 +1357,41 @@ return {
         let tokens = get_players(&client, &server, 2).await;
         let lobby_id = create_lobby_with_lifes(&client, &server, &tokens[0], 1).await;
 
+        let metadata = server
+            .database
+            .as_ref()
+            .unwrap()
+            .collection::<MatchMetadataDto>("MatchMetadata")
+            .find_one(doc! { "match_id": lobby_id.as_str() })
+            .await
+            .unwrap()
+            .expect("match metadata should exist");
+
+        assert!(matches!(
+            metadata.settings,
+            GameSettings::FodinhaClassic(settings) if settings.lifes == 1
+        ));
+
         for (i, token) in tokens.iter().enumerate() {
             let lobby = join_lobby_http(&client, &server, token, &lobby_id).await;
             assert!(
                 matches!(lobby, LobbyInfo::NotStarted(waiting) if waiting.players.len() == i + 1)
             );
+        }
+
+        server.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn test_finished_game_updates_player_stats() {
+        let server = TestServer::start().await;
+
+        let client = http_client();
+        let tokens = get_players(&client, &server, 2).await;
+        let lobby_id = create_lobby_with_lifes(&client, &server, &tokens[0], 1).await;
+
+        for token in &tokens {
+            join_lobby_http(&client, &server, token, &lobby_id).await;
         }
 
         let mut player_data = connect_players(&server, tokens.clone()).await;

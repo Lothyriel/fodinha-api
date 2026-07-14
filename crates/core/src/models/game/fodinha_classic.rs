@@ -148,17 +148,9 @@ impl GameCommand {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "type", content = "data")]
 pub enum MatchEvent {
-    GameStarted {
-        settings: GameSettings,
-        seed: i64,
-    },
-    BidPlaced {
-        player_id: PlayerId,
-        bid: usize,
-    },
-    TurnPlayed {
-        turn: Turn,
-    },
+    GameStarted { settings: GameSettings, seed: i64 },
+    BidPlaced { player_id: PlayerId, bid: usize },
+    TurnPlayed { turn: Turn },
 }
 
 #[derive(Debug, Clone)]

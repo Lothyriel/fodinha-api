@@ -22,16 +22,20 @@ impl MercenariesRepository {
     }
 
     pub async fn ensure_indexes(&self) -> mongodb::error::Result<()> {
-        telemetry::db_query(COLLECTION_NAME, "create_index.unique_mercenary_version", async {
-            self.mercenaries
-                .create_index(
-                    IndexModel::builder()
-                        .keys(doc! { "mercenary_id": 1, "version": 1 })
-                        .options(IndexOptions::builder().unique(true).build())
-                        .build(),
-                )
-                .await
-        })
+        telemetry::db_query(
+            COLLECTION_NAME,
+            "create_index.unique_mercenary_version",
+            async {
+                self.mercenaries
+                    .create_index(
+                        IndexModel::builder()
+                            .keys(doc! { "mercenary_id": 1, "version": 1 })
+                            .options(IndexOptions::builder().unique(true).build())
+                            .build(),
+                    )
+                    .await
+            },
+        )
         .await?;
 
         self.mercenaries

@@ -35,7 +35,11 @@ impl CardDecksRepository {
         .await?;
 
         self.decks
-            .create_index(IndexModel::builder().keys(doc! { "deck_id": 1, "version": -1 }).build())
+            .create_index(
+                IndexModel::builder()
+                    .keys(doc! { "deck_id": 1, "version": -1 })
+                    .build(),
+            )
             .await?;
         self.decks
             .create_index(

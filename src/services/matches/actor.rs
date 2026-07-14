@@ -1478,10 +1478,7 @@ fn should_project_match_metadata(event: &MatchEvent, match_finished: bool) -> bo
     }
 }
 
-fn initial_set_state(
-    game: &Game,
-    players: &[PlayerId],
-) -> (IndexMap<PlayerId, Vec<Card>>, Card) {
+fn initial_set_state(game: &Game, players: &[PlayerId]) -> (IndexMap<PlayerId, Vec<Card>>, Card) {
     let mut decks = IndexMap::new();
     let mut upcard = None;
 

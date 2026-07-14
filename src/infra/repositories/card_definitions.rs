@@ -41,7 +41,11 @@ impl CardDefinitionsRepository {
         .await?;
 
         self.cards
-            .create_index(IndexModel::builder().keys(doc! { "card_id": 1, "version": -1 }).build())
+            .create_index(
+                IndexModel::builder()
+                    .keys(doc! { "card_id": 1, "version": -1 })
+                    .build(),
+            )
             .await?;
         self.cards
             .create_index(
