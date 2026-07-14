@@ -243,6 +243,7 @@ fn method_parameter_names(class_name: &str, method_name: &str) -> &'static [&'st
             "second_player_id",
             "second_card",
         ],
+        ("Game", "reveal_deck") => &["caster_id", "target_player_id"],
         ("Game", "steal_power_card") => &["from_player_id", "card_id", "to_player_id"],
         ("Game", "draw_power_cards") => &["player_id", "count"],
         ("PowerCard", "add_mana_cost") => &["delta"],
@@ -372,7 +373,8 @@ fn public_type_name(value: &str) -> String {
 fn is_player_id_name(name: &str) -> bool {
     matches!(
         name,
-        "player_id"
+        "caster_id"
+            | "player_id"
             | "owner_id"
             | "target_player_id"
             | "first_player_id"

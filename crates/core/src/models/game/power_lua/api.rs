@@ -26,6 +26,8 @@ pub struct LuaGame {
     #[field(skip)]
     draw_power_cards: DrawPowerCardsFn,
     #[field(skip)]
+    deck_reveals: Rc<RefCell<Vec<super::DeckReveal>>>,
+    #[field(skip)]
     current_trump: Rank,
 }
 
@@ -33,11 +35,13 @@ impl LuaGame {
     pub(crate) fn new(
         players: Rc<RefCell<HashMap<String, ScriptPlayerState>>>,
         draw_power_cards: DrawPowerCardsFn,
+        deck_reveals: Rc<RefCell<Vec<super::DeckReveal>>>,
         current_trump: Rank,
     ) -> Self {
         Self {
             players,
             draw_power_cards,
+            deck_reveals,
             current_trump,
         }
     }
@@ -187,6 +191,29 @@ impl LuaGame {
             .copied()
             .map(LuaCard::from_card)
             .collect())
+    }
+
+    fn reveal_deck_for_players(&self, caster_id: &str, target_player_id: &str) -> mlua::Result<()> {
+        let cards = {
+            let players = self.players.borrow();
+            if !players.contains_key(caster_id) {
+                return Err(unknown_player(caster_id));
+            }
+
+            let Some(target) = players.get(target_player_id) else {
+                return Err(unknown_player(target_player_id));
+            };
+
+            target.cards.clone()
+        };
+
+        self.deck_reveals.borrow_mut().push(super::DeckReveal {
+            caster_id: caster_id.to_string(),
+            target_player_id: target_player_id.to_string(),
+            cards,
+        });
+
+        Ok(())
     }
 
     fn switch_cards_for_players(
@@ -380,6 +407,10 @@ impl LuaGame {
         self.cards_for_player(&player_id)
     }
 
+    fn reveal_deck(&self, caster_id: String, target_player_id: String) -> mlua::Result<()> {
+        self.reveal_deck_for_players(&caster_id, &target_player_id)
+    }
+
     fn switch_cards(
         &self,
         first_player_id: String,
@@ -534,6 +565,18 @@ impl LuaGame {
         game_function(lua, self, 1, |_, this, player_id: String| {
             this.cards_for_player(&player_id)
         })
+    }
+
+    #[getter("reveal_deck")]
+    fn reveal_deck_field(&self, lua: &Lua) -> mlua::Result<TypedFunction<(String, String), ()>> {
+        game_function(
+            lua,
+            self,
+            2,
+            |_, this, (caster_id, target_player_id): (String, String)| {
+                this.reveal_deck_for_players(&caster_id, &target_player_id)
+            },
+        )
     }
 
     #[getter("switch_cards")]
@@ -784,9 +827,10 @@ impl LuaPowerCardState {
 pub(crate) fn build_game_api(
     players: Rc<RefCell<HashMap<String, ScriptPlayerState>>>,
     draw_power_cards: DrawPowerCardsFn,
+    deck_reveals: Rc<RefCell<Vec<super::DeckReveal>>>,
     current_trump: Rank,
 ) -> LuaGame {
-    LuaGame::new(players, draw_power_cards, current_trump)
+    LuaGame::new(players, draw_power_cards, deck_reveals, current_trump)
 }
 
 pub(crate) fn build_power_card(input: &PowerScriptInput) -> LuaPowerCard {

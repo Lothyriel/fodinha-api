@@ -285,6 +285,17 @@ return {
     end,
 }
 "#;
+
+    const TEST_REVEAL_DECK_SCRIPT: &str = r#"
+return {
+    type = PowerCardType.Targetable,
+    mana_cost = 0,
+    quantity = 1,
+    effect = function(game, card)
+        game:reveal_deck(card.owner_id, card.target_player_id)
+    end,
+}
+"#;
     const TEST_MERCENARY_PASSIVE_SCRIPT: &str = r#"
 return {
     base_life = 50,
@@ -1667,6 +1678,109 @@ return {
                 msg => panic!("Expected PowerCardPlayed, got {msg:?}"),
             }
         }
+
+        drop(player_data);
+        server.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn test_fodinha_power_reveals_target_deck_only_to_caster() {
+        let server = TestServer::start().await;
+        server
+            .manager
+            .power_card_registry()
+            .replace_power_card_definitions(
+                DeckId(TEST_POWER_DECK_ID.into()),
+                vec![fodinha_power::PowerCardDefinitionInput {
+                    id: CardId("reveal_deck".into()),
+                    name: "Reveal Deck".to_string(),
+                    description: "Reveal a target player's cards.".to_string(),
+                    mana_cost: 0,
+                    quantity: 1,
+                    card_type: fodinha_power::PowerCardType::Targetable,
+                    image_url: None,
+                    script: TEST_REVEAL_DECK_SCRIPT.to_string(),
+                    source: "test/reveal_deck.lua".to_string(),
+                }],
+            )
+            .unwrap();
+
+        let client = http_client();
+        let tokens = get_players(&client, &server, 2).await;
+        let lobby_id = create_power_lobby(&client, &server, &tokens[0]).await;
+
+        for token in &tokens {
+            join_lobby_http(&client, &server, token, &lobby_id).await;
+        }
+
+        let mut player_data = connect_players(&server, tokens).await;
+        select_test_mercenaries(&mut player_data).await;
+        ready(&mut player_data).await;
+
+        for player in player_data.values_mut() {
+            assert_game_msg(&mut player.connection, validate_set_start).await;
+        }
+        for player in player_data.values_mut() {
+            get_players_mana(&mut player.connection).await;
+        }
+
+        let mut power_cards_by_player = HashMap::new();
+        for (player_id, player) in player_data.iter_mut() {
+            player.deck = get_deck(&mut player.connection).await;
+            power_cards_by_player.insert(
+                player_id.clone(),
+                get_power_cards(&mut player.connection).await,
+            );
+        }
+
+        power_bidding(&mut player_data, 1).await;
+
+        let first_connection = player_data.values_mut().next().unwrap();
+        let caster_id = get_next_power_player(&mut first_connection.connection).await;
+        for player in player_data.values_mut().skip(1) {
+            get_next_power_player(&mut player.connection).await;
+        }
+
+        let target_id = player_data
+            .keys()
+            .find(|player_id| **player_id != caster_id)
+            .cloned()
+            .unwrap();
+        let target_cards = player_data[&target_id].deck.clone();
+        let card = power_cards_by_player[&caster_id][0].clone();
+
+        send_msg(
+            &mut player_data.get_mut(&caster_id).unwrap().connection,
+            ClientCommand::GameCommand(GameCommand::FodinhaPower(
+                fodinha_power::GameCommand::UsePowerCard {
+                    card_id: card.id,
+                    target_player_id: Some(target_id.clone()),
+                },
+            )),
+        )
+        .await;
+
+        for player in player_data.values_mut() {
+            assert_game_msg(&mut player.connection, validate_power_card_played).await;
+        }
+
+        match recv_msg(&mut player_data.get_mut(&caster_id).unwrap().connection).await {
+            ServerMessage::DeckRevealed {
+                target_player_id,
+                cards,
+            } => {
+                assert_eq!(target_player_id, target_id);
+                assert_eq!(cards, target_cards);
+            }
+            message => panic!("Expected DeckRevealed for caster, got {message:?}"),
+        }
+
+        let target_message =
+            recv_msg(&mut player_data.get_mut(&target_id).unwrap().connection).await;
+        assert!(!matches!(
+            target_message,
+            ServerMessage::DeckRevealed { .. }
+        ));
 
         drop(player_data);
         server.shutdown().await;

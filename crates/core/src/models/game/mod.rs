@@ -24,6 +24,7 @@ pub struct AppliedTurn {
     pub lifes: Option<HashMap<PlayerId, usize>>,
     pub power_decks: Option<IndexMap<PlayerId, Vec<PowerCardDto>>>,
     pub mana: Option<HashMap<PlayerId, PlayerManaDto>>,
+    pub deck_reveals: Vec<power_lua::DeckReveal>,
 }
 
 #[derive(Debug, Clone)]
@@ -33,6 +34,7 @@ pub enum AppliedGameChange {
         bid: usize,
         state: BiddingState,
         mana: HashMap<PlayerId, PlayerManaDto>,
+        deck_reveals: Vec<power_lua::DeckReveal>,
     },
     TurnPlayed(AppliedTurn),
     PowerCardPlayed(fodinha_power::PowerCardOutcome),
@@ -51,6 +53,7 @@ impl From<fodinha_classic::AppliedGameChange> for AppliedGameChange {
                 bid,
                 state,
                 mana: HashMap::new(),
+                deck_reveals: Vec::new(),
             },
             fodinha_classic::AppliedGameChange::TurnPlayed(state) => {
                 Self::TurnPlayed(AppliedTurn {
@@ -58,6 +61,7 @@ impl From<fodinha_classic::AppliedGameChange> for AppliedGameChange {
                     lifes: None,
                     power_decks: None,
                     mana: None,
+                    deck_reveals: Vec::new(),
                 })
             }
         }
@@ -72,22 +76,26 @@ impl From<fodinha_power::AppliedGameChange> for AppliedGameChange {
                 bid,
                 state,
                 mana,
+                deck_reveals,
             } => Self::BidPlaced {
                 player_id,
                 bid,
                 state,
                 mana,
+                deck_reveals,
             },
             fodinha_power::AppliedGameChange::TurnPlayed {
                 state,
                 lifes,
                 power_decks,
                 mana,
+                deck_reveals,
             } => Self::TurnPlayed(AppliedTurn {
                 state,
                 lifes,
                 power_decks,
                 mana,
+                deck_reveals,
             }),
             fodinha_power::AppliedGameChange::PowerCardPlayed(outcome) => {
                 Self::PowerCardPlayed(outcome)
@@ -566,7 +574,8 @@ mod tests {
     use std::{collections::HashMap, sync::Arc};
 
     use crate::models::{
-        game::{fodinha_classic, fodinha_power},
+        Card, Rank, Suit,
+        game::{fodinha_classic, fodinha_power, power_lua},
         id::PlayerId,
     };
 
@@ -722,6 +731,11 @@ mod tests {
                     mana: HashMap::new(),
                     decks: HashMap::new(),
                     power_decks: HashMap::new(),
+                    deck_reveals: vec![power_lua::DeckReveal {
+                        caster_id: "player-1".to_string(),
+                        target_player_id: "player-2".to_string(),
+                        cards: vec![Card::new(Rank::One, Suit::Clubs)],
+                    }],
                 },
                 set_ended_effects: fodinha_power::PowerCardEffects::default(),
                 set_started_effects: fodinha_power::PowerCardEffects::default(),
@@ -741,9 +755,23 @@ mod tests {
             )) => {
                 assert_eq!(decoded_player_id, player_id);
                 assert_eq!(effects.lifes.get(&player_id), Some(&60));
+                assert_eq!(effects.deck_reveals.len(), 1);
+                assert_eq!(effects.deck_reveals[0].caster_id, "player-1");
             }
             decoded => panic!("unexpected decoded event: {decoded:?}"),
         }
+    }
+
+    #[test]
+    fn old_power_card_effects_default_missing_deck_reveals() {
+        let mut document =
+            mongodb::bson::to_document(&fodinha_power::PowerCardEffects::default()).unwrap();
+        document.remove("deck_reveals");
+
+        let decoded: fodinha_power::PowerCardEffects =
+            mongodb::bson::from_document(document).unwrap();
+
+        assert!(decoded.deck_reveals.is_empty());
     }
 
     #[test]

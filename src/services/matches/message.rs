@@ -60,6 +60,10 @@ pub enum OutboundMessage {
     },
     RoundEnded(PlayerPoints),
     PlayerDeck(Vec<Card>),
+    DeckRevealed {
+        target_player_id: PlayerId,
+        cards: Vec<Card>,
+    },
     PlayerPowerCards(Vec<PowerCardDto>),
     PowerCardPlayed {
         player_id: PlayerId,

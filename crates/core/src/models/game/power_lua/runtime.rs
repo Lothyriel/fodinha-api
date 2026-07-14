@@ -363,10 +363,12 @@ pub fn run_power_card_script(
     input: PowerScriptInput,
 ) -> Result<PowerScriptOutput, PowerScriptError> {
     let players = shared_players(&input.players);
+    let deck_reveals = Rc::new(std::cell::RefCell::new(Vec::new()));
     let lua = create_lua()?;
     let game = api::build_game_api(
         Rc::clone(&players),
         input.draw_power_cards.clone(),
+        Rc::clone(&deck_reveals),
         input.current_trump,
     );
     let card = api::build_power_card(&input);
@@ -395,6 +397,7 @@ pub fn run_power_card_script(
     Ok(output_from_players(
         &input.players,
         &players.borrow(),
+        &deck_reveals.borrow(),
         Some(card.mana_cost()),
     ))
 }
@@ -404,10 +407,12 @@ pub fn run_passive_script(
     input: PassiveScriptInput,
 ) -> Result<PowerScriptOutput, PowerScriptError> {
     let players = shared_players(&input.players);
+    let deck_reveals = Rc::new(std::cell::RefCell::new(Vec::new()));
     let lua = create_lua()?;
     let game = api::build_game_api(
         Rc::clone(&players),
         input.draw_power_cards.clone(),
+        Rc::clone(&deck_reveals),
         input.current_trump,
     );
     let event = api::build_event_table(&lua, &input.event)?;
@@ -421,7 +426,12 @@ pub fn run_passive_script(
         }
     }
 
-    Ok(output_from_players(&input.players, &players.borrow(), None))
+    Ok(output_from_players(
+        &input.players,
+        &players.borrow(),
+        &deck_reveals.borrow(),
+        None,
+    ))
 }
 
 pub(crate) fn create_lua() -> Result<Lua, mlua::Error> {
@@ -504,6 +514,7 @@ fn shared_players(
 fn output_from_players(
     initial: &HashMap<PlayerId, ScriptPlayerState>,
     players: &HashMap<String, ScriptPlayerState>,
+    deck_reveals: &[super::DeckReveal],
     mana_cost: Option<i64>,
 ) -> PowerScriptOutput {
     let lifes = initial
@@ -548,6 +559,7 @@ fn output_from_players(
         mana,
         cards,
         power_cards,
+        deck_reveals: deck_reveals.to_vec(),
         mana_cost,
     }
 }

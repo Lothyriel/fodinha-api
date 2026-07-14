@@ -12,7 +12,7 @@ use crate::{
         commands::GetLobbyDto,
         game::{
             AppliedGameChange, AppliedTurn, BiddingState, GameEvent, GameSettings, GameType,
-            MatchEvent, fodinha_classic, fodinha_power,
+            MatchEvent, fodinha_classic, fodinha_power, power_lua::DeckReveal,
         },
         id::{MatchId, MercenaryId, PlayerId},
         lobby::{Lobby, LobbyInfoInternal, LobbyPlayerStatus},
@@ -70,6 +70,7 @@ enum AppliedEvent {
         lifes: Option<HashMap<PlayerId, usize>>,
         power_decks: Option<IndexMap<PlayerId, Vec<PowerCardDto>>>,
         mana: Option<HashMap<PlayerId, PlayerManaDto>>,
+        deck_reveals: Vec<DeckReveal>,
         next: PlayerId,
         possible_bids: Vec<usize>,
     },
@@ -502,6 +503,7 @@ impl MatchActor {
                 mana,
                 next,
                 possible_bids,
+                deck_reveals,
             } = applied
             {
                 self.refresh_empty_playing_activity();
@@ -516,6 +518,7 @@ impl MatchActor {
                     possible_bids,
                 })
                 .await;
+                self.send_deck_reveals(deck_reveals).await;
             }
         }
 
@@ -581,8 +584,10 @@ impl MatchActor {
                 bid,
                 state,
                 mana,
+                deck_reveals,
             }) => {
-                self.broadcast_bid(player_id, bid, state, mana).await;
+                self.broadcast_bid(player_id, bid, state, mana, deck_reveals)
+                    .await;
                 Ok(ActorResult::Continue)
             }
             AppliedEvent::Game(AppliedGameChange::TurnPlayed(turn)) => {
@@ -709,6 +714,7 @@ impl MatchActor {
                     lifes: None,
                     power_decks: None,
                     mana: None,
+                    deck_reveals: Vec::new(),
                     next: game.get_bidding_player(),
                     possible_bids: game.get_possible_bids(),
                 })
@@ -752,6 +758,7 @@ impl MatchActor {
                 }
                 let lifes =
                     (!passive_effects.lifes.is_empty()).then(|| passive_effects.lifes.clone());
+                let deck_reveals = passive_effects.deck_reveals.clone();
 
                 mana.extend(passive_mana);
                 power_decks.extend(passive_power_decks);
@@ -769,6 +776,7 @@ impl MatchActor {
                     lifes,
                     power_decks: Some(power_decks),
                     mana: Some(mana),
+                    deck_reveals,
                     next: game.get_bidding_player(),
                     possible_bids: game.get_possible_bids(),
                 })
@@ -816,6 +824,7 @@ impl MatchActor {
         bid: usize,
         state: BiddingState,
         mana: HashMap<PlayerId, PlayerManaDto>,
+        deck_reveals: Vec<DeckReveal>,
     ) {
         let msg = OutboundMessage::PlayerBidded {
             player_id: player_id.clone(),
@@ -827,6 +836,8 @@ impl MatchActor {
             self.broadcast(OutboundMessage::PlayersManaChanged(mana))
                 .await;
         }
+
+        self.send_deck_reveals(deck_reveals).await;
 
         if self.is_finished()
             && let Some(lifes) = self.current_lifes()
@@ -856,6 +867,7 @@ impl MatchActor {
         let state = turn.state;
         let msg = OutboundMessage::TurnPlayed { pile: state.pile };
         self.broadcast(msg).await;
+        self.send_deck_reveals(turn.deck_reveals).await;
 
         match state.outcome {
             GameOutcome::SetEnded {
@@ -926,6 +938,7 @@ impl MatchActor {
             lifes: outcome.lifes,
         })
         .await;
+        self.send_deck_reveals(outcome.deck_reveals.clone()).await;
 
         if next_set.is_none() {
             if !mana.is_empty() {
@@ -997,6 +1010,8 @@ impl MatchActor {
             ))
             .await;
         }
+
+        self.send_deck_reveals(outcome.deck_reveals.clone()).await;
 
         if next_set.is_none() {
             if !mana.is_empty() {
@@ -1150,6 +1165,19 @@ impl MatchActor {
 
         if let Err(e) = sender.send(msg).await {
             tracing::error!("Error enqueueing message to {player_id:?}: {e}");
+        }
+    }
+
+    async fn send_deck_reveals(&self, reveals: Vec<DeckReveal>) {
+        for reveal in reveals {
+            self.send_to_player(
+                &PlayerId(reveal.caster_id.into()),
+                OutboundMessage::DeckRevealed {
+                    target_player_id: PlayerId(reveal.target_player_id.into()),
+                    cards: reveal.cards,
+                },
+            )
+            .await;
         }
     }
 

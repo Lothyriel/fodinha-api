@@ -673,6 +673,13 @@ impl ManagerHandle {
             }),
             OutboundMessage::RoundEnded(rounds) => Ok(ServerMessage::RoundEnded(rounds)),
             OutboundMessage::PlayerDeck(deck) => Ok(ServerMessage::PlayerDeck(deck)),
+            OutboundMessage::DeckRevealed {
+                target_player_id,
+                cards,
+            } => Ok(ServerMessage::DeckRevealed {
+                target_player_id,
+                cards,
+            }),
             OutboundMessage::PlayerPowerCards(deck) => Ok(ServerMessage::PlayerPowerCards(deck)),
             OutboundMessage::PowerCardPlayed {
                 player_id,

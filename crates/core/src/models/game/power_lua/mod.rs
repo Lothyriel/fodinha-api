@@ -46,6 +46,13 @@ pub struct ScriptPowerCardState {
     pub usable: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct DeckReveal {
+    pub caster_id: String,
+    pub target_player_id: String,
+    pub cards: Vec<Card>,
+}
+
 #[derive(Clone)]
 pub struct PowerScriptInput {
     pub card_id: String,
@@ -211,6 +218,7 @@ pub struct PowerScriptOutput {
     pub mana: HashMap<PlayerId, ScriptManaState>,
     pub cards: HashMap<PlayerId, Vec<Card>>,
     pub power_cards: HashMap<PlayerId, Vec<ScriptPowerCardState>>,
+    pub deck_reveals: Vec<DeckReveal>,
     pub mana_cost: Option<i64>,
 }
 
@@ -300,6 +308,7 @@ mod tests {
         let game = api::build_game_api(
             Rc::clone(&players),
             input.draw_power_cards.clone(),
+            Rc::new(RefCell::new(Vec::new())),
             input.current_trump,
         );
         let card = api::build_power_card(&input);
@@ -324,6 +333,7 @@ mod tests {
             "set_mana",
             "set_max_mana",
             "get_cards",
+            "reveal_deck",
             "switch_cards",
             "get_power_cards",
             "steal_power_card",
@@ -422,6 +432,9 @@ mod tests {
             definitions
                 .contains("---@field get_cards fun(self: Game, player_id: PlayerId): Card[]")
         );
+        assert!(definitions.contains(
+            "---@field reveal_deck fun(self: Game, caster_id: PlayerId, target_player_id: PlayerId)"
+        ));
         assert!(definitions.contains(
             "---@field get_power_cards fun(self: Game, player_id: PlayerId): PowerCardState[]"
         ));
@@ -681,6 +694,44 @@ mod tests {
         .unwrap();
 
         assert_eq!(output.lifes.get(&player), Some(&55));
+    }
+
+    #[test]
+    fn script_can_reveal_target_deck_to_caster() {
+        let caster = PlayerId(Arc::from("P1"));
+        let target = PlayerId(Arc::from("P2"));
+        let target_card = Card::new(Rank::Two, Suit::Golds);
+        let mut target_state = script_player(50);
+        target_state.cards = vec![target_card];
+
+        let output = run_power_card_script(
+            r#"
+            return {
+                type = PowerCardType.Targetable,
+                mana_cost = 0,
+                quantity = 1,
+                effect = function(game, card)
+                    game:reveal_deck(card.owner_id, card.target_player_id)
+                end,
+            }
+            "#,
+            script_input(
+                caster.clone(),
+                Some(target.clone()),
+                HashMap::from([(caster, script_player(50)), (target, target_state)]),
+            ),
+        )
+        .unwrap();
+
+        assert_eq!(
+            output.deck_reveals,
+            vec![DeckReveal {
+                caster_id: "P1".to_string(),
+                target_player_id: "P2".to_string(),
+                cards: vec![target_card],
+            }]
+        );
+        assert!(output.cards.is_empty());
     }
 
     #[test]

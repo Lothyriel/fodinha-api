@@ -14,9 +14,9 @@ use crate::{
         game::{
             BiddingState, DealState, DeckShuffle, NewSet, fodinha_classic,
             power_lua::{
-                DrawPowerCardsFn, PassiveGameEvent, PassiveScriptInput, PowerScriptError,
-                PowerScriptInput, PowerScriptOutput, ScriptManaState, ScriptPlayerState,
-                ScriptPowerCardState,
+                DeckReveal, DrawPowerCardsFn, PassiveGameEvent, PassiveScriptInput,
+                PowerScriptError, PowerScriptInput, PowerScriptOutput, ScriptManaState,
+                ScriptPlayerState, ScriptPowerCardState,
             },
         },
         id::{CardId, DeckId, MercenaryId, PlayerId},
@@ -293,6 +293,8 @@ pub struct PowerCardEffects {
     pub mana: HashMap<PlayerId, PlayerMana>,
     pub decks: HashMap<PlayerId, Vec<Card>>,
     pub power_decks: HashMap<PlayerId, Vec<PowerCard>>,
+    #[serde(default)]
+    pub deck_reveals: Vec<DeckReveal>,
 }
 
 impl PowerCardEffects {
@@ -301,6 +303,7 @@ impl PowerCardEffects {
         self.mana.extend(other.mana);
         self.decks.extend(other.decks);
         self.power_decks.extend(other.power_decks);
+        self.deck_reveals.extend(other.deck_reveals);
     }
 }
 
@@ -311,12 +314,14 @@ pub enum AppliedGameChange {
         bid: usize,
         state: BiddingState,
         mana: HashMap<PlayerId, PlayerManaDto>,
+        deck_reveals: Vec<DeckReveal>,
     },
     TurnPlayed {
         state: DealState,
         lifes: Option<HashMap<PlayerId, usize>>,
         power_decks: Option<IndexMap<PlayerId, Vec<PowerCardDto>>>,
         mana: Option<HashMap<PlayerId, PlayerManaDto>>,
+        deck_reveals: Vec<DeckReveal>,
     },
     PowerCardPlayed(PowerCardOutcome),
     PowerPhaseSkipped(PowerPhaseSkipOutcome),
@@ -331,6 +336,7 @@ pub struct PowerCardOutcome {
     pub mana: HashMap<PlayerId, PlayerManaDto>,
     pub decks: HashMap<PlayerId, Vec<Card>>,
     pub power_decks: HashMap<PlayerId, Vec<PowerCardDto>>,
+    pub deck_reveals: Vec<DeckReveal>,
     pub ended: bool,
     pub next_set: Option<NewSet>,
     pub next_power_set: Option<PowerSet>,
@@ -345,6 +351,7 @@ pub struct PowerPhaseSkipOutcome {
     pub mana: HashMap<PlayerId, PlayerManaDto>,
     pub decks: HashMap<PlayerId, Vec<Card>>,
     pub power_decks: HashMap<PlayerId, Vec<PowerCardDto>>,
+    pub deck_reveals: Vec<DeckReveal>,
     pub ended: bool,
     pub next_set: Option<NewSet>,
     pub next_power_set: Option<PowerSet>,
@@ -1378,6 +1385,7 @@ impl Game {
                         bid,
                         state,
                     } => {
+                        let deck_reveals = passive_effects.deck_reveals.clone();
                         let mut mana = self.apply_mana_totals(&mana);
                         let (passive_mana, _) = self.apply_effects(&passive_effects);
                         self.set_stage_after_bid(&state);
@@ -1388,6 +1396,7 @@ impl Game {
                             bid,
                             state,
                             mana,
+                            deck_reveals,
                         }
                     }
                     _ => unreachable!("bid event applies as bid change"),
@@ -1405,6 +1414,7 @@ impl Game {
                 let is_set_end = next_set.is_some();
                 let state = self.core.apply_turn(turn, next_set.clone(), !is_set_end);
 
+                let deck_reveals = passive_effects.deck_reveals.clone();
                 let (passive_mana, passive_power_decks) = self.apply_effects(&passive_effects);
                 let mana = if passive_mana.is_empty() {
                     None
@@ -1444,6 +1454,7 @@ impl Game {
                     lifes: None,
                     power_decks,
                     mana,
+                    deck_reveals,
                 }
             }
             MatchEvent::PowerCardPlayed {
@@ -1478,6 +1489,8 @@ impl Game {
                 }
 
                 let (mana, power_decks) = self.apply_effects(&effects);
+                let deck_reveals =
+                    Self::merge_deck_reveals(&effects, &set_ended_effects, &set_started_effects);
                 let completed_phase = self.advance_power_phase(&player_id);
 
                 if next_set.is_some() {
@@ -1517,6 +1530,7 @@ impl Game {
                                     )
                                 })
                                 .collect(),
+                            deck_reveals,
                             ended: true,
                             next_set: None,
                             next_power_set: None,
@@ -1553,6 +1567,7 @@ impl Game {
                                 )
                             })
                             .collect(),
+                        deck_reveals,
                         ended: self.core.is_finished(),
                         next_set: Some(next_set),
                         next_power_set: Some(next_power_set),
@@ -1572,6 +1587,7 @@ impl Game {
                     mana,
                     decks: effects.decks,
                     power_decks,
+                    deck_reveals,
                     ended: self.core.is_finished(),
                     next_set: None,
                     next_power_set: None,
@@ -1602,6 +1618,8 @@ impl Game {
                     (None, None)
                 };
                 let (mana, power_decks) = self.apply_effects(&effects);
+                let deck_reveals =
+                    Self::merge_deck_reveals(&effects, &set_ended_effects, &set_started_effects);
                 let completed_phase = self.advance_power_phase(&player_id);
 
                 if next_set.is_some() {
@@ -1640,6 +1658,7 @@ impl Game {
                                     )
                                 })
                                 .collect(),
+                            deck_reveals,
                             ended: true,
                             next_set: None,
                             next_power_set: None,
@@ -1675,6 +1694,7 @@ impl Game {
                                 )
                             })
                             .collect(),
+                        deck_reveals,
                         ended: self.core.is_finished(),
                         next_set: Some(next_set),
                         next_power_set: Some(next_power_set),
@@ -1693,6 +1713,7 @@ impl Game {
                     mana,
                     decks: effects.decks,
                     power_decks,
+                    deck_reveals,
                     ended: self.core.is_finished(),
                     next_set: None,
                     next_power_set: None,
@@ -2096,6 +2117,7 @@ impl Game {
             mana,
             decks: output.cards,
             power_decks,
+            deck_reveals: output.deck_reveals,
         }
     }
 
@@ -2121,7 +2143,22 @@ impl Game {
             mana,
             decks: output.cards,
             power_decks,
+            deck_reveals: output.deck_reveals,
         }
+    }
+
+    fn merge_deck_reveals(
+        effects: &PowerCardEffects,
+        set_ended_effects: &PowerCardEffects,
+        set_started_effects: &PowerCardEffects,
+    ) -> Vec<DeckReveal> {
+        effects
+            .deck_reveals
+            .iter()
+            .chain(&set_ended_effects.deck_reveals)
+            .chain(&set_started_effects.deck_reveals)
+            .cloned()
+            .collect()
     }
 
     fn classic_settings(_settings: &GameSettings) -> fodinha_classic::GameSettings {
@@ -3985,6 +4022,7 @@ return {
                     mana: HashMap::new(),
                     decks: HashMap::new(),
                     power_decks: HashMap::new(),
+                    deck_reveals: Vec::new(),
                 },
                 set_ended_effects: PowerCardEffects::default(),
                 set_started_effects: PowerCardEffects::default(),
