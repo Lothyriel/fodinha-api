@@ -439,6 +439,7 @@ mod tests {
             "---@field get_power_cards fun(self: Game, player_id: PlayerId): PowerCardState[]"
         ));
         assert!(definitions.contains("---@field get_current_trump fun(self: Game): Rank"));
+        assert!(definitions.contains("---@field player_ids fun(self: Game): PlayerId[]"));
         assert!(
             definitions
                 .contains("---@field add_mana_cost fun(self: PowerCard, delta: integer): integer")
@@ -450,6 +451,7 @@ mod tests {
         assert!(definitions.contains("---@field rank Rank"));
         assert!(definitions.contains("---@field suit Suit"));
         assert!(definitions.contains("---@field type PowerCardType"));
+        assert!(definitions.contains("---@field owner_id PlayerId"));
         assert!(definitions.contains("---@field type \"bid_placed\""));
         assert!(definitions.contains("---@field bids table<PlayerId, integer>"));
         assert!(definitions.contains(
@@ -461,10 +463,43 @@ mod tests {
         assert!(!definitions.contains("card = nil"));
         assert!(!definitions.contains("mercenary = nil"));
         assert!(!definitions.contains("event = nil"));
+        assert!(!definitions.contains("param1"));
         assert!(lua_codegen::render_power_card_template().contains("PowerCardScript"));
         assert!(
             lua_codegen::render_mercenary_passive_template().contains("MercenaryPassiveScript")
         );
+    }
+
+    #[test]
+    fn generated_bindings_preserve_argument_count_validation() {
+        let player = PlayerId(Arc::from("P1"));
+        let input = script_input(
+            player.clone(),
+            Vec::new(),
+            HashMap::from([(player, script_player(50))]),
+        );
+        let players = Rc::new(RefCell::new(
+            input
+                .players
+                .iter()
+                .map(|(player_id, state)| (player_id.as_str().to_string(), state.clone()))
+                .collect(),
+        ));
+        let game = api::build_game_api(
+            players,
+            input.draw_power_cards,
+            Rc::new(RefCell::new(Vec::new())),
+            input.current_trump,
+        );
+        let lua = runtime::create_lua().unwrap();
+        let call: mlua::Function = lua
+            .load("return function(game) return game.get_lives() end")
+            .eval()
+            .unwrap();
+
+        let error = call.call::<mlua::Value>(game).unwrap_err();
+
+        assert!(error.to_string().contains("expected 1 arguments, got 0"));
     }
 
     #[test]

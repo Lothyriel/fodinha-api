@@ -36,6 +36,27 @@ impl PlayerId {
     }
 }
 
+impl mlua_extras::mlua::FromLua for PlayerId {
+    fn from_lua(
+        value: mlua_extras::mlua::Value,
+        lua: &mlua_extras::mlua::Lua,
+    ) -> mlua_extras::mlua::Result<Self> {
+        let value = <String as mlua_extras::mlua::FromLua>::from_lua(value, lua)?;
+        Ok(Self(Arc::from(value)))
+    }
+}
+
+impl mlua_extras::mlua::IntoLua for PlayerId {
+    fn into_lua(
+        self,
+        lua: &mlua_extras::mlua::Lua,
+    ) -> mlua_extras::mlua::Result<mlua_extras::mlua::Value> {
+        Ok(mlua_extras::mlua::Value::String(
+            lua.create_string(self.as_str())?,
+        ))
+    }
+}
+
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
 pub struct CardId(pub Arc<str>);
 

@@ -1,4 +1,4 @@
-use std::{collections::HashSet, fmt::Write as _, sync::OnceLock};
+use std::{fmt::Write as _, sync::OnceLock};
 
 use mlua_extras::typed::{Func, Index, Param, Type};
 
@@ -101,28 +101,14 @@ fn render_types() -> String {
         }
         writeln!(output, "---@class {}", registration.name).unwrap();
 
-        let method_names = class.methods.keys().map(index_name).collect::<HashSet<_>>();
-
         for (name, field) in &class.fields {
             let name = index_name(name);
-            if method_names.contains(&name) || is_method_name(registration.name, &name) {
-                if let Type::Function { params, returns } = &field.ty {
-                    render_function_method(&mut output, registration.name, &name, params, returns);
-                }
-                continue;
-            }
             if let Some(doc) = &field.doc {
                 for line in doc.lines() {
                     writeln!(output, "---{line}").unwrap();
                 }
             }
-            writeln!(
-                output,
-                "---@field {} {}",
-                name,
-                type_signature(&field.ty, registration.name, &name, None)
-            )
-            .unwrap();
+            writeln!(output, "---@field {} {}", name, type_signature(&field.ty)).unwrap();
         }
 
         for (name, method) in &class.methods {
@@ -145,7 +131,7 @@ fn render_method(output: &mut String, class_name: &str, method_name: &str, metho
     let mut params = vec![format!("self: {class_name}")];
     for (index, param) in method.params.iter().enumerate() {
         let name = param_name(param, index);
-        let ty = type_signature(&param.ty, class_name, method_name, Some(&name));
+        let ty = type_signature(&param.ty);
         params.push(format!("{name}: {ty}"));
     }
 
@@ -155,7 +141,7 @@ fn render_method(output: &mut String, class_name: &str, method_name: &str, metho
         let values = method
             .returns
             .iter()
-            .map(|value| type_signature(&value.ty, class_name, method_name, None))
+            .map(|value| type_signature(&value.ty))
             .collect::<Vec<_>>()
             .join(", ");
         format!(": {values}")
@@ -171,86 +157,6 @@ fn render_method(output: &mut String, class_name: &str, method_name: &str, metho
     .unwrap();
 }
 
-fn render_function_method(
-    output: &mut String,
-    class_name: &str,
-    method_name: &str,
-    params: &[Param],
-    returns: &[mlua_extras::typed::Return],
-) {
-    let names = method_parameter_names(class_name, method_name);
-    let mut rendered_params = vec![format!("self: {class_name}")];
-    for (index, param) in params.iter().enumerate() {
-        let name = names
-            .get(index)
-            .map(|name| (*name).to_string())
-            .unwrap_or_else(|| param_name(param, index));
-        let ty = type_signature(&param.ty, class_name, method_name, Some(&name));
-        rendered_params.push(format!("{name}: {ty}"));
-    }
-    let returns = render_returns(class_name, method_name, returns);
-    writeln!(
-        output,
-        "---@field {} fun({}){}",
-        method_name,
-        rendered_params.join(", "),
-        returns
-    )
-    .unwrap();
-}
-
-fn render_returns(
-    class_name: &str,
-    method_name: &str,
-    returns: &[mlua_extras::typed::Return],
-) -> String {
-    if returns.is_empty() {
-        return String::new();
-    }
-    let values = returns
-        .iter()
-        .map(|value| type_signature(&value.ty, class_name, method_name, None))
-        .collect::<Vec<_>>()
-        .join(", ");
-    format!(": {values}")
-}
-
-fn is_method_name(class_name: &str, method_name: &str) -> bool {
-    !method_parameter_names(class_name, method_name).is_empty()
-        || matches!(
-            (class_name, method_name),
-            ("Game", "get_current_trump") | ("Game", "player_ids")
-        )
-}
-
-fn method_parameter_names(class_name: &str, method_name: &str) -> &'static [&'static str] {
-    match (class_name, method_name) {
-        ("Game", "get_lives")
-        | ("Game", "get_bid")
-        | ("Game", "get_rounds")
-        | ("Game", "get_mana")
-        | ("Game", "get_max_mana")
-        | ("Game", "get_mana_pool")
-        | ("Game", "get_cards")
-        | ("Game", "get_power_cards") => &["player_id"],
-        ("Game", "add_lives") | ("Game", "add_mana") => &["player_id", "delta"],
-        ("Game", "set_lives") => &["player_id", "lifes"],
-        ("Game", "add_bids") => &["player_id", "bid_count"],
-        ("Game", "set_mana") | ("Game", "set_max_mana") => &["player_id", "mana"],
-        ("Game", "switch_cards") => &[
-            "first_player_id",
-            "first_card",
-            "second_player_id",
-            "second_card",
-        ],
-        ("Game", "reveal_deck") => &["caster_id", "target_player_id"],
-        ("Game", "steal_power_card") => &["from_player_id", "card_id", "to_player_id"],
-        ("Game", "draw_power_cards") => &["player_id", "count"],
-        ("PowerCard", "add_mana_cost") => &["delta"],
-        _ => &[],
-    }
-}
-
 fn param_name(param: &Param, index: usize) -> String {
     param
         .name
@@ -263,36 +169,24 @@ fn index_name(index: &Index) -> String {
     index.to_string()
 }
 
-fn type_signature(
-    ty: &Type,
-    class_name: &str,
-    member_name: &str,
-    parameter_name: Option<&str>,
-) -> String {
-    let mut signature = match ty {
+fn type_signature(ty: &Type) -> String {
+    match ty {
         Type::Single(value) => public_type_name(value),
-        Type::Value(inner) | Type::Alias(inner) => {
-            type_signature(inner, class_name, member_name, parameter_name)
+        Type::Value(inner) | Type::Alias(inner) => type_signature(inner),
+        Type::Array(inner) => format!("{}[]", type_signature(inner)),
+        Type::Map(key, value) => {
+            format!("table<{}, {}>", type_signature(key), type_signature(value))
         }
-        Type::Array(inner) => format!(
-            "{}[]",
-            type_signature(inner, class_name, member_name, parameter_name)
-        ),
-        Type::Map(key, value) => format!(
-            "table<{}, {}>",
-            type_signature(key, class_name, member_name, parameter_name),
-            type_signature(value, class_name, member_name, parameter_name)
-        ),
         Type::Union(types) => types
             .iter()
-            .map(|value| type_signature(value, class_name, member_name, parameter_name))
+            .map(type_signature)
             .collect::<Vec<_>>()
             .join(" | "),
         Type::Tuple(types) => format!(
             "[{}]",
             types
                 .iter()
-                .map(|value| type_signature(value, class_name, member_name, parameter_name))
+                .map(type_signature)
                 .collect::<Vec<_>>()
                 .join(", ")
         ),
@@ -304,7 +198,7 @@ fn type_signature(
                     format!(
                         "{}: {}",
                         param_name(param, index),
-                        type_signature(&param.ty, class_name, member_name, None)
+                        type_signature(&param.ty)
                     )
                 })
                 .collect::<Vec<_>>()
@@ -316,7 +210,7 @@ fn type_signature(
                     ": {}",
                     returns
                         .iter()
-                        .map(|value| type_signature(&value.ty, class_name, member_name, None))
+                        .map(|value| type_signature(&value.ty))
                         .collect::<Vec<_>>()
                         .join(", ")
                 )
@@ -325,36 +219,11 @@ fn type_signature(
         }
         Type::Table(entries) => entries
             .iter()
-            .map(|(key, value)| {
-                format!(
-                    "{}: {}",
-                    key,
-                    type_signature(value, class_name, member_name, None)
-                )
-            })
+            .map(|(key, value)| format!("{}: {}", key, type_signature(value)))
             .collect::<Vec<_>>()
             .join(", "),
         Type::Class(_) | Type::Enum(_) => "any".to_string(),
-    };
-
-    if class_name == "Card" && member_name == "rank" {
-        signature = "Rank".to_string();
-    } else if class_name == "Card" && member_name == "suit" {
-        signature = "Suit".to_string();
-    } else if class_name == "PowerCardState" && member_name == "type" {
-        signature = "PowerCardType".to_string();
-    } else if class_name == "Game" && member_name == "get_current_trump" && parameter_name.is_none()
-    {
-        signature = "Rank".to_string();
-    } else if class_name == "Game" && member_name == "player_ids" && parameter_name.is_none() {
-        signature = "PlayerId[]".to_string();
-    } else if parameter_name.is_some_and(is_player_id_name) {
-        signature = "PlayerId".to_string();
-    } else if parameter_name.is_none() && is_player_id_name(member_name) {
-        signature = signature.replace("string", "PlayerId");
     }
-
-    signature
 }
 
 fn public_type_name(value: &str) -> String {
@@ -368,22 +237,6 @@ fn public_type_name(value: &str) -> String {
         })
         .map(|registration| registration.name.to_string())
         .unwrap_or_else(|| value.to_string())
-}
-
-fn is_player_id_name(name: &str) -> bool {
-    matches!(
-        name,
-        "caster_id"
-            | "player_id"
-            | "owner_id"
-            | "targets"
-            | "target_player_id"
-            | "first_player_id"
-            | "second_player_id"
-            | "from_player_id"
-            | "to_player_id"
-            | "winner"
-    )
 }
 
 fn render_enums() -> String {

@@ -2,14 +2,16 @@ use std::{
     cell::{Cell, RefCell},
     cmp::Ordering,
     collections::HashMap,
+    marker::PhantomData,
     rc::Rc,
+    sync::Arc,
 };
 
-use lua_api_derive::LuaApiType;
+use lua_api_derive::{LuaApiType, lua_api_impl};
 use mlua_extras::mlua::{
-    self, AnyUserData, FromLua, FromLuaMulti, IntoLuaMulti, Lua, Table, Value,
+    self, AnyUserData, FromLua, FromLuaMulti, IntoLua, IntoLuaMulti, Lua, Table, Value,
 };
-use mlua_extras::typed::{TypedFunction, TypedMultiValue};
+use mlua_extras::typed::{Type, Typed};
 use mlua_extras::{TypedUserData, typed_user_data_impl};
 
 use crate::models::{Card, Rank, Suit, game::fodinha_power::PowerCardType, id::PlayerId};
@@ -18,6 +20,36 @@ use super::{
     DrawPowerCardsFn, PassiveGameEvent, PassiveScriptInput, PowerScriptInput, ScriptPlayerState,
     ScriptPowerCardState,
 };
+
+pub(crate) trait LuaApiFunctionSignature {
+    fn type_definition() -> Type;
+}
+
+pub(crate) struct LuaBoundFunction<S> {
+    function: mlua::Function,
+    signature: PhantomData<S>,
+}
+
+impl<S> LuaBoundFunction<S> {
+    fn new(function: mlua::Function) -> Self {
+        Self {
+            function,
+            signature: PhantomData,
+        }
+    }
+}
+
+impl<S> IntoLua for LuaBoundFunction<S> {
+    fn into_lua(self, _lua: &Lua) -> mlua::Result<Value> {
+        Ok(Value::Function(self.function))
+    }
+}
+
+impl<S: LuaApiFunctionSignature> Typed for LuaBoundFunction<S> {
+    fn ty() -> Type {
+        S::type_definition()
+    }
+}
 
 #[derive(Clone, TypedUserData, LuaApiType)]
 pub struct LuaGame {
@@ -31,6 +63,7 @@ pub struct LuaGame {
     current_trump: Rank,
 }
 
+#[lua_api_impl]
 impl LuaGame {
     pub(crate) fn new(
         players: Rc<RefCell<HashMap<String, ScriptPlayerState>>>,
@@ -46,23 +79,26 @@ impl LuaGame {
         }
     }
 
-    fn lives_for_player(&self, player_id: &str) -> mlua::Result<usize> {
+    #[lua_api_method]
+    fn get_lives(&self, player_id: PlayerId) -> mlua::Result<usize> {
         let players = self.players.borrow();
-        let Some(player) = players.get(player_id) else {
-            return Err(unknown_player(player_id));
+        let Some(player) = players.get(player_id.as_str()) else {
+            return Err(unknown_player(player_id.as_str()));
         };
 
         Ok(player.lifes)
     }
 
-    fn current_trump_as_lua(&self) -> &'static str {
-        self.current_trump.lua_name()
+    #[lua_api_method]
+    fn get_current_trump(&self) -> Rank {
+        self.current_trump
     }
 
-    fn adjust_lives(&self, player_id: &str, delta: i64) -> mlua::Result<usize> {
+    #[lua_api_method]
+    fn add_lives(&self, player_id: PlayerId, delta: i64) -> mlua::Result<usize> {
         let mut players = self.players.borrow_mut();
-        let Some(player) = players.get_mut(player_id) else {
-            return Err(unknown_player(player_id));
+        let Some(player) = players.get_mut(player_id.as_str()) else {
+            return Err(unknown_player(player_id.as_str()));
         };
 
         player.lifes = match delta.cmp(&0) {
@@ -74,10 +110,11 @@ impl LuaGame {
         Ok(player.lifes)
     }
 
-    fn set_lives_for_player(&self, player_id: &str, lifes: i64) -> mlua::Result<usize> {
+    #[lua_api_method]
+    fn set_lives(&self, player_id: PlayerId, lifes: i64) -> mlua::Result<usize> {
         let mut players = self.players.borrow_mut();
-        let Some(player) = players.get_mut(player_id) else {
-            return Err(unknown_player(player_id));
+        let Some(player) = players.get_mut(player_id.as_str()) else {
+            return Err(unknown_player(player_id.as_str()));
         };
 
         player.lifes = usize::try_from(lifes).unwrap_or(0);
@@ -85,19 +122,21 @@ impl LuaGame {
         Ok(player.lifes)
     }
 
-    fn bid_for_player(&self, player_id: &str) -> mlua::Result<Option<usize>> {
+    #[lua_api_method]
+    fn get_bid(&self, player_id: PlayerId) -> mlua::Result<Option<usize>> {
         let players = self.players.borrow();
-        let Some(player) = players.get(player_id) else {
-            return Err(unknown_player(player_id));
+        let Some(player) = players.get(player_id.as_str()) else {
+            return Err(unknown_player(player_id.as_str()));
         };
 
         Ok(player.bid)
     }
 
-    fn add_bids_for_player(&self, player_id: &str, bid_count: i64) -> mlua::Result<()> {
+    #[lua_api_method]
+    fn add_bids(&self, player_id: PlayerId, bid_count: i64) -> mlua::Result<()> {
         let mut players = self.players.borrow_mut();
-        let Some(player) = players.get_mut(player_id) else {
-            return Err(unknown_player(player_id));
+        let Some(player) = players.get_mut(player_id.as_str()) else {
+            return Err(unknown_player(player_id.as_str()));
         };
 
         if let Some(bid) = player.bid.as_mut() {
@@ -107,37 +146,46 @@ impl LuaGame {
         Ok(())
     }
 
-    fn rounds_for_player(&self, player_id: &str) -> mlua::Result<usize> {
+    #[lua_api_method]
+    fn get_rounds(&self, player_id: PlayerId) -> mlua::Result<usize> {
         let players = self.players.borrow();
-        let Some(player) = players.get(player_id) else {
-            return Err(unknown_player(player_id));
+        let Some(player) = players.get(player_id.as_str()) else {
+            return Err(unknown_player(player_id.as_str()));
         };
 
         Ok(player.rounds)
     }
 
-    fn mana_for_player(&self, player_id: &str) -> mlua::Result<usize> {
+    #[lua_api_method]
+    fn get_mana(&self, player_id: PlayerId) -> mlua::Result<usize> {
         let players = self.players.borrow();
-        let Some(player) = players.get(player_id) else {
-            return Err(unknown_player(player_id));
+        let Some(player) = players.get(player_id.as_str()) else {
+            return Err(unknown_player(player_id.as_str()));
         };
 
         Ok(player.mana.current)
     }
 
-    fn max_mana_for_player(&self, player_id: &str) -> mlua::Result<usize> {
+    #[lua_api_method]
+    fn get_max_mana(&self, player_id: PlayerId) -> mlua::Result<usize> {
         let players = self.players.borrow();
-        let Some(player) = players.get(player_id) else {
-            return Err(unknown_player(player_id));
+        let Some(player) = players.get(player_id.as_str()) else {
+            return Err(unknown_player(player_id.as_str()));
         };
 
         Ok(player.mana.max)
     }
 
-    fn adjust_mana_for_player(&self, player_id: &str, delta: i64) -> mlua::Result<usize> {
+    #[lua_api_method]
+    fn get_mana_pool(&self, player_id: PlayerId) -> mlua::Result<usize> {
+        self.get_max_mana(player_id)
+    }
+
+    #[lua_api_method]
+    fn add_mana(&self, player_id: PlayerId, delta: i64) -> mlua::Result<usize> {
         let mut players = self.players.borrow_mut();
-        let Some(player) = players.get_mut(player_id) else {
-            return Err(unknown_player(player_id));
+        let Some(player) = players.get_mut(player_id.as_str()) else {
+            return Err(unknown_player(player_id.as_str()));
         };
 
         player.mana.current = match delta.cmp(&0) {
@@ -156,10 +204,11 @@ impl LuaGame {
         Ok(player.mana.current)
     }
 
-    fn set_mana_for_player(&self, player_id: &str, mana: i64) -> mlua::Result<usize> {
+    #[lua_api_method]
+    fn set_mana(&self, player_id: PlayerId, mana: i64) -> mlua::Result<usize> {
         let mut players = self.players.borrow_mut();
-        let Some(player) = players.get_mut(player_id) else {
-            return Err(unknown_player(player_id));
+        let Some(player) = players.get_mut(player_id.as_str()) else {
+            return Err(unknown_player(player_id.as_str()));
         };
 
         player.mana.current = usize::try_from(mana).unwrap_or(0).min(player.mana.max);
@@ -167,10 +216,11 @@ impl LuaGame {
         Ok(player.mana.current)
     }
 
-    fn set_max_mana_for_player(&self, player_id: &str, mana: i64) -> mlua::Result<usize> {
+    #[lua_api_method]
+    fn set_max_mana(&self, player_id: PlayerId, mana: i64) -> mlua::Result<usize> {
         let mut players = self.players.borrow_mut();
-        let Some(player) = players.get_mut(player_id) else {
-            return Err(unknown_player(player_id));
+        let Some(player) = players.get_mut(player_id.as_str()) else {
+            return Err(unknown_player(player_id.as_str()));
         };
 
         player.mana.max = usize::try_from(mana).unwrap_or(0);
@@ -179,10 +229,11 @@ impl LuaGame {
         Ok(player.mana.max)
     }
 
-    fn cards_for_player(&self, player_id: &str) -> mlua::Result<Vec<LuaCard>> {
+    #[lua_api_method]
+    fn get_cards(&self, player_id: PlayerId) -> mlua::Result<Vec<LuaCard>> {
         let players = self.players.borrow();
-        let Some(player) = players.get(player_id) else {
-            return Err(unknown_player(player_id));
+        let Some(player) = players.get(player_id.as_str()) else {
+            return Err(unknown_player(player_id.as_str()));
         };
 
         Ok(player
@@ -193,35 +244,37 @@ impl LuaGame {
             .collect())
     }
 
-    fn reveal_deck_for_players(&self, caster_id: &str, target_player_id: &str) -> mlua::Result<()> {
+    #[lua_api_method]
+    fn reveal_deck(&self, caster_id: PlayerId, target_player_id: PlayerId) -> mlua::Result<()> {
         let cards = {
             let players = self.players.borrow();
-            if !players.contains_key(caster_id) {
-                return Err(unknown_player(caster_id));
+            if !players.contains_key(caster_id.as_str()) {
+                return Err(unknown_player(caster_id.as_str()));
             }
 
-            let Some(target) = players.get(target_player_id) else {
-                return Err(unknown_player(target_player_id));
+            let Some(target) = players.get(target_player_id.as_str()) else {
+                return Err(unknown_player(target_player_id.as_str()));
             };
 
             target.cards.clone()
         };
 
         self.deck_reveals.borrow_mut().push(super::DeckReveal {
-            caster_id: caster_id.to_string(),
-            target_player_id: target_player_id.to_string(),
+            caster_id: caster_id.as_str().to_string(),
+            target_player_id: target_player_id.as_str().to_string(),
             cards,
         });
 
         Ok(())
     }
 
-    fn switch_cards_for_players(
+    #[lua_api_method]
+    fn switch_cards(
         &self,
-        first_player_id: &str,
-        first_card: &LuaCard,
-        second_player_id: &str,
-        second_card: &LuaCard,
+        first_player_id: PlayerId,
+        first_card: LuaCard,
+        second_player_id: PlayerId,
+        second_card: LuaCard,
     ) -> mlua::Result<bool> {
         let first_card = first_card.to_card();
         let second_card = second_card.to_card();
@@ -232,48 +285,56 @@ impl LuaGame {
 
         let mut players = self.players.borrow_mut();
         let first_idx = players
-            .get(first_player_id)
+            .get(first_player_id.as_str())
             .and_then(|player| player.cards.iter().position(|card| card == &first_card))
             .ok_or_else(|| {
-                mlua::Error::external(format!("card not found for player_id: {first_player_id}"))
+                mlua::Error::external(format!(
+                    "card not found for player_id: {}",
+                    first_player_id.as_str()
+                ))
             })?;
         let second_idx = players
-            .get(second_player_id)
+            .get(second_player_id.as_str())
             .and_then(|player| player.cards.iter().position(|card| card == &second_card))
             .ok_or_else(|| {
-                mlua::Error::external(format!("card not found for player_id: {second_player_id}"))
+                mlua::Error::external(format!(
+                    "card not found for player_id: {}",
+                    second_player_id.as_str()
+                ))
             })?;
 
         players
-            .get_mut(first_player_id)
+            .get_mut(first_player_id.as_str())
             .expect("player was validated above")
             .cards[first_idx] = second_card;
         players
-            .get_mut(second_player_id)
+            .get_mut(second_player_id.as_str())
             .expect("player was validated above")
             .cards[second_idx] = first_card;
 
         Ok(true)
     }
 
-    fn power_cards_for_player(&self, player_id: &str) -> mlua::Result<Vec<LuaPowerCardState>> {
+    #[lua_api_method]
+    fn get_power_cards(&self, player_id: PlayerId) -> mlua::Result<Vec<LuaPowerCardState>> {
         let players = self.players.borrow();
-        let Some(player) = players.get(player_id) else {
-            return Err(unknown_player(player_id));
+        let Some(player) = players.get(player_id.as_str()) else {
+            return Err(unknown_player(player_id.as_str()));
         };
 
         Ok(power_cards_to_lua_vec(
             &player.power_cards,
             Rc::clone(&self.players),
-            player_id,
+            player_id.as_str(),
         ))
     }
 
-    fn steal_power_card_between_players(
+    #[lua_api_method]
+    fn steal_power_card(
         &self,
-        from_player_id: &str,
-        card_id: &str,
-        to_player_id: &str,
+        from_player_id: PlayerId,
+        card_id: String,
+        to_player_id: PlayerId,
     ) -> mlua::Result<bool> {
         if from_player_id == to_player_id {
             return Ok(false);
@@ -281,7 +342,7 @@ impl LuaGame {
 
         let mut players = self.players.borrow_mut();
         let card_idx = players
-            .get(from_player_id)
+            .get(from_player_id.as_str())
             .and_then(|player| {
                 player
                     .power_cards
@@ -290,21 +351,22 @@ impl LuaGame {
             })
             .ok_or_else(|| {
                 mlua::Error::external(format!(
-                    "power card not found for player_id: {from_player_id}"
+                    "power card not found for player_id: {}",
+                    from_player_id.as_str()
                 ))
             })?;
 
-        if !players.contains_key(to_player_id) {
-            return Err(unknown_player(to_player_id));
+        if !players.contains_key(to_player_id.as_str()) {
+            return Err(unknown_player(to_player_id.as_str()));
         }
 
         let card = players
-            .get_mut(from_player_id)
+            .get_mut(from_player_id.as_str())
             .expect("player was validated above")
             .power_cards
             .remove(card_idx);
         players
-            .get_mut(to_player_id)
+            .get_mut(to_player_id.as_str())
             .expect("player was validated above")
             .power_cards
             .push(card);
@@ -312,26 +374,28 @@ impl LuaGame {
         Ok(true)
     }
 
-    fn draw_power_cards_for_player(
+    #[lua_api_method]
+    fn draw_power_cards(
         &self,
-        player_id: &str,
+        player_id: PlayerId,
         count: i64,
     ) -> mlua::Result<Vec<LuaPowerCardState>> {
         let count = usize_count(count, "count")?;
-        if !self.players.borrow().contains_key(player_id) {
-            return Err(unknown_player(player_id));
+        if !self.players.borrow().contains_key(player_id.as_str()) {
+            return Err(unknown_player(player_id.as_str()));
         }
 
         if count == 0 {
             return Ok(Vec::new());
         }
 
-        let drawn = (self.draw_power_cards)(player_id, count).map_err(mlua::Error::external)?;
-        let result = power_cards_to_lua_vec(&drawn, Rc::clone(&self.players), player_id);
+        let drawn =
+            (self.draw_power_cards)(player_id.as_str(), count).map_err(mlua::Error::external)?;
+        let result = power_cards_to_lua_vec(&drawn, Rc::clone(&self.players), player_id.as_str());
 
         self.players
             .borrow_mut()
-            .get_mut(player_id)
+            .get_mut(player_id.as_str())
             .expect("player was validated above")
             .power_cards
             .extend(drawn);
@@ -339,310 +403,13 @@ impl LuaGame {
         Ok(result)
     }
 
-    fn list_player_ids(&self) -> Vec<String> {
+    #[lua_api_method]
+    fn player_ids(&self) -> Vec<PlayerId> {
         self.players
             .borrow()
             .keys()
-            .map(|player_id| player_id.to_owned())
+            .map(|player_id| PlayerId(Arc::from(player_id.as_str())))
             .collect()
-    }
-}
-
-#[typed_user_data_impl]
-#[allow(dead_code)]
-impl LuaGame {
-    fn get_lives(&self, player_id: String) -> mlua::Result<usize> {
-        self.lives_for_player(&player_id)
-    }
-
-    fn get_current_trump(&self) -> &'static str {
-        self.current_trump_as_lua()
-    }
-
-    fn add_lives(&self, player_id: String, delta: i64) -> mlua::Result<usize> {
-        self.adjust_lives(&player_id, delta)
-    }
-
-    fn set_lives(&self, player_id: String, lifes: i64) -> mlua::Result<usize> {
-        self.set_lives_for_player(&player_id, lifes)
-    }
-
-    fn get_bid(&self, player_id: String) -> mlua::Result<Option<usize>> {
-        self.bid_for_player(&player_id)
-    }
-
-    fn add_bids(&self, player_id: String, bid_count: i64) -> mlua::Result<()> {
-        self.add_bids_for_player(&player_id, bid_count)
-    }
-
-    fn get_rounds(&self, player_id: String) -> mlua::Result<usize> {
-        self.rounds_for_player(&player_id)
-    }
-
-    fn get_mana(&self, player_id: String) -> mlua::Result<usize> {
-        self.mana_for_player(&player_id)
-    }
-
-    fn get_max_mana(&self, player_id: String) -> mlua::Result<usize> {
-        self.max_mana_for_player(&player_id)
-    }
-
-    fn get_mana_pool(&self, player_id: String) -> mlua::Result<usize> {
-        self.max_mana_for_player(&player_id)
-    }
-
-    fn add_mana(&self, player_id: String, delta: i64) -> mlua::Result<usize> {
-        self.adjust_mana_for_player(&player_id, delta)
-    }
-
-    fn set_mana(&self, player_id: String, mana: i64) -> mlua::Result<usize> {
-        self.set_mana_for_player(&player_id, mana)
-    }
-
-    fn set_max_mana(&self, player_id: String, mana: i64) -> mlua::Result<usize> {
-        self.set_max_mana_for_player(&player_id, mana)
-    }
-
-    fn get_cards(&self, player_id: String) -> mlua::Result<Vec<LuaCard>> {
-        self.cards_for_player(&player_id)
-    }
-
-    fn reveal_deck(&self, caster_id: String, target_player_id: String) -> mlua::Result<()> {
-        self.reveal_deck_for_players(&caster_id, &target_player_id)
-    }
-
-    fn switch_cards(
-        &self,
-        first_player_id: String,
-        first_card: LuaCard,
-        second_player_id: String,
-        second_card: LuaCard,
-    ) -> mlua::Result<bool> {
-        self.switch_cards_for_players(
-            &first_player_id,
-            &first_card,
-            &second_player_id,
-            &second_card,
-        )
-    }
-
-    fn get_power_cards(&self, player_id: String) -> mlua::Result<Vec<LuaPowerCardState>> {
-        self.power_cards_for_player(&player_id)
-    }
-
-    fn steal_power_card(
-        &self,
-        from_player_id: String,
-        card_id: String,
-        to_player_id: String,
-    ) -> mlua::Result<bool> {
-        self.steal_power_card_between_players(&from_player_id, &card_id, &to_player_id)
-    }
-
-    fn draw_power_cards(
-        &self,
-        player_id: String,
-        count: i64,
-    ) -> mlua::Result<Vec<LuaPowerCardState>> {
-        self.draw_power_cards_for_player(&player_id, count)
-    }
-
-    fn player_ids(&self) -> Vec<String> {
-        self.list_player_ids()
-    }
-
-    #[getter("get_lives")]
-    fn get_lives_field(&self, lua: &Lua) -> mlua::Result<TypedFunction<String, usize>> {
-        game_function(lua, self, 1, |_, this, player_id: String| {
-            this.lives_for_player(&player_id)
-        })
-    }
-
-    #[getter("get_current_trump")]
-    fn get_current_trump_field(&self, lua: &Lua) -> mlua::Result<TypedFunction<(), String>> {
-        game_function(lua, self, 0, |_, this, ()| {
-            Ok(this.current_trump_as_lua().to_owned())
-        })
-    }
-
-    #[getter("add_lives")]
-    fn add_lives_field(&self, lua: &Lua) -> mlua::Result<TypedFunction<(String, i64), usize>> {
-        game_function(
-            lua,
-            self,
-            2,
-            |_, this, (player_id, delta): (String, i64)| this.adjust_lives(&player_id, delta),
-        )
-    }
-
-    #[getter("set_lives")]
-    fn set_lives_field(&self, lua: &Lua) -> mlua::Result<TypedFunction<(String, i64), usize>> {
-        game_function(
-            lua,
-            self,
-            2,
-            |_, this, (player_id, lifes): (String, i64)| {
-                this.set_lives_for_player(&player_id, lifes)
-            },
-        )
-    }
-
-    #[getter("get_bid")]
-    fn get_bid_field(&self, lua: &Lua) -> mlua::Result<TypedFunction<String, Option<usize>>> {
-        game_function(lua, self, 1, |_, this, player_id: String| {
-            this.bid_for_player(&player_id)
-        })
-    }
-
-    #[getter("add_bids")]
-    fn add_bids_field(&self, lua: &Lua) -> mlua::Result<TypedFunction<(String, i64), ()>> {
-        game_function(
-            lua,
-            self,
-            2,
-            |_, this, (player_id, bid_count): (String, i64)| {
-                this.add_bids_for_player(&player_id, bid_count)
-            },
-        )
-    }
-
-    #[getter("get_rounds")]
-    fn get_rounds_field(&self, lua: &Lua) -> mlua::Result<TypedFunction<String, usize>> {
-        game_function(lua, self, 1, |_, this, player_id: String| {
-            this.rounds_for_player(&player_id)
-        })
-    }
-
-    #[getter("get_mana")]
-    fn get_mana_field(&self, lua: &Lua) -> mlua::Result<TypedFunction<String, usize>> {
-        game_function(lua, self, 1, |_, this, player_id: String| {
-            this.mana_for_player(&player_id)
-        })
-    }
-
-    #[getter("get_max_mana")]
-    fn get_max_mana_field(&self, lua: &Lua) -> mlua::Result<TypedFunction<String, usize>> {
-        game_function(lua, self, 1, |_, this, player_id: String| {
-            this.max_mana_for_player(&player_id)
-        })
-    }
-
-    #[getter("get_mana_pool")]
-    fn get_mana_pool_field(&self, lua: &Lua) -> mlua::Result<TypedFunction<String, usize>> {
-        game_function(lua, self, 1, |_, this, player_id: String| {
-            this.max_mana_for_player(&player_id)
-        })
-    }
-
-    #[getter("add_mana")]
-    fn add_mana_field(&self, lua: &Lua) -> mlua::Result<TypedFunction<(String, i64), usize>> {
-        game_function(
-            lua,
-            self,
-            2,
-            |_, this, (player_id, delta): (String, i64)| {
-                this.adjust_mana_for_player(&player_id, delta)
-            },
-        )
-    }
-
-    #[getter("set_mana")]
-    fn set_mana_field(&self, lua: &Lua) -> mlua::Result<TypedFunction<(String, i64), usize>> {
-        game_function(lua, self, 2, |_, this, (player_id, mana): (String, i64)| {
-            this.set_mana_for_player(&player_id, mana)
-        })
-    }
-
-    #[getter("set_max_mana")]
-    fn set_max_mana_field(&self, lua: &Lua) -> mlua::Result<TypedFunction<(String, i64), usize>> {
-        game_function(lua, self, 2, |_, this, (player_id, mana): (String, i64)| {
-            this.set_max_mana_for_player(&player_id, mana)
-        })
-    }
-
-    #[getter("get_cards")]
-    fn get_cards_field(&self, lua: &Lua) -> mlua::Result<TypedFunction<String, Vec<LuaCard>>> {
-        game_function(lua, self, 1, |_, this, player_id: String| {
-            this.cards_for_player(&player_id)
-        })
-    }
-
-    #[getter("reveal_deck")]
-    fn reveal_deck_field(&self, lua: &Lua) -> mlua::Result<TypedFunction<(String, String), ()>> {
-        game_function(
-            lua,
-            self,
-            2,
-            |_, this, (caster_id, target_player_id): (String, String)| {
-                this.reveal_deck_for_players(&caster_id, &target_player_id)
-            },
-        )
-    }
-
-    #[getter("switch_cards")]
-    fn switch_cards_field(
-        &self,
-        lua: &Lua,
-    ) -> mlua::Result<TypedFunction<(String, LuaCard, String, LuaCard), bool>> {
-        game_function(
-            lua,
-            self,
-            4,
-            |_, this, args: (String, LuaCard, String, LuaCard)| {
-                let (first_player_id, first_card, second_player_id, second_card) = args;
-                this.switch_cards_for_players(
-                    &first_player_id,
-                    &first_card,
-                    &second_player_id,
-                    &second_card,
-                )
-            },
-        )
-    }
-
-    #[getter("get_power_cards")]
-    fn get_power_cards_field(
-        &self,
-        lua: &Lua,
-    ) -> mlua::Result<TypedFunction<String, Vec<LuaPowerCardState>>> {
-        game_function(lua, self, 1, |_, this, player_id: String| {
-            this.power_cards_for_player(&player_id)
-        })
-    }
-
-    #[getter("steal_power_card")]
-    fn steal_power_card_field(
-        &self,
-        lua: &Lua,
-    ) -> mlua::Result<TypedFunction<(String, String, String), bool>> {
-        game_function(
-            lua,
-            self,
-            3,
-            |_, this, (from_player_id, card_id, to_player_id): (String, String, String)| {
-                this.steal_power_card_between_players(&from_player_id, &card_id, &to_player_id)
-            },
-        )
-    }
-
-    #[getter("draw_power_cards")]
-    fn draw_power_cards_field(
-        &self,
-        lua: &Lua,
-    ) -> mlua::Result<TypedFunction<(String, i64), Vec<LuaPowerCardState>>> {
-        game_function(
-            lua,
-            self,
-            2,
-            |_, this, (player_id, count): (String, i64)| {
-                this.draw_power_cards_for_player(&player_id, count)
-            },
-        )
-    }
-
-    #[getter("player_ids")]
-    fn player_ids_field(&self, lua: &Lua) -> mlua::Result<TypedFunction<(), Vec<String>>> {
-        game_function(lua, self, 0, |_, this, ()| Ok(this.player_ids()))
     }
 }
 
@@ -655,40 +422,30 @@ pub struct LuaPowerCard {
     #[field(skip)]
     mana_cost_delta: Rc<Cell<i64>>,
     #[field(readonly)]
-    pub owner_id: String,
+    pub owner_id: PlayerId,
     #[field(readonly)]
-    pub targets: Vec<String>,
+    pub targets: Vec<PlayerId>,
 }
 
 impl LuaPowerCard {
     pub(crate) fn mana_cost(&self) -> i64 {
         adjusted_mana_cost(self.base_mana_cost, self.mana_cost_delta.get())
     }
+}
 
-    fn adjusted_mana_cost_value(&self, delta: i64) -> i64 {
+#[lua_api_impl]
+impl LuaPowerCard {
+    #[lua_api_method]
+    fn add_mana_cost(&self, delta: i64) -> i64 {
         self.mana_cost_delta
             .set(self.mana_cost_delta.get().saturating_add(delta));
 
         self.mana_cost()
     }
-}
-
-#[typed_user_data_impl]
-impl LuaPowerCard {
-    fn add_mana_cost(&self, delta: i64) -> i64 {
-        self.adjusted_mana_cost_value(delta)
-    }
 
     #[getter("mana_cost")]
     fn mana_cost_field(&self) -> i64 {
         self.mana_cost()
-    }
-
-    #[getter("add_mana_cost")]
-    fn add_mana_cost_field(&self, lua: &Lua) -> mlua::Result<TypedFunction<i64, i64>> {
-        power_card_function(lua, self, 1, |_, this, delta: i64| {
-            Ok(this.add_mana_cost(delta))
-        })
     }
 }
 
@@ -697,7 +454,7 @@ pub struct LuaMercenary {
     #[field(readonly)]
     pub id: String,
     #[field(readonly)]
-    pub owner_id: String,
+    pub owner_id: PlayerId,
     #[field(readonly)]
     pub base_life: usize,
     #[field(readonly)]
@@ -838,20 +595,15 @@ pub(crate) fn build_power_card(input: &PowerScriptInput) -> LuaPowerCard {
         id: input.card_id.clone(),
         base_mana_cost: input.mana_cost,
         mana_cost_delta: Rc::new(Cell::new(0)),
-        owner_id: input.owner_id.as_str().to_string(),
-        targets: input
-            .targets
-            .iter()
-            .map(PlayerId::as_str)
-            .map(ToString::to_string)
-            .collect(),
+        owner_id: input.owner_id.clone(),
+        targets: input.targets.clone(),
     }
 }
 
 pub(crate) fn build_mercenary(input: &PassiveScriptInput) -> LuaMercenary {
     LuaMercenary {
         id: input.mercenary_id.as_str().to_string(),
-        owner_id: input.owner_id.as_str().to_string(),
+        owner_id: input.owner_id.clone(),
         base_life: input.base_life,
         initial_mana: input.initial_mana,
     }
@@ -907,16 +659,18 @@ pub(crate) fn build_event_table(lua: &Lua, event: &PassiveGameEvent) -> mlua::Re
     Ok(table)
 }
 
-fn game_function<A, R, F>(
+pub(crate) fn bind_lua_function<T, A, R, S, F>(
     lua: &Lua,
-    this: &LuaGame,
+    this: &T,
     expected_args: usize,
     callback: F,
-) -> mlua::Result<TypedFunction<A, R>>
+) -> mlua::Result<LuaBoundFunction<S>>
 where
-    A: FromLuaMulti + TypedMultiValue,
-    R: IntoLuaMulti + TypedMultiValue,
-    F: Fn(&Lua, &LuaGame, A) -> mlua::Result<R> + 'static,
+    T: Clone + 'static,
+    A: FromLuaMulti,
+    R: IntoLuaMulti,
+    S: LuaApiFunctionSignature,
+    F: Fn(&Lua, &T, A) -> mlua::Result<R> + 'static,
 {
     let callback = Rc::new(callback);
 
@@ -926,29 +680,7 @@ where
         let args = A::from_lua_multi(mlua::MultiValue::from_vec(args), lua)?;
         callback(lua, &this, args)
     })?;
-    TypedFunction::<A, R>::from_lua(Value::Function(function), lua)
-}
-
-fn power_card_function<A, R, F>(
-    lua: &Lua,
-    this: &LuaPowerCard,
-    expected_args: usize,
-    callback: F,
-) -> mlua::Result<TypedFunction<A, R>>
-where
-    A: FromLuaMulti + TypedMultiValue,
-    R: IntoLuaMulti + TypedMultiValue,
-    F: Fn(&Lua, &LuaPowerCard, A) -> mlua::Result<R> + 'static,
-{
-    let callback = Rc::new(callback);
-
-    let this = this.clone();
-    let function = lua.create_function(move |lua, args: mlua::Variadic<Value>| {
-        let args = args_for_count(args, expected_args)?;
-        let args = A::from_lua_multi(mlua::MultiValue::from_vec(args), lua)?;
-        callback(lua, &this, args)
-    })?;
-    TypedFunction::<A, R>::from_lua(Value::Function(function), lua)
+    Ok(LuaBoundFunction::new(function))
 }
 
 fn args_for_count(args: mlua::Variadic<Value>, expected_args: usize) -> mlua::Result<Vec<Value>> {

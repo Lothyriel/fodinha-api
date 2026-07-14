@@ -1,9 +1,227 @@
 use proc_macro::TokenStream;
-use quote::quote;
+use quote::{format_ident, quote};
 use syn::{
-    Data, DeriveInput, LitStr, Token, parse_macro_input, parse_quote, punctuated::Punctuated,
-    spanned::Spanned,
+    AngleBracketedGenericArguments, Data, DeriveInput, FnArg, GenericArgument, ImplItem, ItemImpl,
+    LitStr, Pat, PathArguments, ReturnType, Signature, Token, Type, parse_macro_input, parse_quote,
+    punctuated::Punctuated, spanned::Spanned,
 };
+
+#[proc_macro_attribute]
+pub fn lua_api_impl(_attribute: TokenStream, item: TokenStream) -> TokenStream {
+    let mut item = parse_macro_input!(item as ItemImpl);
+    let self_ident = match item.self_ty.as_ref() {
+        Type::Path(path) => match path.path.segments.last() {
+            Some(segment) => segment.ident.clone(),
+            None => {
+                return syn::Error::new_spanned(&item.self_ty, "expected a concrete self type")
+                    .to_compile_error()
+                    .into();
+            }
+        },
+        _ => {
+            return syn::Error::new_spanned(&item.self_ty, "expected a concrete self type")
+                .to_compile_error()
+                .into();
+        }
+    };
+
+    let self_ty = item.self_ty.clone();
+    let mut signature_definitions = Vec::new();
+    let mut generated_getters = Vec::new();
+
+    for impl_item in &mut item.items {
+        let ImplItem::Fn(method) = impl_item else {
+            continue;
+        };
+        let Some(attribute_index) = method
+            .attrs
+            .iter()
+            .position(|attribute| attribute.path().is_ident("lua_api_method"))
+        else {
+            continue;
+        };
+        method.attrs.remove(attribute_index);
+
+        let (parameter_names, parameter_types) = match method_parameters(&method.sig) {
+            Ok(value) => value,
+            Err(error) => return error.to_compile_error().into(),
+        };
+
+        let (return_type, fallible) = match method_return_type(&method.sig.output) {
+            Ok(value) => value,
+            Err(error) => return error.to_compile_error().into(),
+        };
+        let method_name = method.sig.ident.clone();
+        let lua_name = LitStr::new(&method_name.to_string(), method_name.span());
+        let getter_name = format_ident!("__lua_api_{method_name}");
+        let signature_name = format_ident!("__LuaApiSignature{self_ident}{method_name}");
+        let docs = method
+            .attrs
+            .iter()
+            .filter(|attribute| attribute.path().is_ident("doc"));
+        let parameter_name_literals = parameter_names
+            .iter()
+            .map(|name| LitStr::new(&name.to_string(), name.span()))
+            .collect::<Vec<_>>();
+
+        let argument_type = match parameter_types.as_slice() {
+            [] => quote! { () },
+            [only] => quote! { #only },
+            many => quote! { (#(#many,)*) },
+        };
+        let argument_pattern = match parameter_names.as_slice() {
+            [] => quote! { () },
+            [only] => quote! { #only },
+            many => quote! { (#(#many,)*) },
+        };
+        let call = quote! { this.#method_name(#(#parameter_names),*) };
+        let callback_result = if fallible {
+            quote! { #call.map_err(Into::into) }
+        } else {
+            quote! { Ok(#call) }
+        };
+        let expected_arguments = parameter_names.len();
+
+        signature_definitions.push(quote! {
+            #[allow(non_camel_case_types)]
+            struct #signature_name;
+
+            impl crate::models::game::power_lua::api::LuaApiFunctionSignature for #signature_name {
+                fn type_definition() -> mlua_extras::typed::Type {
+                    mlua_extras::typed::Type::Function {
+                        params: vec![
+                            mlua_extras::typed::Param {
+                                doc: None,
+                                name: Some("self".into()),
+                                ty: <#self_ty as mlua_extras::typed::Typed>::as_param(),
+                            },
+                            #(
+                                mlua_extras::typed::Param {
+                                    doc: None,
+                                    name: Some(#parameter_name_literals.into()),
+                                    ty: <#parameter_types as mlua_extras::typed::Typed>::as_param(),
+                                },
+                            )*
+                        ],
+                        returns: <#return_type as mlua_extras::typed::TypedMultiValue>::get_types_as_returns(),
+                    }
+                }
+            }
+        });
+
+        let getter: syn::ImplItemFn = parse_quote! {
+            #(#docs)*
+            #[getter(#lua_name)]
+            fn #getter_name(
+                &self,
+                lua: &mlua_extras::mlua::Lua,
+            ) -> mlua_extras::mlua::Result<
+                crate::models::game::power_lua::api::LuaBoundFunction<#signature_name>
+            > {
+                crate::models::game::power_lua::api::bind_lua_function::<
+                    #self_ty,
+                    #argument_type,
+                    #return_type,
+                    #signature_name,
+                    _,
+                >(
+                    lua,
+                    self,
+                    #expected_arguments,
+                    |_, this, #argument_pattern: #argument_type| #callback_result,
+                )
+            }
+        };
+        generated_getters.push(ImplItem::Fn(getter));
+    }
+
+    item.items.extend(generated_getters);
+
+    quote! {
+        #(#signature_definitions)*
+
+        #[mlua_extras::typed_user_data_impl]
+        #item
+    }
+    .into()
+}
+
+fn method_parameters(signature: &Signature) -> syn::Result<(Vec<syn::Ident>, Vec<Type>)> {
+    if signature.asyncness.is_some() || !signature.generics.params.is_empty() {
+        return Err(syn::Error::new_spanned(
+            signature,
+            "lua_api_method does not support async or generic methods",
+        ));
+    }
+
+    let mut inputs = signature.inputs.iter();
+    let Some(FnArg::Receiver(receiver)) = inputs.next() else {
+        return Err(syn::Error::new_spanned(
+            signature,
+            "lua_api_method requires an &self receiver",
+        ));
+    };
+    if receiver.reference.is_none() || receiver.mutability.is_some() {
+        return Err(syn::Error::new_spanned(
+            receiver,
+            "lua_api_method requires an immutable &self receiver",
+        ));
+    }
+
+    let mut parameter_names = Vec::new();
+    let mut parameter_types = Vec::new();
+    for input in inputs {
+        let FnArg::Typed(input) = input else {
+            unreachable!("the receiver was handled above");
+        };
+        let Pat::Ident(pattern) = input.pat.as_ref() else {
+            return Err(syn::Error::new_spanned(
+                &input.pat,
+                "lua_api_method parameters must be simple identifiers",
+            ));
+        };
+        if pattern.subpat.is_some() {
+            return Err(syn::Error::new_spanned(
+                &input.pat,
+                "lua_api_method parameters must be simple identifiers",
+            ));
+        }
+        parameter_names.push(pattern.ident.clone());
+        parameter_types.push(input.ty.as_ref().clone());
+    }
+
+    Ok((parameter_names, parameter_types))
+}
+
+fn method_return_type(output: &ReturnType) -> syn::Result<(Type, bool)> {
+    let ReturnType::Type(_, ty) = output else {
+        return Ok((parse_quote!(()), false));
+    };
+    let Type::Path(path) = ty.as_ref() else {
+        return Ok((ty.as_ref().clone(), false));
+    };
+    let Some(segment) = path.path.segments.last() else {
+        return Ok((ty.as_ref().clone(), false));
+    };
+    if segment.ident != "Result" {
+        return Ok((ty.as_ref().clone(), false));
+    }
+    let PathArguments::AngleBracketed(AngleBracketedGenericArguments { args, .. }) =
+        &segment.arguments
+    else {
+        return Err(syn::Error::new_spanned(
+            ty,
+            "Result return type must include an Ok type",
+        ));
+    };
+    let Some(GenericArgument::Type(ok_type)) = args.first() else {
+        return Err(syn::Error::new_spanned(
+            ty,
+            "Result return type must include an Ok type",
+        ));
+    };
+    Ok((ok_type.clone(), true))
+}
 
 #[proc_macro_derive(LuaApiType, attributes(lua_api_type))]
 pub fn derive_lua_api_type(input: TokenStream) -> TokenStream {
@@ -132,6 +350,12 @@ pub fn derive_lua_api_scalar(input: TokenStream) -> TokenStream {
             name: #name,
             lua_type: #lua_type,
         };
+
+        impl mlua_extras::typed::Typed for #ident {
+            fn ty() -> mlua_extras::typed::Type {
+                mlua_extras::typed::Type::named(#name)
+            }
+        }
     }.into()
 }
 
@@ -411,4 +635,67 @@ fn pascal_case(value: &str) -> String {
                 .unwrap_or_default()
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use quote::ToTokens;
+    use syn::{ReturnType, Signature, parse_quote};
+
+    use super::{method_parameters, method_return_type};
+
+    #[test]
+    fn lua_api_method_uses_parameter_identifiers_and_types() {
+        let signature: Signature = parse_quote! {
+            fn reveal_deck(
+                &self,
+                caster_id: PlayerId,
+                target_player_id: PlayerId,
+                label: String,
+            ) -> mlua::Result<bool>
+        };
+
+        let (names, types) = method_parameters(&signature).unwrap();
+
+        assert_eq!(
+            names.iter().map(ToString::to_string).collect::<Vec<_>>(),
+            ["caster_id", "target_player_id", "label"]
+        );
+        assert_eq!(
+            types
+                .iter()
+                .map(|ty| ty.to_token_stream().to_string())
+                .collect::<Vec<_>>(),
+            ["PlayerId", "PlayerId", "String"]
+        );
+    }
+
+    #[test]
+    fn lua_api_method_unwraps_fallible_return_metadata() {
+        let fallible: ReturnType = parse_quote!(-> mlua::Result<Vec<PlayerId>>);
+        let infallible: ReturnType = parse_quote!(-> Rank);
+        let unit = ReturnType::Default;
+
+        let (ty, is_fallible) = method_return_type(&fallible).unwrap();
+        assert!(is_fallible);
+        assert_eq!(ty.to_token_stream().to_string(), "Vec < PlayerId >");
+
+        let (ty, is_fallible) = method_return_type(&infallible).unwrap();
+        assert!(!is_fallible);
+        assert_eq!(ty.to_token_stream().to_string(), "Rank");
+
+        let (ty, is_fallible) = method_return_type(&unit).unwrap();
+        assert!(!is_fallible);
+        assert_eq!(ty.to_token_stream().to_string(), "()");
+    }
+
+    #[test]
+    fn lua_api_method_rejects_mutable_receivers_and_patterns() {
+        let mutable: Signature = parse_quote!(fn mutate(&mut self));
+        let destructured: Signature =
+            parse_quote!(fn destructure(&self, (left, right): (i64, i64)));
+
+        assert!(method_parameters(&mutable).is_err());
+        assert!(method_parameters(&destructured).is_err());
+    }
 }
