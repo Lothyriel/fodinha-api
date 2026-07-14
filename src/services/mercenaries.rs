@@ -42,6 +42,7 @@ pub struct UpsertMercenaryInput {
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct MercenaryResponse {
     pub id: MercenaryId,
+    pub version: i64,
     pub name: String,
     pub subtitle: String,
     pub description: String,
@@ -193,6 +194,7 @@ impl MercenariesService {
             .active_mercenary_by_id(&mercenary_id)
             .await?
             .ok_or_else(|| MercenaryError::Invalid("mercenary not found".to_string()))?;
+        let previous_version = mercenary.version;
         let normalized = normalize_input(input)?;
         let banner_object_key = mercenary_banner_object_key(&mercenary_id);
         let icon_object_key = mercenary_icon_object_key(&mercenary_id);
@@ -252,8 +254,12 @@ impl MercenariesService {
         mercenary.temper = normalized.temper;
         mercenary.banner_content_type = Some(IMAGE_OBJECT_CONTENT_TYPE.to_string());
         mercenary.updated_at = Utc::now().timestamp();
+        mercenary.version = previous_version + 1;
 
-        self.mercenaries.replace(mercenary.clone()).await?;
+        self.mercenaries.insert(mercenary.clone()).await?;
+        self.mercenaries
+            .deactivate(&mercenary_id, previous_version)
+            .await?;
         self.power_card_registry
             .upsert_mercenary_definition(mercenary_definition_input(&mercenary, script.clone())?)
             .map_err(|error| MercenaryError::Script(error.to_string()))?;
@@ -293,6 +299,7 @@ impl MercenariesService {
 
         Ok(MercenaryResponse {
             id: mercenary.mercenary_id,
+            version: mercenary.version,
             name: mercenary.name,
             subtitle: mercenary.subtitle,
             description: mercenary.description,

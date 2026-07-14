@@ -97,6 +97,7 @@ pub struct UpdatePowerDeckInput {
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct CardDefinitionResponse {
     pub id: CardId,
+    pub version: i64,
     pub kind: CardDefinitionKind,
     pub name: String,
     pub description: String,
@@ -120,6 +121,7 @@ pub struct CardDefinitionAssetResponse {
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct PowerDeckResponse {
     pub id: DeckId,
+    pub version: i64,
     pub kind: CardDeckKind,
     pub status: CardDeckStatus,
     pub name: String,
@@ -480,6 +482,7 @@ impl CardDefinitionsService {
             .active_card_by_id(&card_id)
             .await?
             .ok_or_else(|| CardDefinitionError::Invalid("card not found".to_string()))?;
+        let previous_version = card.version;
 
         if card.creator_id != editor_id {
             return Err(CardDefinitionError::Forbidden(
@@ -562,10 +565,12 @@ impl CardDefinitionsService {
         card.card_type = script_definition.card_type;
         card.image_content_type = Some(IMAGE_OBJECT_CONTENT_TYPE.to_string());
         card.updated_at = Utc::now().timestamp();
+        card.version = previous_version + 1;
 
         let definition = self.definition_input(&card, script.clone())?;
 
-        self.cards.replace(card.clone()).await?;
+        self.cards.insert(card.clone()).await?;
+        self.cards.deactivate(&card_id, previous_version).await?;
         self.power_card_registry
             .upsert_power_card_definition(definition)?;
 
@@ -664,6 +669,7 @@ impl CardDefinitionsService {
             .active_deck_by_id(&deck_id)
             .await?
             .ok_or_else(|| CardDefinitionError::Invalid("deck not found".to_string()))?;
+        let previous_version = deck.version;
 
         if deck.creator_id != editor_id {
             return Err(CardDefinitionError::Forbidden(
@@ -726,8 +732,10 @@ impl CardDefinitionsService {
             CardDeckStatus::Valid
         };
         deck.updated_at = Utc::now().timestamp();
+        deck.version = previous_version + 1;
 
-        self.decks.replace(deck.clone()).await?;
+        self.decks.insert(deck.clone()).await?;
+        self.decks.deactivate(&deck_id, previous_version).await?;
         if deck.status == CardDeckStatus::Valid {
             self.power_card_registry
                 .upsert_power_deck_definition(PowerDeckDefinitionInput {
@@ -817,6 +825,7 @@ impl CardDefinitionsService {
 
             responses.push(PowerDeckResponse {
                 id: deck.deck_id,
+                version: deck.version,
                 kind: deck.kind,
                 status: deck.status,
                 name: deck.name,
@@ -867,6 +876,7 @@ impl CardDefinitionsService {
 
         Ok(CardDefinitionResponse {
             id: card.card_id,
+            version: card.version,
             kind: card.kind,
             name: card.name,
             description: card.description,

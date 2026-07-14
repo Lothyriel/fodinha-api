@@ -22,17 +22,32 @@ impl MercenariesRepository {
     }
 
     pub async fn ensure_indexes(&self) -> mongodb::error::Result<()> {
-        telemetry::db_query(COLLECTION_NAME, "create_index.unique_mercenary_id", async {
+        telemetry::db_query(COLLECTION_NAME, "create_index.unique_mercenary_version", async {
             self.mercenaries
                 .create_index(
                     IndexModel::builder()
-                        .keys(doc! { "mercenary_id": 1 })
+                        .keys(doc! { "mercenary_id": 1, "version": 1 })
                         .options(IndexOptions::builder().unique(true).build())
                         .build(),
                 )
                 .await
         })
         .await?;
+
+        self.mercenaries
+            .create_index(
+                IndexModel::builder()
+                    .keys(doc! { "mercenary_id": 1, "version": -1 })
+                    .build(),
+            )
+            .await?;
+        self.mercenaries
+            .create_index(
+                IndexModel::builder()
+                    .keys(doc! { "mercenary_id": 1, "active": 1, "version": -1 })
+                    .build(),
+            )
+            .await?;
 
         telemetry::db_query(COLLECTION_NAME, "create_index.active_created", async {
             self.mercenaries
@@ -70,6 +85,20 @@ impl MercenariesRepository {
         Ok(())
     }
 
+    pub async fn deactivate(
+        &self,
+        mercenary_id: &MercenaryId,
+        version: i64,
+    ) -> mongodb::error::Result<()> {
+        self.mercenaries
+            .update_one(
+                doc! { "mercenary_id": mercenary_id.as_str(), "version": version },
+                doc! { "$set": { "active": false } },
+            )
+            .await?;
+        Ok(())
+    }
+
     pub async fn active_mercenaries(&self) -> mongodb::error::Result<Vec<MercenaryDto>> {
         telemetry::db_query(COLLECTION_NAME, "find.active", async {
             let cursor = self
@@ -99,6 +128,8 @@ impl MercenariesRepository {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct MercenaryDto {
     pub mercenary_id: MercenaryId,
+    #[serde(default = "default_version")]
+    pub version: i64,
     pub name: String,
     pub subtitle: String,
     pub description: String,
@@ -114,12 +145,17 @@ pub struct MercenaryDto {
     pub updated_at: i64,
 }
 
+fn default_version() -> i64 {
+    1
+}
+
 impl MercenaryDto {
     pub fn new(input: NewMercenary) -> Self {
         let now = Utc::now().timestamp();
 
         Self {
             mercenary_id: input.mercenary_id,
+            version: 1,
             name: input.name,
             subtitle: input.subtitle,
             description: input.description,

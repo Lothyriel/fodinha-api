@@ -49,26 +49,39 @@ pub(crate) fn project_match_stats(
                 ensure_player_stats(&mut stats, match_id, &player_id);
             }
             MatchEvent::Game(GameEvent::FodinhaClassic(
-                fodinha_classic::MatchEvent::GameStarted { settings, set },
+                fodinha_classic::MatchEvent::GameStarted { settings, seed },
             )) => {
-                let player_ids = match players.is_empty() {
-                    true => set.decks.keys().cloned().collect::<Vec<_>>(),
-                    false => players.keys().cloned().collect::<Vec<_>>(),
-                };
+                let player_ids = players.keys().cloned().collect::<Vec<_>>();
 
                 for player_id in &player_ids {
                     ensure_player_stats(&mut stats, match_id, player_id);
                 }
 
-                game = Some(fodinha_classic::Game::from_started(
+                game = Some(fodinha_classic::Game::from_started_with_seed(
                     &player_ids,
                     settings.clone(),
-                    set.clone(),
+                    *seed,
                 )?);
-                current_upcard = Some(set.upcard);
+                let started_game = game.as_ref().expect("game was just initialized");
+                let started_info = started_game.get_game_info(&player_ids[0]);
+                current_upcard = started_info.upcard;
                 current_bids.clear();
                 current_rounds.clear();
-                add_dealt_trumps(&mut stats, match_id, &set.decks, set.upcard);
+                let decks = player_ids
+                    .iter()
+                    .filter_map(|player_id| {
+                        started_game
+                            .get_game_info(player_id)
+                            .deck
+                            .map(|deck| (player_id.clone(), deck))
+                    })
+                    .collect();
+                add_dealt_trumps(
+                    &mut stats,
+                    match_id,
+                    &decks,
+                    started_info.upcard.expect("started game has upcard"),
+                );
             }
             MatchEvent::Game(GameEvent::FodinhaClassic(
                 event @ fodinha_classic::MatchEvent::BidPlaced { player_id, bid },
@@ -253,9 +266,9 @@ mod tests {
     use crate::{
         infra::{AnonymousUserClaims, UserClaims},
         models::{
-            Card, Rank, Suit,
+            Card,
             game::fodinha_classic::{
-                DealingMode, DeckShuffle, GameSettings, MatchEvent as FodinhaEvent, NewSet,
+                GameSettings, MatchEvent as FodinhaEvent,
             },
             id::{LobbyId, PlayerId},
         },
@@ -268,9 +281,9 @@ mod tests {
         let match_id = LobbyId(Arc::from("match-1"));
         let player1 = PlayerId(Arc::from("P1"));
         let player2 = PlayerId(Arc::from("P2"));
-        let upcard = Card::new(Rank::Three, Suit::Clubs);
-        let winning_card = Card::new(Rank::Four, Suit::Golds);
-        let losing_card = Card::new(Rank::Five, Suit::Golds);
+        let initial_deck = Card::shuffled_deck(1, 0);
+        let winning_card = initial_deck[0];
+        let losing_card = initial_deck[1];
         let events = vec![
             MatchEvent::MatchCreated {
                 settings: crate::models::game::GameSettings::FodinhaClassic(GameSettings {
@@ -285,19 +298,7 @@ mod tests {
             },
             MatchEvent::Game(GameEvent::FodinhaClassic(FodinhaEvent::GameStarted {
                 settings: GameSettings { lifes: 1 },
-                set: NewSet {
-                    dealing_mode: DealingMode::Increasing,
-                    cards_count: 1,
-                    shuffle: DeckShuffle {
-                        seed: 1,
-                        sequence: 0,
-                    },
-                    decks: indexmap::indexmap! {
-                        player1.clone() => vec![winning_card],
-                        player2.clone() => vec![losing_card],
-                    },
-                    upcard,
-                },
+                seed: 1,
             })),
             MatchEvent::Game(GameEvent::FodinhaClassic(FodinhaEvent::BidPlaced {
                 player_id: player1.clone(),
@@ -312,14 +313,12 @@ mod tests {
                     player_id: player1.clone(),
                     card: winning_card,
                 },
-                next_set: None,
             })),
             MatchEvent::Game(GameEvent::FodinhaClassic(FodinhaEvent::TurnPlayed {
                 turn: Turn {
                     player_id: player2.clone(),
                     card: losing_card,
                 },
-                next_set: None,
             })),
         ];
 
@@ -336,7 +335,10 @@ mod tests {
         assert_eq!(player1_stats.games_played, 1);
         assert_eq!(player1_stats.matches_won, 1);
         assert_eq!(player1_stats.rounds_won, 1);
-        assert_eq!(player1_stats.trump_cards, 1);
+        assert_eq!(
+            player1_stats.trump_cards,
+            i64::from(winning_card.is_trump(initial_deck[2])),
+        );
         assert_eq!(player1_stats.total_bid, 1);
         assert_eq!(player1_stats.bids_hit, 1);
         assert_eq!(player2_stats.games_played, 1);

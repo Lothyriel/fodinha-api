@@ -724,9 +724,7 @@ mod tests {
                     power_decks: HashMap::new(),
                 },
                 set_ended_effects: fodinha_power::PowerCardEffects::default(),
-                next_set: None,
-                next_power_set: None,
-                next_set_passive_effects: fodinha_power::PowerCardEffects::default(),
+                set_started_effects: fodinha_power::PowerCardEffects::default(),
             },
         ));
 
@@ -746,5 +744,24 @@ mod tests {
             }
             decoded => panic!("unexpected decoded event: {decoded:?}"),
         }
+    }
+
+    #[test]
+    fn generated_set_state_is_not_persisted_in_events() {
+        let event = MatchEvent::Game(GameEvent::FodinhaClassic(
+            fodinha_classic::MatchEvent::GameStarted {
+                settings: fodinha_classic::GameSettings { lifes: 5 },
+                seed: 42,
+            },
+        ));
+        let document = mongodb::bson::to_document(&event).unwrap();
+        let data = document.get_document("data").unwrap();
+        let game_event = data.get_document("event").unwrap();
+        let payload = game_event.get_document("data").unwrap();
+
+        assert_eq!(payload.get_i64("seed"), Ok(42));
+        assert!(!payload.contains_key("set"));
+        assert!(!payload.contains_key("decks"));
+        assert!(!payload.contains_key("upcard"));
     }
 }

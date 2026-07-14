@@ -254,8 +254,10 @@ impl GameCommand {
 pub enum MatchEvent {
     GameStarted {
         settings: GameSettings,
-        set: NewSet,
-        power_set: PowerSet,
+        seed: i64,
+        initial_mana: IndexMap<PlayerId, PlayerMana>,
+        power_deck_version: i64,
+        player_mercenary_versions: HashMap<PlayerId, i64>,
         draw_seed: i64,
         passive_effects: PowerCardEffects,
     },
@@ -267,10 +269,7 @@ pub enum MatchEvent {
     },
     TurnPlayed {
         turn: Turn,
-        next_set: Option<NewSet>,
-        next_power_set: Option<PowerSet>,
         passive_effects: PowerCardEffects,
-        next_set_passive_effects: PowerCardEffects,
     },
     PowerCardPlayed {
         player_id: PlayerId,
@@ -278,17 +277,13 @@ pub enum MatchEvent {
         target_player_id: Option<PlayerId>,
         effects: PowerCardEffects,
         set_ended_effects: PowerCardEffects,
-        next_set: Option<NewSet>,
-        next_power_set: Option<PowerSet>,
-        next_set_passive_effects: PowerCardEffects,
+        set_started_effects: PowerCardEffects,
     },
     PowerPhaseSkipped {
         player_id: PlayerId,
         effects: PowerCardEffects,
         set_ended_effects: PowerCardEffects,
-        next_set: Option<NewSet>,
-        next_power_set: Option<PowerSet>,
-        next_set_passive_effects: PowerCardEffects,
+        set_started_effects: PowerCardEffects,
     },
 }
 
@@ -887,13 +882,14 @@ impl Game {
         match event {
             MatchEvent::GameStarted {
                 settings,
-                set,
-                power_set,
+                seed,
+                initial_mana,
                 draw_seed,
                 passive_effects,
+                ..
             } => {
                 let mut game =
-                    Self::from_started(players, settings, set, power_set, draw_seed, registry)?;
+                    Self::from_started(players, settings, seed, initial_mana, draw_seed, registry)?;
                 game.apply_effects(&passive_effects);
 
                 Ok(game)
@@ -932,26 +928,12 @@ impl Game {
         draw_seed: i64,
         registry: &PowerCardRegistry,
     ) -> Result<MatchEvent, GameError> {
-        let classic_settings = Self::classic_settings(&settings);
-        let classic_event =
-            fodinha_classic::Game::start_match_event_with_seed(players, classic_settings, seed)?;
-        let fodinha_classic::MatchEvent::GameStarted { set, .. } = classic_event else {
-            unreachable!("classic start_match_event only emits GameStarted")
-        };
-        let power_set = Self::new_power_set(
-            players,
-            seed,
-            0,
-            &settings.power_deck_id,
-            &settings.player_mercenaries,
-            Self::initial_mana(players, &settings.player_mercenaries, registry)?,
-            registry,
-        )?;
+        let initial_mana = Self::initial_mana(players, &settings.player_mercenaries, registry)?;
         let game = Self::from_started(
             players,
             settings.clone(),
-            set.clone(),
-            power_set.clone(),
+            seed,
+            initial_mana.clone(),
             draw_seed,
             registry.clone(),
         )?;
@@ -966,10 +948,19 @@ impl Game {
                 .map_err(|error| GameError::PowerScript(error.to_string()))?,
         );
 
+        let player_mercenary_versions = settings
+            .player_mercenaries
+            .keys()
+            .cloned()
+            .map(|player_id| (player_id, 1))
+            .collect();
+
         Ok(MatchEvent::GameStarted {
             settings,
-            set,
-            power_set,
+            seed,
+            initial_mana,
+            power_deck_version: 1,
+            player_mercenary_versions,
             draw_seed,
             passive_effects,
         })
@@ -978,35 +969,60 @@ impl Game {
     pub fn from_started(
         players: &[PlayerId],
         settings: GameSettings,
-        set: NewSet,
-        power_set: PowerSet,
+        seed: i64,
+        initial_mana: IndexMap<PlayerId, PlayerMana>,
         draw_seed: i64,
         registry: PowerCardRegistry,
     ) -> Result<Self, GameError> {
         let classic = fodinha_classic::Game::from_started_with_rules(
             players,
             Self::classic_settings(&settings),
-            set,
+            {
+                let event = fodinha_classic::Game::start_match_event_with_seed(
+                    players,
+                    Self::classic_settings(&settings),
+                    seed,
+                )?;
+                let fodinha_classic::MatchEvent::GameStarted { seed, .. } = event else {
+                    unreachable!()
+                };
+                let mut deck = Card::shuffled_deck(seed, 0);
+                let decks = players
+                    .iter()
+                    .map(|player| (player.clone(), vec![deck.remove(0)]))
+                    .collect();
+                let upcard = deck[0];
+                NewSet {
+                    dealing_mode: fodinha_classic::DealingMode::Increasing,
+                    cards_count: 1,
+                    shuffle: DeckShuffle { seed, sequence: 0 },
+                    decks,
+                    upcard,
+                }
+            },
             fodinha_classic::GameRules {
                 life_loss_per_bid_difference: LIFE_LOSS_PER_BID_DIFFERENCE,
             },
         )?;
-
-        let mana = if power_set.mana.is_empty() {
-            Self::initial_mana(players, &settings.player_mercenaries, &registry)?
-        } else {
-            power_set.mana
-        };
+        let power_set = Self::new_power_set(
+            players,
+            seed,
+            0,
+            &settings.power_deck_id,
+            &settings.player_mercenaries,
+            initial_mana.clone(),
+            &registry,
+        )?;
 
         let mut game = Self {
             core: classic,
             stage: PowerGameStage::Bidding,
             power_decks: power_set.decks,
-            mana,
+            mana: initial_mana,
             registry,
             power_deck_id: settings.power_deck_id,
             player_mercenaries: settings.player_mercenaries,
-            power_seed: power_set.shuffle.seed,
+            power_seed: seed,
             draw_seed,
             next_power_shuffle_sequence: power_set.shuffle.sequence.wrapping_add(1),
             pending_set_resolution: None,
@@ -1044,14 +1060,9 @@ impl Game {
         }
 
         let event = self.core.validate_turn(turn)?;
-        let fodinha_classic::MatchEvent::TurnPlayed { turn, next_set } = event else {
+        let fodinha_classic::MatchEvent::TurnPlayed { turn } = event else {
             unreachable!("validate_turn only emits TurnPlayed")
         };
-        let next_power_set = next_set.as_ref().map(|set| {
-            let players: Vec<_> = set.decks.keys().cloned().collect();
-
-            self.new_power_set_for_game(&players)
-        });
         let mut passive_effects = self
             .passive_effects(PassiveGameEvent::TurnPlayed {
                 player_id: turn.player_id.clone(),
@@ -1061,10 +1072,7 @@ impl Game {
 
         let base_event = MatchEvent::TurnPlayed {
             turn: turn.clone(),
-            next_set: next_set.clone(),
-            next_power_set: next_power_set.clone(),
             passive_effects: passive_effects.clone(),
-            next_set_passive_effects: PowerCardEffects::default(),
         };
 
         let mut preview = self.clone();
@@ -1091,14 +1099,9 @@ impl Game {
             );
         }
 
-        let next_set_passive_effects = PowerCardEffects::default();
-
         Ok(MatchEvent::TurnPlayed {
             turn,
-            next_set,
-            next_power_set,
             passive_effects,
-            next_set_passive_effects,
         })
     }
 
@@ -1181,16 +1184,13 @@ impl Game {
                 ref pending_players,
             } if pending_players.len() == 1
         );
-        let (next_set, next_power_set) = if finalizing_set {
+        let next_set = if finalizing_set {
             match &self.pending_set_resolution {
-                Some(pending) => (
-                    Some(pending.next_set.clone()),
-                    Some(pending.next_power_set.clone()),
-                ),
-                None => (None, None),
+                Some(pending) => Some(pending.next_set.clone()),
+                None => None,
             }
         } else {
-            (None, None)
+            None
         };
 
         let mut set_ended_effects = PowerCardEffects::default();
@@ -1236,9 +1236,7 @@ impl Game {
             target_player_id: target_player_id.clone(),
             effects: effects.clone(),
             set_ended_effects: set_ended_effects.clone(),
-            next_set: next_set.clone(),
-            next_power_set: next_power_set.clone(),
-            next_set_passive_effects: PowerCardEffects::default(),
+            set_started_effects: PowerCardEffects::default(),
         });
 
         if matches!(preview.stage, PowerGameStage::Dealing) && !preview.is_finished() {
@@ -1263,9 +1261,7 @@ impl Game {
             target_player_id,
             effects,
             set_ended_effects,
-            next_set,
-            next_power_set,
-            next_set_passive_effects,
+            set_started_effects: next_set_passive_effects,
         })
     }
 
@@ -1292,16 +1288,13 @@ impl Game {
                 ref pending_players,
             } if pending_players.len() == 1
         );
-        let (next_set, next_power_set) = if finalizing_set {
+        let next_set = if finalizing_set {
             match &self.pending_set_resolution {
-                Some(pending) => (
-                    Some(pending.next_set.clone()),
-                    Some(pending.next_power_set.clone()),
-                ),
-                None => (None, None),
+                Some(pending) => Some(pending.next_set.clone()),
+                None => None,
             }
         } else {
-            (None, None)
+            None
         };
         let mut effects = PowerCardEffects::default();
         let mut set_ended_effects = PowerCardEffects::default();
@@ -1341,9 +1334,7 @@ impl Game {
             player_id: player_id.clone(),
             effects: effects.clone(),
             set_ended_effects: set_ended_effects.clone(),
-            next_set: next_set.clone(),
-            next_power_set: next_power_set.clone(),
-            next_set_passive_effects: PowerCardEffects::default(),
+            set_started_effects: PowerCardEffects::default(),
         });
 
         if matches!(preview.stage, PowerGameStage::Dealing) && !preview.is_finished() {
@@ -1366,9 +1357,7 @@ impl Game {
             player_id: player_id.clone(),
             effects,
             set_ended_effects,
-            next_set,
-            next_power_set,
-            next_set_passive_effects,
+            set_started_effects: next_set_passive_effects,
         })
     }
 
@@ -1406,11 +1395,13 @@ impl Game {
             }
             MatchEvent::TurnPlayed {
                 turn,
-                next_set,
-                next_power_set,
                 passive_effects,
-                next_set_passive_effects: _,
             } => {
+                let next_set = self.core.next_set_for_turn(&turn);
+                let next_power_set = next_set.as_ref().map(|set| {
+                    let players: Vec<_> = set.decks.keys().cloned().collect();
+                    self.new_power_set_for_game(&players)
+                });
                 let is_set_end = next_set.is_some();
                 let state = self.core.apply_turn(turn, next_set.clone(), !is_set_end);
 
@@ -1461,10 +1452,25 @@ impl Game {
                 target_player_id,
                 effects,
                 set_ended_effects,
-                next_set,
-                next_power_set,
-                next_set_passive_effects,
+                set_started_effects,
             } => {
+                let (next_set, next_power_set) = if matches!(
+                    self.stage,
+                    PowerGameStage::Power {
+                        phase: PowerPhase::Second,
+                        ref pending_players,
+                    } if pending_players.len() == 1
+                ) {
+                    match &self.pending_set_resolution {
+                        Some(pending) => (
+                            Some(pending.next_set.clone()),
+                            Some(pending.next_power_set.clone()),
+                        ),
+                        None => (None, None),
+                    }
+                } else {
+                    (None, None)
+                };
                 if let Some(deck) = self.power_decks.get_mut(&player_id)
                     && let Some(idx) = deck.iter().position(|held| held.id == card.id)
                 {
@@ -1520,7 +1526,7 @@ impl Game {
 
                     self.apply_power_set(&next_power_set);
 
-                    let _ = self.apply_effects(&next_set_passive_effects);
+                    let _ = self.apply_effects(&set_started_effects);
                     self.stage = PowerGameStage::Bidding;
 
                     return AppliedGameChange::PowerCardPlayed(PowerCardOutcome {
@@ -1550,7 +1556,7 @@ impl Game {
                         ended: self.core.is_finished(),
                         next_set: Some(next_set),
                         next_power_set: Some(next_power_set),
-                        next_set_passive_effects,
+                        next_set_passive_effects: set_started_effects,
                     });
                 }
 
@@ -1576,10 +1582,25 @@ impl Game {
                 player_id,
                 effects,
                 set_ended_effects,
-                next_set,
-                next_power_set,
-                next_set_passive_effects,
+                set_started_effects,
             } => {
+                let (next_set, next_power_set) = if matches!(
+                    self.stage,
+                    PowerGameStage::Power {
+                        phase: PowerPhase::Second,
+                        ref pending_players,
+                    } if pending_players.len() == 1
+                ) {
+                    match &self.pending_set_resolution {
+                        Some(pending) => (
+                            Some(pending.next_set.clone()),
+                            Some(pending.next_power_set.clone()),
+                        ),
+                        None => (None, None),
+                    }
+                } else {
+                    (None, None)
+                };
                 let (mana, power_decks) = self.apply_effects(&effects);
                 let completed_phase = self.advance_power_phase(&player_id);
 
@@ -1628,7 +1649,7 @@ impl Game {
 
                     self.apply_power_set(&next_power_set);
 
-                    let _ = self.apply_effects(&next_set_passive_effects);
+                    let _ = self.apply_effects(&set_started_effects);
                     self.stage = PowerGameStage::Bidding;
 
                     return AppliedGameChange::PowerPhaseSkipped(PowerPhaseSkipOutcome {
@@ -1657,7 +1678,7 @@ impl Game {
                         ended: self.core.is_finished(),
                         next_set: Some(next_set),
                         next_power_set: Some(next_power_set),
-                        next_set_passive_effects,
+                        next_set_passive_effects: set_started_effects,
                     });
                 }
 
@@ -2955,14 +2976,9 @@ return {
             player_mercenaries: HashMap::new(),
         };
 
-        let MatchEvent::GameStarted { power_set, .. } =
-            Game::start_match_event_with_seed(&players, settings, 42, &registry).unwrap()
-        else {
-            panic!("expected game started event");
-        };
-
-        assert_eq!(power_set.decks.len(), players.len());
-        assert!(power_set.decks.values().all(Vec::is_empty));
+        let game = Game::new_with_seed(&players, settings, 42, registry).unwrap();
+        assert_eq!(game.power_decks.len(), players.len());
+        assert!(game.power_decks.values().all(Vec::is_empty));
     }
 
     #[test]
@@ -2970,16 +2986,16 @@ return {
         let registry = test_registry();
         let players = test_players();
 
-        let MatchEvent::GameStarted { power_set, .. } =
+        let MatchEvent::GameStarted { initial_mana, .. } =
             Game::start_match_event_with_seed(&players, test_settings(), 42, &registry).unwrap()
         else {
             panic!("expected game started event");
         };
 
-        assert_eq!(power_set.mana.len(), players.len());
+        assert_eq!(initial_mana.len(), players.len());
         for player in players {
             assert_eq!(
-                power_set.mana.get(&player),
+                initial_mana.get(&player),
                 Some(&PlayerMana {
                     current: INITIAL_MANA_POOL,
                     max: INITIAL_MANA_POOL,
@@ -3149,14 +3165,10 @@ return {
             ]),
         };
 
-        let MatchEvent::GameStarted { power_set, .. } =
-            Game::start_match_event_with_seed(&players, settings, 42, &registry).unwrap()
-        else {
-            panic!("expected game started event");
-        };
+        let game = Game::new_with_seed(&players, settings, 42, registry).unwrap();
 
         for player in players {
-            let cards = power_set.decks.get(&player).unwrap();
+            let cards = game.power_decks.get(&player).unwrap();
 
             assert_eq!(cards.len(), 2);
             assert!(
@@ -3215,14 +3227,10 @@ return {
             ]),
         };
 
-        let MatchEvent::GameStarted { power_set, .. } =
-            Game::start_match_event_with_seed(&players, settings, 42, &registry).unwrap()
-        else {
-            panic!("expected game started event");
-        };
+        let game = Game::new_with_seed(&players, settings, 42, registry).unwrap();
 
         for player in players {
-            let cards = power_set.decks.get(&player).unwrap();
+            let cards = game.power_decks.get(&player).unwrap();
 
             assert_eq!(cards.len(), 1);
             assert!(matches!(cards[0].id.as_str(), "heal_10" | "strike_10"));
@@ -3979,9 +3987,7 @@ return {
                     power_decks: HashMap::new(),
                 },
                 set_ended_effects: PowerCardEffects::default(),
-                next_set: None,
-                next_power_set: None,
-                next_set_passive_effects: PowerCardEffects::default(),
+                set_started_effects: PowerCardEffects::default(),
             })
         else {
             panic!("expected power card outcome");
@@ -4021,12 +4027,8 @@ return {
                 card: second_card,
             })
             .unwrap();
-        let MatchEvent::TurnPlayed {
-            next_power_set: Some(_),
-            ..
-        } = &event
-        else {
-            panic!("expected next power set at set end");
+        let MatchEvent::TurnPlayed { .. } = &event else {
+            panic!("expected turn event at set end");
         };
 
         let AppliedGameChange::TurnPlayed {

@@ -12,7 +12,7 @@ use crate::{
         commands::GetLobbyDto,
         game::{
             AppliedGameChange, AppliedTurn, BiddingState, GameEvent, GameSettings, GameType,
-            MatchEvent, NewSet, fodinha_classic, fodinha_power,
+            MatchEvent, fodinha_classic, fodinha_power,
         },
         id::{MatchId, MercenaryId, PlayerId},
         lobby::{Lobby, LobbyInfoInternal, LobbyPlayerStatus},
@@ -65,7 +65,8 @@ enum AppliedEvent {
     PlayerJoined,
     PlayerStatusChanged,
     GameStarted {
-        set: NewSet,
+        decks: IndexMap<PlayerId, Vec<Card>>,
+        upcard: Card,
         lifes: Option<HashMap<PlayerId, usize>>,
         power_decks: Option<IndexMap<PlayerId, Vec<PowerCardDto>>>,
         mana: Option<HashMap<PlayerId, PlayerManaDto>>,
@@ -494,7 +495,8 @@ impl MatchActor {
             };
 
             if let AppliedEvent::GameStarted {
-                set,
+                decks,
+                upcard,
                 lifes,
                 power_decks,
                 mana,
@@ -505,11 +507,11 @@ impl MatchActor {
                 self.refresh_empty_playing_activity();
                 self.broadcast_snapshots().await;
                 self.init_set(SetInitialization {
-                    decks: set.decks,
+                    decks,
                     lifes,
                     power_decks,
                     mana,
-                    upcard: set.upcard,
+                    upcard,
                     next,
                     possible_bids,
                 })
@@ -683,14 +685,16 @@ impl MatchActor {
                 Ok(AppliedEvent::PlayerStatusChanged)
             }
             MatchEvent::Game(GameEvent::FodinhaClassic(
-                fodinha_classic::MatchEvent::GameStarted { settings, set },
+                fodinha_classic::MatchEvent::GameStarted { settings, seed },
             )) => {
                 let lobby = self.lobby_mut()?;
                 let players = lobby.get_players_id();
                 let game = Game::FodinhaClassic(
-                    fodinha_classic::Game::from_started(&players, settings, set.clone())
+                    fodinha_classic::Game::from_started_with_seed(&players, settings, seed)
                         .map_err(|e| ManagerError::Lobby(LobbyError::GameError(e)))?,
                 );
+
+                let (decks, upcard) = initial_set_state(&game, &players);
 
                 lobby.state = LobbyState::Playing(game);
 
@@ -700,7 +704,8 @@ impl MatchActor {
                 };
 
                 Ok(AppliedEvent::GameStarted {
-                    set,
+                    decks,
+                    upcard,
                     lifes: None,
                     power_decks: None,
                     mana: None,
@@ -710,10 +715,11 @@ impl MatchActor {
             }
             MatchEvent::Game(GameEvent::FodinhaPower(fodinha_power::MatchEvent::GameStarted {
                 settings,
-                mut set,
-                power_set,
+                seed,
+                initial_mana,
                 draw_seed,
                 passive_effects,
+                ..
             })) => {
                 let power_card_registry = self.power_card_registry.snapshot();
                 let lobby = self.lobby_mut()?;
@@ -721,8 +727,8 @@ impl MatchActor {
                 let mut power_game = fodinha_power::Game::from_started(
                     &players,
                     settings,
-                    set.clone(),
-                    power_set.clone(),
+                    seed,
+                    initial_mana,
                     draw_seed,
                     power_card_registry,
                 )
@@ -730,14 +736,22 @@ impl MatchActor {
                 let (passive_mana, passive_power_decks) =
                     power_game.apply_start_effects(&passive_effects);
                 let game = Game::FodinhaPower(power_game);
-                let mut power_decks = power_decks_to_dto(&power_set.decks);
-                let mut mana = power_mana_to_dto(&power_set.mana);
+                let (decks, upcard) = initial_set_state(&game, &players);
+                let mut power_decks = IndexMap::new();
+                let mut mana = HashMap::new();
+                for player_id in &players {
+                    let info = game.get_game_info(player_id);
+                    if let Some(cards) = info.power_cards {
+                        power_decks.insert(player_id.clone(), cards);
+                    }
+                    for player in info.info {
+                        if let Some(player_mana) = player.mana {
+                            mana.insert(player.id, player_mana);
+                        }
+                    }
+                }
                 let lifes =
                     (!passive_effects.lifes.is_empty()).then(|| passive_effects.lifes.clone());
-
-                for (player_id, deck) in &passive_effects.decks {
-                    set.decks.insert(player_id.clone(), deck.clone());
-                }
 
                 mana.extend(passive_mana);
                 power_decks.extend(passive_power_decks);
@@ -750,7 +764,8 @@ impl MatchActor {
                 };
 
                 Ok(AppliedEvent::GameStarted {
-                    set,
+                    decks,
+                    upcard,
                     lifes,
                     power_decks: Some(power_decks),
                     mana: Some(mana),
@@ -1463,34 +1478,22 @@ fn should_project_match_metadata(event: &MatchEvent, match_finished: bool) -> bo
     }
 }
 
-fn power_decks_to_dto(
-    decks: &IndexMap<PlayerId, Vec<fodinha_power::PowerCard>>,
-) -> IndexMap<PlayerId, Vec<PowerCardDto>> {
-    decks
-        .iter()
-        .map(|(player_id, deck)| {
-            (
-                player_id.clone(),
-                deck.iter().map(fodinha_power::PowerCard::to_dto).collect(),
-            )
-        })
-        .collect()
-}
+fn initial_set_state(
+    game: &Game,
+    players: &[PlayerId],
+) -> (IndexMap<PlayerId, Vec<Card>>, Card) {
+    let mut decks = IndexMap::new();
+    let mut upcard = None;
 
-fn power_mana_to_dto(
-    mana: &IndexMap<PlayerId, fodinha_power::PlayerMana>,
-) -> HashMap<PlayerId, PlayerManaDto> {
-    mana.iter()
-        .map(|(player_id, mana)| {
-            (
-                player_id.clone(),
-                PlayerManaDto {
-                    current: mana.current,
-                    max: mana.max,
-                },
-            )
-        })
-        .collect()
+    for player_id in players {
+        let info = game.get_game_info(player_id);
+        if let Some(deck) = info.deck {
+            decks.insert(player_id.clone(), deck);
+        }
+        upcard = upcard.or(info.upcard);
+    }
+
+    (decks, upcard.expect("started game must have an upcard"))
 }
 
 #[derive(Debug, PartialEq, Eq)]

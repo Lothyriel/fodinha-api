@@ -32,13 +32,24 @@ impl CardDefinitionsRepository {
             self.cards
                 .create_index(
                     IndexModel::builder()
-                        .keys(doc! { "card_id": 1 })
+                        .keys(doc! { "card_id": 1, "version": 1 })
                         .options(IndexOptions::builder().unique(true).build())
                         .build(),
                 )
                 .await
         })
         .await?;
+
+        self.cards
+            .create_index(IndexModel::builder().keys(doc! { "card_id": 1, "version": -1 }).build())
+            .await?;
+        self.cards
+            .create_index(
+                IndexModel::builder()
+                    .keys(doc! { "card_id": 1, "active": 1, "version": -1 })
+                    .build(),
+            )
+            .await?;
 
         telemetry::db_query(
             ASSETS_COLLECTION_NAME,
@@ -88,6 +99,16 @@ impl CardDefinitionsRepository {
         })
         .await?;
 
+        Ok(())
+    }
+
+    pub async fn deactivate(&self, card_id: &CardId, version: i64) -> mongodb::error::Result<()> {
+        self.cards
+            .update_one(
+                doc! { "card_id": card_id.as_str(), "version": version },
+                doc! { "$set": { "active": false } },
+            )
+            .await?;
         Ok(())
     }
 
@@ -226,6 +247,8 @@ impl std::str::FromStr for CardDefinitionKind {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CardDefinitionDto {
     pub card_id: CardId,
+    #[serde(default = "default_version")]
+    pub version: i64,
     pub kind: CardDefinitionKind,
     pub name: String,
     pub description: String,
@@ -242,12 +265,17 @@ pub struct CardDefinitionDto {
     pub updated_at: i64,
 }
 
+fn default_version() -> i64 {
+    1
+}
+
 impl CardDefinitionDto {
     pub fn new(input: NewCardDefinition) -> Self {
         let now = Utc::now().timestamp();
 
         Self {
             card_id: input.card_id,
+            version: 1,
             kind: input.kind,
             name: input.name,
             description: input.description,

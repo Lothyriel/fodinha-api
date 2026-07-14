@@ -26,13 +26,24 @@ impl CardDecksRepository {
             self.decks
                 .create_index(
                     IndexModel::builder()
-                        .keys(doc! { "deck_id": 1 })
+                        .keys(doc! { "deck_id": 1, "version": 1 })
                         .options(IndexOptions::builder().unique(true).build())
                         .build(),
                 )
                 .await
         })
         .await?;
+
+        self.decks
+            .create_index(IndexModel::builder().keys(doc! { "deck_id": 1, "version": -1 }).build())
+            .await?;
+        self.decks
+            .create_index(
+                IndexModel::builder()
+                    .keys(doc! { "deck_id": 1, "active": 1, "version": -1 })
+                    .build(),
+            )
+            .await?;
 
         telemetry::db_query(COLLECTION_NAME, "create_index.creator_active", async {
             self.decks
@@ -65,6 +76,16 @@ impl CardDecksRepository {
         })
         .await?;
 
+        Ok(())
+    }
+
+    pub async fn deactivate(&self, deck_id: &DeckId, version: i64) -> mongodb::error::Result<()> {
+        self.decks
+            .update_one(
+                doc! { "deck_id": deck_id.as_str(), "version": version },
+                doc! { "$set": { "active": false } },
+            )
+            .await?;
         Ok(())
     }
 
@@ -127,6 +148,8 @@ impl CardDecksRepository {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CardDeckDto {
     pub deck_id: DeckId,
+    #[serde(default = "default_version")]
+    pub version: i64,
     pub kind: CardDeckKind,
     pub name: String,
     pub description: String,
@@ -139,12 +162,17 @@ pub struct CardDeckDto {
     pub updated_at: i64,
 }
 
+fn default_version() -> i64 {
+    1
+}
+
 impl CardDeckDto {
     pub fn new(input: NewCardDeck) -> Self {
         let now = Utc::now().timestamp();
 
         Self {
             deck_id: input.deck_id,
+            version: 1,
             kind: input.kind,
             name: input.name,
             description: input.description,

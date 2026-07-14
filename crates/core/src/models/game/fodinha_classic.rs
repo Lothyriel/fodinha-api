@@ -150,7 +150,7 @@ impl GameCommand {
 pub enum MatchEvent {
     GameStarted {
         settings: GameSettings,
-        set: NewSet,
+        seed: i64,
     },
     BidPlaced {
         player_id: PlayerId,
@@ -158,7 +158,6 @@ pub enum MatchEvent {
     },
     TurnPlayed {
         turn: Turn,
-        next_set: Option<NewSet>,
     },
 }
 
@@ -236,7 +235,9 @@ impl Game {
         let event = Self::start_match_event_with_seed(players, settings, seed)?;
 
         match event {
-            MatchEvent::GameStarted { settings, set } => Self::from_started(players, settings, set),
+            MatchEvent::GameStarted { settings, seed } => {
+                Self::from_started_with_seed(players, settings, seed)
+            }
             _ => unreachable!("start_match_event only emits GameStarted"),
         }
     }
@@ -255,15 +256,7 @@ impl Game {
     ) -> Result<MatchEvent, GameError> {
         Self::validate_game(players, &settings)?;
 
-        let set = Self::new_set(
-            players,
-            DealingMode::Increasing,
-            INITIAL_CARDS_COUNT,
-            seed,
-            0,
-        );
-
-        Ok(MatchEvent::GameStarted { settings, set })
+        Ok(MatchEvent::GameStarted { settings, seed })
     }
 
     pub fn from_started(
@@ -272,6 +265,21 @@ impl Game {
         set: NewSet,
     ) -> Result<Self, GameError> {
         Self::from_started_with_rules(players, settings, set, GameRules::default())
+    }
+
+    pub fn from_started_with_seed(
+        players: &[PlayerId],
+        settings: GameSettings,
+        seed: i64,
+    ) -> Result<Self, GameError> {
+        let set = Self::new_set(
+            players,
+            DealingMode::Increasing,
+            INITIAL_CARDS_COUNT,
+            seed,
+            0,
+        );
+        Self::from_started(players, settings, set)
     }
 
     pub fn from_started_with_rules(
@@ -360,9 +368,7 @@ impl Game {
             return Err(DealError::InvalidCard);
         }
 
-        let next_set = self.next_set_after_turn(&turn);
-
-        Ok(MatchEvent::TurnPlayed { turn, next_set })
+        Ok(MatchEvent::TurnPlayed { turn })
     }
 
     pub fn apply_match_event(&mut self, event: MatchEvent) -> AppliedGameChange {
@@ -376,7 +382,8 @@ impl Game {
                     state,
                 }
             }
-            MatchEvent::TurnPlayed { turn, next_set } => {
+            MatchEvent::TurnPlayed { turn } => {
+                let next_set = self.next_set_after_turn(&turn);
                 AppliedGameChange::TurnPlayed(self.apply_turn(turn, next_set, true))
             }
             _ => unreachable!("only game play events can be applied to Game"),
@@ -701,6 +708,10 @@ impl Game {
             }
             _ => None,
         }
+    }
+
+    pub(crate) fn next_set_for_turn(&self, turn: &Turn) -> Option<NewSet> {
+        self.next_set_after_turn(turn)
     }
 
     fn apply_new_set(&mut self, set: &NewSet) {
