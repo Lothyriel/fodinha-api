@@ -481,7 +481,14 @@ impl CardDefinitionsService {
         let mut deleted = 0;
 
         for asset in assets {
-            // Content-addressed assets may be shared by other cards.
+            if self.cards.asset_is_referenced(&asset).await? {
+                self.cards.delete_asset(&asset.asset_id).await?;
+                deleted += 1;
+                continue;
+            }
+
+            self.storage.delete(&asset.image_object_key).await?;
+            self.storage.delete(&asset.script_object_key).await?;
             self.cards.delete_asset(&asset.asset_id).await?;
             deleted += 1;
         }

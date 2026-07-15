@@ -48,6 +48,35 @@ impl CardDefinitionsRepository {
             )
             .await?;
 
+        self.cards
+            .create_index(
+                IndexModel::builder()
+                    .keys(doc! { "image_object_key": 1 })
+                    .build(),
+            )
+            .await?;
+        self.cards
+            .create_index(
+                IndexModel::builder()
+                    .keys(doc! { "script_object_key": 1 })
+                    .build(),
+            )
+            .await?;
+        self.assets
+            .create_index(
+                IndexModel::builder()
+                    .keys(doc! { "image_object_key": 1 })
+                    .build(),
+            )
+            .await?;
+        self.assets
+            .create_index(
+                IndexModel::builder()
+                    .keys(doc! { "script_object_key": 1 })
+                    .build(),
+            )
+            .await?;
+
         telemetry::db_query(
             ASSETS_COLLECTION_NAME,
             "create_index.pending_created_at",
@@ -221,6 +250,31 @@ impl CardDefinitionsRepository {
         })
         .await?;
         Ok(())
+    }
+
+    pub async fn asset_is_referenced(
+        &self,
+        asset: &CardDefinitionAssetDto,
+    ) -> mongodb::error::Result<bool> {
+        let keys = doc! {
+            "$or": [
+                { "image_object_key": &asset.image_object_key },
+                { "script_object_key": &asset.script_object_key },
+            ],
+        };
+
+        if self.cards.find_one(keys.clone()).await?.is_some() {
+            return Ok(true);
+        }
+
+        let pending_keys = doc! {
+            "$and": [
+                { "asset_id": { "$ne": asset.asset_id.as_str() } },
+                keys,
+            ],
+        };
+
+        Ok(self.assets.find_one(pending_keys).await?.is_some())
     }
 }
 
