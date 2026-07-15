@@ -269,7 +269,6 @@ impl std::str::FromStr for CardDefinitionKind {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CardDefinitionDto {
     pub card_id: CardId,
-    #[serde(default = "default_version")]
     pub version: i64,
     pub kind: CardDefinitionKind,
     pub name: String,
@@ -285,10 +284,6 @@ pub struct CardDefinitionDto {
     pub active: bool,
     pub created_at: i64,
     pub updated_at: i64,
-}
-
-fn default_version() -> i64 {
-    1
 }
 
 impl CardDefinitionDto {

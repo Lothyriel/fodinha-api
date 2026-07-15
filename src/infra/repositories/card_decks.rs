@@ -152,25 +152,18 @@ impl CardDecksRepository {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CardDeckDto {
     pub deck_id: DeckId,
-    #[serde(default = "default_version")]
     pub version: i64,
     pub kind: CardDeckKind,
     pub name: String,
     pub description: String,
     pub creator_id: PlayerId,
-    #[serde(default, alias = "generic_card_ids")]
     pub generic_cards: Vec<CardDefinitionRef>,
-    #[serde(default, alias = "mercenary_card_ids")]
     pub mercenary_cards:
         std::collections::HashMap<crate::models::id::MercenaryId, Vec<CardDefinitionRef>>,
     pub status: CardDeckStatus,
     pub active: bool,
     pub created_at: i64,
     pub updated_at: i64,
-}
-
-fn default_version() -> i64 {
-    1
 }
 
 impl CardDeckDto {

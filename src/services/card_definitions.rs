@@ -1019,25 +1019,17 @@ fn ensure_single_version_per_card(
 }
 
 fn card_image_object_key(card_id: &CardId, version: i64) -> String {
-    if version == 1 {
-        format!("card-definitions/{}/card.png", card_id.as_str())
-    } else {
-        format!(
-            "card-definitions/{}/versions/{version}/card.png",
-            card_id.as_str()
-        )
-    }
+    format!(
+        "card-definitions/{}/versions/{version}/card.png",
+        card_id.as_str()
+    )
 }
 
 fn card_script_object_key(card_id: &CardId, version: i64) -> String {
-    if version == 1 {
-        format!("card-definitions/{}/effect.lua", card_id.as_str())
-    } else {
-        format!(
-            "card-definitions/{}/versions/{version}/effect.lua",
-            card_id.as_str()
-        )
-    }
+    format!(
+        "card-definitions/{}/versions/{version}/effect.lua",
+        card_id.as_str()
+    )
 }
 
 #[cfg(test)]
@@ -1056,11 +1048,11 @@ mod tests {
 
         assert_eq!(
             card_image_object_key(&id, 1),
-            "card-definitions/card-1/card.png"
+            "card-definitions/card-1/versions/1/card.png"
         );
         assert_eq!(
             card_script_object_key(&id, 1),
-            "card-definitions/card-1/effect.lua"
+            "card-definitions/card-1/versions/1/effect.lua"
         );
         assert_eq!(
             card_image_object_key(&id, 2),

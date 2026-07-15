@@ -178,9 +178,7 @@ struct CreatePowerDeckRequest {
     status: Option<CardDeckStatus>,
     name: String,
     description: Option<String>,
-    #[serde(alias = "generic_card_ids")]
     generic_cards: Option<Vec<CardDefinitionRef>>,
-    #[serde(alias = "mercenary_card_ids")]
     mercenary_cards: Option<HashMap<MercenaryId, Vec<CardDefinitionRef>>>,
 }
 
@@ -190,9 +188,7 @@ struct UpdatePowerDeckRequest {
     status: Option<CardDeckStatus>,
     name: String,
     description: Option<String>,
-    #[serde(alias = "generic_card_ids")]
     generic_cards: Option<Vec<CardDefinitionRef>>,
-    #[serde(alias = "mercenary_card_ids")]
     mercenary_cards: Option<HashMap<MercenaryId, Vec<CardDefinitionRef>>>,
 }
 
