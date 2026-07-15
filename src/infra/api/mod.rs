@@ -568,6 +568,7 @@ return {
                 vec![
                     fodinha_power::PowerCardDefinitionInput {
                         id: CardId("heal_10".into()),
+                        version: 1,
                         name: "Heal 10".to_string(),
                         description: "Restore 10 lives to yourself.".to_string(),
                         mana_cost: 2,
@@ -579,6 +580,7 @@ return {
                     },
                     fodinha_power::PowerCardDefinitionInput {
                         id: CardId("strike_10".into()),
+                        version: 1,
                         name: "Strike 10".to_string(),
                         description: "Remove 10 lives from a target player.".to_string(),
                         mana_cost: 2,
@@ -631,8 +633,8 @@ return {
                 name: "Test Power Deck".to_string(),
                 description: "Test Fodinha Power deck".to_string(),
                 creator_id: PlayerId("test".into()),
-                generic_card_ids: Vec::new(),
-                mercenary_card_ids: Default::default(),
+                generic_cards: Vec::new(),
+                mercenary_cards: Default::default(),
                 status: CardDeckStatus::Valid,
             }))
             .await
@@ -1724,6 +1726,7 @@ return {
                 DeckId(TEST_POWER_DECK_ID.into()),
                 vec![fodinha_power::PowerCardDefinitionInput {
                     id: CardId("multi_strike".into()),
+                    version: 1,
                     name: "Multi Strike".to_string(),
                     description: "Damage multiple targets.".to_string(),
                     mana_cost: 1,
@@ -1817,6 +1820,7 @@ return {
                 DeckId(TEST_POWER_DECK_ID.into()),
                 vec![fodinha_power::PowerCardDefinitionInput {
                     id: CardId("reveal_deck".into()),
+                    version: 1,
                     name: "Reveal Deck".to_string(),
                     description: "Reveal a target player's cards.".to_string(),
                     mana_cost: 0,

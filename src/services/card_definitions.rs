@@ -11,7 +11,7 @@ use crate::{
             },
             power_lua,
         },
-        id::{CardId, DeckId, PlayerId, gen_cardid, gen_deckid},
+        id::{CardDefinitionRef, CardId, DeckId, PlayerId, gen_cardid, gen_deckid},
     },
     services::{
         object_storage::{ObjectStorage, ObjectStorageError},
@@ -79,8 +79,8 @@ pub struct CreatePowerDeckInput {
     pub kind: CardDeckKind,
     pub name: String,
     pub description: String,
-    pub generic_card_ids: Vec<CardId>,
-    pub mercenary_card_ids: HashMap<crate::models::id::MercenaryId, Vec<CardId>>,
+    pub generic_cards: Vec<CardDefinitionRef>,
+    pub mercenary_cards: HashMap<crate::models::id::MercenaryId, Vec<CardDefinitionRef>>,
     pub status: Option<CardDeckStatus>,
 }
 
@@ -89,8 +89,8 @@ pub struct UpdatePowerDeckInput {
     pub kind: Option<CardDeckKind>,
     pub name: String,
     pub description: String,
-    pub generic_card_ids: Vec<CardId>,
-    pub mercenary_card_ids: HashMap<crate::models::id::MercenaryId, Vec<CardId>>,
+    pub generic_cards: Vec<CardDefinitionRef>,
+    pub mercenary_cards: HashMap<crate::models::id::MercenaryId, Vec<CardDefinitionRef>>,
     pub status: Option<CardDeckStatus>,
 }
 
@@ -127,8 +127,8 @@ pub struct PowerDeckResponse {
     pub name: String,
     pub description: String,
     pub creator_id: PlayerId,
-    pub generic_card_ids: Vec<CardId>,
-    pub mercenary_card_ids: HashMap<crate::models::id::MercenaryId, Vec<CardId>>,
+    pub generic_cards: Vec<CardDefinitionRef>,
+    pub mercenary_cards: HashMap<crate::models::id::MercenaryId, Vec<CardDefinitionRef>>,
     pub validation_errors: Vec<String>,
     pub card_count: usize,
     pub cards: Vec<CardDefinitionResponse>,
@@ -171,12 +171,24 @@ impl CardDefinitionsService {
     }
 
     pub async fn load_power_card_registry(&self) -> Result<usize, CardDefinitionError> {
-        let cards = self.cards.active_cards().await?;
         let decks = self.decks.active_playable_decks().await?;
+        let selected_cards = decks
+            .iter()
+            .flat_map(|deck| {
+                deck.generic_cards.iter().cloned().chain(
+                    deck.mercenary_cards
+                        .values()
+                        .flat_map(|cards| cards.iter().cloned()),
+                )
+            })
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        let cards = self.cards.cards_by_refs(&selected_cards).await?;
         let mut definitions = Vec::new();
 
         for card in cards {
-            let script_object_key = card_script_object_key(&card.card_id);
+            let script_object_key = card_script_object_key(&card.card_id, card.version);
             let script = self.storage.get_bytes(&script_object_key).await?;
             let script = String::from_utf8(script)
                 .map_err(|error| CardDefinitionError::Script(error.to_string()))?;
@@ -191,7 +203,7 @@ impl CardDefinitionsService {
 
         for deck in decks {
             let validation_errors =
-                if deck.generic_card_ids.is_empty() && deck.mercenary_card_ids.is_empty() {
+                if deck.generic_cards.is_empty() && deck.mercenary_cards.is_empty() {
                     Vec::new()
                 } else {
                     self.deck_validation_errors().await?
@@ -200,8 +212,8 @@ impl CardDefinitionsService {
             if validation_errors.is_empty() {
                 deck_definitions.push(PowerDeckDefinitionInput {
                     id: deck.deck_id,
-                    generic_card_ids: deck.generic_card_ids,
-                    mercenary_card_ids: deck.mercenary_card_ids,
+                    generic_cards: deck.generic_cards,
+                    mercenary_cards: deck.mercenary_cards,
                 });
             }
         }
@@ -220,7 +232,7 @@ impl CardDefinitionsService {
                 continue;
             }
 
-            if deck.generic_card_ids.is_empty() && deck.mercenary_card_ids.is_empty() {
+            if deck.generic_cards.is_empty() && deck.mercenary_cards.is_empty() {
                 return Ok(true);
             }
 
@@ -272,8 +284,8 @@ impl CardDefinitionsService {
         let script = String::from_utf8(input.script)
             .map_err(|error| CardDefinitionError::Script(error.to_string()))?;
         let card_id = gen_cardid();
-        let image_object_key = card_image_object_key(&card_id);
-        let script_object_key = card_script_object_key(&card_id);
+        let image_object_key = card_image_object_key(&card_id, 1);
+        let script_object_key = card_script_object_key(&card_id, 1);
 
         let script_definition =
             power_lua::parse_power_card_script_definition(&script, &script_object_key)
@@ -283,6 +295,7 @@ impl CardDefinitionsService {
 
         let definition = PowerCardDefinitionInput {
             id: card_id.clone(),
+            version: 1,
             name: name.to_string(),
             description: description.to_string(),
             mana_cost: script_definition.mana_cost,
@@ -340,8 +353,8 @@ impl CardDefinitionsService {
         }
 
         let asset_id = gen_cardid();
-        let image_object_key = card_image_object_key(&asset_id);
-        let script_object_key = card_script_object_key(&asset_id);
+        let image_object_key = card_image_object_key(&asset_id, 1);
+        let script_object_key = card_script_object_key(&asset_id, 1);
         let script = String::from_utf8(input.script)
             .map_err(|error| CardDefinitionError::Script(error.to_string()))?;
 
@@ -409,8 +422,8 @@ impl CardDefinitionsService {
         }
 
         let card_id = input.asset_id;
-        let image_object_key = card_image_object_key(&card_id);
-        let script_object_key = card_script_object_key(&card_id);
+        let image_object_key = card_image_object_key(&card_id, 1);
+        let script_object_key = card_script_object_key(&card_id, 1);
         let script = self.storage.get_bytes(&script_object_key).await?;
         let script = String::from_utf8(script)
             .map_err(|error| CardDefinitionError::Script(error.to_string()))?;
@@ -423,6 +436,7 @@ impl CardDefinitionsService {
 
         let definition = PowerCardDefinitionInput {
             id: card_id.clone(),
+            version: 1,
             name: name.to_string(),
             description: description.to_string(),
             mana_cost: script_definition.mana_cost,
@@ -458,8 +472,8 @@ impl CardDefinitionsService {
         let mut deleted = 0;
 
         for asset in assets {
-            let image_object_key = card_image_object_key(&asset.asset_id);
-            let script_object_key = card_script_object_key(&asset.asset_id);
+            let image_object_key = card_image_object_key(&asset.asset_id, 1);
+            let script_object_key = card_script_object_key(&asset.asset_id, 1);
             tokio::try_join!(
                 self.storage.delete(&image_object_key),
                 self.storage.delete(&script_object_key),
@@ -510,8 +524,11 @@ impl CardDefinitionsService {
             ));
         }
 
-        let image_object_key = card_image_object_key(&card_id);
-        let script_object_key = card_script_object_key(&card_id);
+        let next_version = previous_version + 1;
+        let previous_image_object_key = card_image_object_key(&card_id, previous_version);
+        let previous_script_object_key = card_script_object_key(&card_id, previous_version);
+        let image_object_key = card_image_object_key(&card_id, next_version);
+        let script_object_key = card_script_object_key(&card_id, next_version);
         let script = match input.script {
             Some(script) => {
                 if script.is_empty() {
@@ -524,7 +541,7 @@ impl CardDefinitionsService {
                     .map_err(|error| CardDefinitionError::Script(error.to_string()))?
             }
             None => {
-                let script = self.storage.get_bytes(&script_object_key).await?;
+                let script = self.storage.get_bytes(&previous_script_object_key).await?;
 
                 String::from_utf8(script)
                     .map_err(|error| CardDefinitionError::Script(error.to_string()))?
@@ -537,25 +554,27 @@ impl CardDefinitionsService {
         power_lua::validate_power_card_script_execution(&script, &script_object_key)
             .map_err(|error| CardDefinitionError::Script(error.to_string()))?;
 
-        if let Some(image) = input.image {
-            if image.is_empty() {
-                return Err(CardDefinitionError::Invalid(
-                    "image is required".to_string(),
-                ));
+        let image = match input.image {
+            Some(image) => {
+                if image.is_empty() {
+                    return Err(CardDefinitionError::Invalid(
+                        "image is required".to_string(),
+                    ));
+                }
+                image
             }
+            None => self.storage.get_bytes(&previous_image_object_key).await?,
+        };
 
-            self.storage
-                .put(&image_object_key, image, IMAGE_OBJECT_CONTENT_TYPE)
-                .await?;
-        }
-
-        self.storage
-            .put(
+        tokio::try_join!(
+            self.storage.put(
                 &script_object_key,
                 script.clone().into_bytes(),
                 SCRIPT_OBJECT_CONTENT_TYPE,
-            )
-            .await?;
+            ),
+            self.storage
+                .put(&image_object_key, image, IMAGE_OBJECT_CONTENT_TYPE,),
+        )?;
 
         card.kind = kind;
         card.name = name.to_string();
@@ -565,7 +584,7 @@ impl CardDefinitionsService {
         card.card_type = script_definition.card_type;
         card.image_content_type = Some(IMAGE_OBJECT_CONTENT_TYPE.to_string());
         card.updated_at = Utc::now().timestamp();
-        card.version = previous_version + 1;
+        card.version = next_version;
 
         let definition = self.definition_input(&card, script.clone())?;
 
@@ -587,33 +606,35 @@ impl CardDefinitionsService {
 
         let name = input.name.trim();
         let description = input.description.trim();
-        let generic_card_ids = unique_card_ids(input.generic_card_ids);
-        let mercenary_card_ids = input
-            .mercenary_card_ids
+        let generic_cards = unique_card_refs(input.generic_cards);
+        let mercenary_cards = input
+            .mercenary_cards
             .into_iter()
-            .map(|(mercenary_id, card_ids)| (mercenary_id, unique_card_ids(card_ids)))
-            .filter(|(_, card_ids)| !card_ids.is_empty())
+            .map(|(mercenary_id, cards)| (mercenary_id, unique_card_refs(cards)))
+            .filter(|(_, cards)| !cards.is_empty())
             .collect::<HashMap<_, _>>();
-        let is_partitioned = !generic_card_ids.is_empty() || !mercenary_card_ids.is_empty();
-        let selected_card_ids = generic_card_ids
+        let is_partitioned = !generic_cards.is_empty() || !mercenary_cards.is_empty();
+        let selected_cards = generic_cards
             .iter()
             .cloned()
             .chain(
-                mercenary_card_ids
+                mercenary_cards
                     .values()
-                    .flat_map(|card_ids| card_ids.iter().cloned()),
+                    .flat_map(|cards| cards.iter().cloned()),
             )
             .collect::<HashSet<_>>()
             .into_iter()
             .collect::<Vec<_>>();
 
+        ensure_single_version_per_card(&selected_cards)?;
+
         if name.is_empty() {
             return Err(CardDefinitionError::Invalid("name is required".to_string()));
         }
 
-        let active_cards = self.cards.active_cards_by_ids(&selected_card_ids).await?;
+        let stored_cards = self.cards.cards_by_refs(&selected_cards).await?;
 
-        if active_cards.len() != selected_card_ids.len() {
+        if stored_cards.len() != selected_cards.len() {
             return Err(CardDefinitionError::Invalid(
                 "deck contains invalid cards".to_string(),
             ));
@@ -637,8 +658,8 @@ impl CardDefinitionsService {
             name: name.to_string(),
             description: description.to_string(),
             creator_id: creator_id.clone(),
-            generic_card_ids,
-            mercenary_card_ids,
+            generic_cards,
+            mercenary_cards,
             status,
         });
 
@@ -648,8 +669,8 @@ impl CardDefinitionsService {
             self.power_card_registry
                 .upsert_power_deck_definition(PowerDeckDefinitionInput {
                     id: deck.deck_id.clone(),
-                    generic_card_ids: deck.generic_card_ids.clone(),
-                    mercenary_card_ids: deck.mercenary_card_ids.clone(),
+                    generic_cards: deck.generic_cards.clone(),
+                    mercenary_cards: deck.mercenary_cards.clone(),
                 });
         }
 
@@ -688,32 +709,33 @@ impl CardDefinitionsService {
             return Err(CardDefinitionError::Invalid("name is required".to_string()));
         }
 
-        let generic_card_ids = unique_card_ids(input.generic_card_ids);
-        let mercenary_card_ids = input
-            .mercenary_card_ids
+        let generic_cards = unique_card_refs(input.generic_cards);
+        let mercenary_cards = input
+            .mercenary_cards
             .into_iter()
-            .map(|(mercenary_id, card_ids)| (mercenary_id, unique_card_ids(card_ids)))
-            .filter(|(_, card_ids)| !card_ids.is_empty())
+            .map(|(mercenary_id, cards)| (mercenary_id, unique_card_refs(cards)))
+            .filter(|(_, cards)| !cards.is_empty())
             .collect::<HashMap<_, _>>();
-        let selected_card_ids = generic_card_ids
+        let selected_cards = generic_cards
             .iter()
             .cloned()
             .chain(
-                mercenary_card_ids
+                mercenary_cards
                     .values()
-                    .flat_map(|card_ids| card_ids.iter().cloned()),
+                    .flat_map(|cards| cards.iter().cloned()),
             )
             .collect::<HashSet<_>>()
             .into_iter()
             .collect::<Vec<_>>();
-        let active_cards = self.cards.active_cards_by_ids(&selected_card_ids).await?;
-        if active_cards.len() != selected_card_ids.len() {
+        ensure_single_version_per_card(&selected_cards)?;
+        let stored_cards = self.cards.cards_by_refs(&selected_cards).await?;
+        if stored_cards.len() != selected_cards.len() {
             return Err(CardDefinitionError::Invalid(
                 "deck contains invalid cards".to_string(),
             ));
         }
 
-        let is_partitioned = !generic_card_ids.is_empty() || !mercenary_card_ids.is_empty();
+        let is_partitioned = !generic_cards.is_empty() || !mercenary_cards.is_empty();
         let validation_errors = if is_partitioned {
             self.deck_validation_errors().await?
         } else {
@@ -723,8 +745,8 @@ impl CardDefinitionsService {
         deck.kind = kind;
         deck.name = name.to_string();
         deck.description = input.description.trim().to_string();
-        deck.generic_card_ids = generic_card_ids;
-        deck.mercenary_card_ids = mercenary_card_ids;
+        deck.generic_cards = generic_cards;
+        deck.mercenary_cards = mercenary_cards;
         deck.status = if requested_status == CardDeckStatus::Draft || !validation_errors.is_empty()
         {
             CardDeckStatus::Draft
@@ -740,8 +762,8 @@ impl CardDefinitionsService {
             self.power_card_registry
                 .upsert_power_deck_definition(PowerDeckDefinitionInput {
                     id: deck.deck_id.clone(),
-                    generic_card_ids: deck.generic_card_ids.clone(),
-                    mercenary_card_ids: deck.mercenary_card_ids.clone(),
+                    generic_cards: deck.generic_cards.clone(),
+                    mercenary_cards: deck.mercenary_cards.clone(),
                 });
         }
 
@@ -776,36 +798,37 @@ impl CardDefinitionsService {
                     || viewer_id.is_some_and(|viewer_id| deck.creator_id == *viewer_id)
             })
             .collect::<Vec<_>>();
-        let selected_card_ids = decks
+        let selected_cards = decks
             .iter()
             .flat_map(|deck| {
-                deck.generic_card_ids.iter().cloned().chain(
-                    deck.mercenary_card_ids
+                deck.generic_cards.iter().cloned().chain(
+                    deck.mercenary_cards
                         .values()
-                        .flat_map(|card_ids| card_ids.iter().cloned()),
+                        .flat_map(|cards| cards.iter().cloned()),
                 )
             })
             .collect::<HashSet<_>>()
             .into_iter()
             .collect::<Vec<_>>();
-        let cards = self.cards.active_cards_by_ids(&selected_card_ids).await?;
-        let cards_by_id = cards
+        let cards = self.cards.cards_by_refs(&selected_cards).await?;
+        let cards_by_ref = cards
             .iter()
             .cloned()
-            .map(|card| (card.card_id.clone(), card))
+            .map(|card| {
+                (
+                    CardDefinitionRef::new(card.card_id.clone(), card.version),
+                    card,
+                )
+            })
             .collect::<HashMap<_, _>>();
         let deck_cards = decks
             .into_iter()
             .map(|deck| {
                 let cards = deck
-                    .generic_card_ids
+                    .generic_cards
                     .iter()
-                    .chain(
-                        deck.mercenary_card_ids
-                            .values()
-                            .flat_map(|card_ids| card_ids.iter()),
-                    )
-                    .filter_map(|card_id| cards_by_id.get(card_id).cloned())
+                    .chain(deck.mercenary_cards.values().flat_map(|cards| cards.iter()))
+                    .filter_map(|card_ref| cards_by_ref.get(card_ref).cloned())
                     .collect::<Vec<_>>();
 
                 (deck, cards)
@@ -817,7 +840,7 @@ impl CardDefinitionsService {
         for (deck, cards) in deck_cards {
             let card_responses = self.card_responses(cards).await?;
             let validation_errors =
-                if deck.generic_card_ids.is_empty() && deck.mercenary_card_ids.is_empty() {
+                if deck.generic_cards.is_empty() && deck.mercenary_cards.is_empty() {
                     Vec::new()
                 } else {
                     self.deck_validation_errors().await?
@@ -831,8 +854,8 @@ impl CardDefinitionsService {
                 name: deck.name,
                 description: deck.description,
                 creator_id: deck.creator_id.clone(),
-                generic_card_ids: deck.generic_card_ids,
-                mercenary_card_ids: deck.mercenary_card_ids,
+                generic_cards: deck.generic_cards,
+                mercenary_cards: deck.mercenary_cards,
                 validation_errors,
                 card_count: card_responses.len(),
                 cards: card_responses,
@@ -852,7 +875,7 @@ impl CardDefinitionsService {
         let mut responses = Vec::with_capacity(cards.len());
 
         for card in cards {
-            let script_object_key = card_script_object_key(&card.card_id);
+            let script_object_key = card_script_object_key(&card.card_id, card.version);
             let script = self.storage.get_bytes(&script_object_key).await?;
             let script = String::from_utf8(script)
                 .map_err(|error| CardDefinitionError::Script(error.to_string()))?;
@@ -868,8 +891,8 @@ impl CardDefinitionsService {
         card: CardDefinitionDto,
         script: String,
     ) -> Result<CardDefinitionResponse, CardDefinitionError> {
-        let image_object_key = card_image_object_key(&card.card_id);
-        let script_object_key = card_script_object_key(&card.card_id);
+        let image_object_key = card_image_object_key(&card.card_id, card.version);
+        let script_object_key = card_script_object_key(&card.card_id, card.version);
         let script_definition =
             power_lua::parse_power_card_script_definition(&script, &script_object_key)
                 .map_err(|error| CardDefinitionError::Script(error.to_string()))?;
@@ -947,14 +970,15 @@ impl CardDefinitionsService {
         card: &CardDefinitionDto,
         script: String,
     ) -> Result<PowerCardDefinitionInput, CardDefinitionError> {
-        let image_object_key = card_image_object_key(&card.card_id);
-        let script_object_key = card_script_object_key(&card.card_id);
+        let image_object_key = card_image_object_key(&card.card_id, card.version);
+        let script_object_key = card_script_object_key(&card.card_id, card.version);
         let script_definition =
             power_lua::parse_power_card_script_definition(&script, &script_object_key)
                 .map_err(|error| CardDefinitionError::Script(error.to_string()))?;
 
         Ok(PowerCardDefinitionInput {
             id: card.card_id.clone(),
+            version: card.version,
             name: card.name.clone(),
             description: card.description.clone(),
             mana_cost: script_definition.mana_cost,
@@ -967,40 +991,96 @@ impl CardDefinitionsService {
     }
 }
 
-fn unique_card_ids(card_ids: Vec<CardId>) -> Vec<CardId> {
-    card_ids
+fn unique_card_refs(card_refs: Vec<CardDefinitionRef>) -> Vec<CardDefinitionRef> {
+    let mut seen = HashSet::new();
+    card_refs
         .into_iter()
-        .collect::<HashSet<_>>()
-        .into_iter()
+        .filter(|card_ref| seen.insert(card_ref.clone()))
         .collect()
 }
 
-fn card_image_object_key(card_id: &CardId) -> String {
-    format!("card-definitions/{}/card.png", card_id.as_str())
+fn ensure_single_version_per_card(
+    card_refs: &[CardDefinitionRef],
+) -> Result<(), CardDefinitionError> {
+    let mut versions = HashMap::new();
+
+    for card_ref in card_refs {
+        if let Some(version) = versions.insert(card_ref.card_id.clone(), card_ref.version)
+            && version != card_ref.version
+        {
+            return Err(CardDefinitionError::Invalid(format!(
+                "deck references multiple versions of card {}",
+                card_ref.card_id
+            )));
+        }
+    }
+
+    Ok(())
 }
 
-fn card_script_object_key(card_id: &CardId) -> String {
-    format!("card-definitions/{}/effect.lua", card_id.as_str())
+fn card_image_object_key(card_id: &CardId, version: i64) -> String {
+    if version == 1 {
+        format!("card-definitions/{}/card.png", card_id.as_str())
+    } else {
+        format!(
+            "card-definitions/{}/versions/{version}/card.png",
+            card_id.as_str()
+        )
+    }
+}
+
+fn card_script_object_key(card_id: &CardId, version: i64) -> String {
+    if version == 1 {
+        format!("card-definitions/{}/effect.lua", card_id.as_str())
+    } else {
+        format!(
+            "card-definitions/{}/versions/{version}/effect.lua",
+            card_id.as_str()
+        )
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
 
-    use super::{card_image_object_key, card_script_object_key};
-    use crate::models::id::CardId;
+    use super::{
+        CardDefinitionError, card_image_object_key, card_script_object_key,
+        ensure_single_version_per_card,
+    };
+    use crate::models::id::{CardDefinitionRef, CardId};
 
     #[test]
     fn card_object_keys_are_derived_from_id() {
         let id = CardId(Arc::from("card-1"));
 
         assert_eq!(
-            card_image_object_key(&id),
+            card_image_object_key(&id, 1),
             "card-definitions/card-1/card.png"
         );
         assert_eq!(
-            card_script_object_key(&id),
+            card_script_object_key(&id, 1),
             "card-definitions/card-1/effect.lua"
         );
+        assert_eq!(
+            card_image_object_key(&id, 2),
+            "card-definitions/card-1/versions/2/card.png"
+        );
+        assert_eq!(
+            card_script_object_key(&id, 2),
+            "card-definitions/card-1/versions/2/effect.lua"
+        );
+    }
+
+    #[test]
+    fn deck_cannot_reference_multiple_versions_of_one_card() {
+        let id = CardId(Arc::from("card-1"));
+        let error = ensure_single_version_per_card(&[
+            CardDefinitionRef::new(id.clone(), 1),
+            CardDefinitionRef::new(id, 2),
+        ])
+        .unwrap_err();
+
+        assert!(matches!(error, CardDefinitionError::Invalid(_)));
     }
 }

@@ -4,7 +4,7 @@ use mongodb::{Collection, Database, IndexModel, bson::doc, options::IndexOptions
 
 use crate::{
     infra::telemetry,
-    models::id::{CardId, DeckId, PlayerId},
+    models::id::{CardDefinitionRef, DeckId, PlayerId},
 };
 
 const COLLECTION_NAME: &str = "CardDeckDefinitions";
@@ -158,8 +158,11 @@ pub struct CardDeckDto {
     pub name: String,
     pub description: String,
     pub creator_id: PlayerId,
-    pub generic_card_ids: Vec<CardId>,
-    pub mercenary_card_ids: std::collections::HashMap<crate::models::id::MercenaryId, Vec<CardId>>,
+    #[serde(default, alias = "generic_card_ids")]
+    pub generic_cards: Vec<CardDefinitionRef>,
+    #[serde(default, alias = "mercenary_card_ids")]
+    pub mercenary_cards:
+        std::collections::HashMap<crate::models::id::MercenaryId, Vec<CardDefinitionRef>>,
     pub status: CardDeckStatus,
     pub active: bool,
     pub created_at: i64,
@@ -181,8 +184,8 @@ impl CardDeckDto {
             name: input.name,
             description: input.description,
             creator_id: input.creator_id,
-            generic_card_ids: input.generic_card_ids,
-            mercenary_card_ids: input.mercenary_card_ids,
+            generic_cards: input.generic_cards,
+            mercenary_cards: input.mercenary_cards,
             status: input.status,
             active: true,
             created_at: now,
@@ -201,8 +204,9 @@ pub struct NewCardDeck {
     pub name: String,
     pub description: String,
     pub creator_id: PlayerId,
-    pub generic_card_ids: Vec<CardId>,
-    pub mercenary_card_ids: std::collections::HashMap<crate::models::id::MercenaryId, Vec<CardId>>,
+    pub generic_cards: Vec<CardDefinitionRef>,
+    pub mercenary_cards:
+        std::collections::HashMap<crate::models::id::MercenaryId, Vec<CardDefinitionRef>>,
     pub status: CardDeckStatus,
 }
 

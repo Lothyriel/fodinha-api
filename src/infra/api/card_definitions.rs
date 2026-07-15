@@ -8,7 +8,7 @@ use std::collections::HashMap;
 
 use crate::{
     infra::{UserClaims, telemetry},
-    models::id::{CardId, MercenaryId},
+    models::id::{CardDefinitionRef, CardId, MercenaryId},
     services::{
         card_definitions::{
             CardDefinitionError, CreateCardDefinitionAssetInput,
@@ -137,8 +137,8 @@ async fn create_deck(
                 kind: body.kind.unwrap_or(CardDeckKind::Community),
                 name: body.name,
                 description: body.description.unwrap_or_default(),
-                generic_card_ids: body.generic_card_ids.unwrap_or_default(),
-                mercenary_card_ids: body.mercenary_card_ids.unwrap_or_default(),
+                generic_cards: body.generic_cards.unwrap_or_default(),
+                mercenary_cards: body.mercenary_cards.unwrap_or_default(),
                 status: body.status,
             },
         )
@@ -162,8 +162,8 @@ async fn update_deck(
                 kind: body.kind,
                 name: body.name,
                 description: body.description.unwrap_or_default(),
-                generic_card_ids: body.generic_card_ids.unwrap_or_default(),
-                mercenary_card_ids: body.mercenary_card_ids.unwrap_or_default(),
+                generic_cards: body.generic_cards.unwrap_or_default(),
+                mercenary_cards: body.mercenary_cards.unwrap_or_default(),
                 status: body.status,
             },
         )
@@ -178,8 +178,10 @@ struct CreatePowerDeckRequest {
     status: Option<CardDeckStatus>,
     name: String,
     description: Option<String>,
-    generic_card_ids: Option<Vec<CardId>>,
-    mercenary_card_ids: Option<HashMap<MercenaryId, Vec<CardId>>>,
+    #[serde(alias = "generic_card_ids")]
+    generic_cards: Option<Vec<CardDefinitionRef>>,
+    #[serde(alias = "mercenary_card_ids")]
+    mercenary_cards: Option<HashMap<MercenaryId, Vec<CardDefinitionRef>>>,
 }
 
 #[derive(serde::Deserialize)]
@@ -188,8 +190,10 @@ struct UpdatePowerDeckRequest {
     status: Option<CardDeckStatus>,
     name: String,
     description: Option<String>,
-    generic_card_ids: Option<Vec<CardId>>,
-    mercenary_card_ids: Option<HashMap<MercenaryId, Vec<CardId>>>,
+    #[serde(alias = "generic_card_ids")]
+    generic_cards: Option<Vec<CardDefinitionRef>>,
+    #[serde(alias = "mercenary_card_ids")]
+    mercenary_cards: Option<HashMap<MercenaryId, Vec<CardDefinitionRef>>>,
 }
 
 #[derive(serde::Deserialize)]

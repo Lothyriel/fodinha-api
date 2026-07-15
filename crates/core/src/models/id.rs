@@ -91,6 +91,40 @@ impl std::fmt::Display for CardId {
     }
 }
 
+#[derive(Debug, PartialEq, Eq, Hash, Clone, serde::Serialize)]
+pub struct CardDefinitionRef {
+    pub card_id: CardId,
+    pub version: i64,
+}
+
+impl<'de> serde::Deserialize<'de> for CardDefinitionRef {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(serde::Deserialize)]
+        #[serde(untagged)]
+        enum StoredCardRef {
+            Versioned { card_id: CardId, version: i64 },
+            Legacy(CardId),
+        }
+
+        match StoredCardRef::deserialize(deserializer)? {
+            StoredCardRef::Versioned { card_id, version } => Ok(Self { card_id, version }),
+            StoredCardRef::Legacy(card_id) => Ok(Self {
+                card_id,
+                version: 1,
+            }),
+        }
+    }
+}
+
+impl CardDefinitionRef {
+    pub fn new(card_id: CardId, version: i64) -> Self {
+        Self { card_id, version }
+    }
+}
+
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
 pub struct DeckId(pub Arc<str>);
 
@@ -224,4 +258,30 @@ pub fn gen_mercenaryid() -> MercenaryId {
 
 pub fn gen_uid() -> Uid {
     Uid(nanoid::nanoid!(16, ALPHABET).into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::CardDefinitionRef;
+
+    #[test]
+    fn card_definition_ref_serializes_with_version() {
+        let card_ref: CardDefinitionRef =
+            serde_json::from_str(r#"{"card_id":"card-1","version":2}"#).unwrap();
+
+        assert_eq!(card_ref.card_id.as_str(), "card-1");
+        assert_eq!(card_ref.version, 2);
+        assert_eq!(
+            serde_json::to_value(card_ref).unwrap(),
+            serde_json::json!({ "card_id": "card-1", "version": 2 })
+        );
+    }
+
+    #[test]
+    fn legacy_card_id_deserializes_as_version_one() {
+        let card_ref: CardDefinitionRef = serde_json::from_str(r#""card-1""#).unwrap();
+
+        assert_eq!(card_ref.card_id.as_str(), "card-1");
+        assert_eq!(card_ref.version, 1);
+    }
 }

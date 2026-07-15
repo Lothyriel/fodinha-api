@@ -6,7 +6,7 @@ use crate::{
     infra::telemetry,
     models::{
         game::fodinha_power::PowerCardType,
-        id::{CardId, PlayerId},
+        id::{CardDefinitionRef, CardId, PlayerId},
     },
 };
 
@@ -149,6 +149,31 @@ impl CardDefinitionsRepository {
                 })
                 .await?;
 
+            cursor.try_collect().await
+        })
+        .await
+    }
+
+    pub async fn cards_by_refs(
+        &self,
+        card_refs: &[CardDefinitionRef],
+    ) -> mongodb::error::Result<Vec<CardDefinitionDto>> {
+        if card_refs.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let versions = card_refs
+            .iter()
+            .map(|card_ref| {
+                doc! {
+                    "card_id": card_ref.card_id.as_str(),
+                    "version": card_ref.version,
+                }
+            })
+            .collect::<Vec<_>>();
+
+        telemetry::db_query(COLLECTION_NAME, "find.by_refs", async {
+            let cursor = self.cards.find(doc! { "$or": versions }).await?;
             cursor.try_collect().await
         })
         .await
