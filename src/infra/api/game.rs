@@ -164,8 +164,13 @@ impl PlayerConnection {
                             return Ok(());
                         }
                         msg => {
-                            let msg = self.manager.hydrate_outbound_message(msg).await?;
-                            self.send_server_msg(msg).await?;
+                            match self.manager.hydrate_outbound_message(msg).await {
+                                Ok(msg) => self.send_server_msg(msg).await?,
+                                Err(error) if is_terminal_connection_error(&error) => {
+                                    return Err(error);
+                                }
+                                Err(error) => self.send_error(&error).await?,
+                            }
                         }
                     }
                 }
@@ -173,8 +178,10 @@ impl PlayerConnection {
                     match inbound {
                         Some(Ok(message)) => {
                             if let Err(error) = self.process_msg(message).await {
-                                self.send_error(&error).await;
-                                return Err(error);
+                                if is_terminal_connection_error(&error) {
+                                    return Err(error);
+                                }
+                                self.send_error(&error).await?;
                             }
                         }
                         Some(Err(error)) => return Err(ManagerError::PlayerDisconnected(error.to_string())),
@@ -221,14 +228,12 @@ impl PlayerConnection {
         }
     }
 
-    async fn send_error(&mut self, error: &ManagerError) {
+    async fn send_error(&mut self, error: &ManagerError) -> Result<(), ManagerError> {
         let msg = ServerMessage::Error {
             msg: error.to_string(),
         };
 
-        if let Err(error) = self.send_server_msg(msg).await {
-            tracing::error!("Failed to send websocket error: {error}");
-        }
+        self.send_server_msg(msg).await
     }
 
     async fn send_server_msg(&mut self, msg: ServerMessage) -> Result<(), ManagerError> {
@@ -241,6 +246,10 @@ impl PlayerConnection {
             .await
             .map_err(|e| ManagerError::PlayerDisconnected(e.to_string()))
     }
+}
+
+fn is_terminal_connection_error(error: &ManagerError) -> bool {
+    matches!(error, ManagerError::PlayerDisconnected(_))
 }
 
 async fn handle_client_command(

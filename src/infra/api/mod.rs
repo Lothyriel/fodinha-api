@@ -1942,6 +1942,15 @@ return {
             msg => panic!("Expected error, got {msg:?}"),
         }
 
+        send_msg(
+            &mut player.connection,
+            ClientCommand::SelectMercenary {
+                mercenary_id: MercenaryId("test_mercenary_0".into()),
+            },
+        )
+        .await;
+        assert_game_msg(&mut player.connection, validate_player_mercenary_selected).await;
+
         drop(player_data);
         server.shutdown().await;
     }
