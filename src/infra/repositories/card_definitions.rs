@@ -384,23 +384,12 @@ mod tests {
     }
 
     #[test]
-    fn legacy_object_keys_are_ignored_and_not_rewritten() {
+    fn legacy_cards_without_asset_keys_are_rejected() {
         let mut value = serde_json::to_value(card()).unwrap();
         let object = value.as_object_mut().unwrap();
-        object.insert(
-            "image_object_key".to_string(),
-            serde_json::json!("legacy/card.png"),
-        );
-        object.insert(
-            "script_object_key".to_string(),
-            serde_json::json!("legacy/effect.lua"),
-        );
+        object.remove("image_object_key");
+        object.remove("script_object_key");
 
-        let decoded: CardDefinitionDto = serde_json::from_value(value).unwrap();
-        let rewritten = serde_json::to_value(decoded).unwrap();
-        let rewritten = rewritten.as_object().unwrap();
-
-        assert!(!rewritten.contains_key("image_object_key"));
-        assert!(!rewritten.contains_key("script_object_key"));
+        assert!(serde_json::from_value::<CardDefinitionDto>(value).is_err());
     }
 }

@@ -216,13 +216,13 @@ mod tests {
     }
 
     #[test]
-    fn mercenary_serialization_does_not_store_object_keys() {
+    fn mercenary_serialization_stores_asset_keys() {
         let value = serde_json::to_value(mercenary()).unwrap();
         let object = value.as_object().unwrap();
 
-        assert!(!object.contains_key("banner_object_key"));
-        assert!(!object.contains_key("icon_object_key"));
-        assert!(!object.contains_key("passive_script_object_key"));
+        assert!(object.contains_key("banner_object_key"));
+        assert!(object.contains_key("icon_object_key"));
+        assert!(object.contains_key("script_object_key"));
     }
 
     #[test]
