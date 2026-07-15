@@ -229,6 +229,29 @@ impl LuaGame {
         Ok(player.mana.max)
     }
 
+    /// Adjusts a player's maximum mana capacity. Increasing the maximum does
+    /// not refill current mana; decreasing it clamps current mana to the new
+    /// maximum. Returns the updated maximum.
+    #[lua_api_method]
+    fn add_max_mana(&self, player_id: PlayerId, delta: i64) -> mlua::Result<usize> {
+        let mut players = self.players.borrow_mut();
+        let Some(player) = players.get_mut(player_id.as_str()) else {
+            return Err(unknown_player(player_id.as_str()));
+        };
+
+        player.mana.max = match delta.cmp(&0) {
+            Ordering::Less => player
+                .mana
+                .max
+                .saturating_sub(delta.unsigned_abs() as usize),
+            Ordering::Equal => player.mana.max,
+            Ordering::Greater => player.mana.max.saturating_add(delta as usize),
+        };
+        player.mana.current = player.mana.current.min(player.mana.max);
+
+        Ok(player.mana.max)
+    }
+
     #[lua_api_method]
     fn get_cards(&self, player_id: PlayerId) -> mlua::Result<Vec<LuaCard>> {
         let players = self.players.borrow();

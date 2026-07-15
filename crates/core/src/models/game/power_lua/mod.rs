@@ -332,6 +332,7 @@ mod tests {
             "add_mana",
             "set_mana",
             "set_max_mana",
+            "add_max_mana",
             "get_cards",
             "reveal_deck",
             "switch_cards",
@@ -439,6 +440,9 @@ mod tests {
             "---@field get_power_cards fun(self: Game, player_id: PlayerId): PowerCardState[]"
         ));
         assert!(definitions.contains("---@field get_current_trump fun(self: Game): Rank"));
+        assert!(definitions.contains(
+            "---@field add_max_mana fun(self: Game, player_id: PlayerId, delta: integer): integer"
+        ));
         assert!(definitions.contains("---@field player_ids fun(self: Game): PlayerId[]"));
         assert!(
             definitions
@@ -904,6 +908,71 @@ mod tests {
                 current: 3,
                 max: 10
             })
+        );
+    }
+
+    #[test]
+    fn script_can_increase_max_mana_without_refilling_current_mana() {
+        let player = PlayerId(Arc::from("P1"));
+        let output = run_power_card_script(
+            r#"
+            return {
+                type = PowerCardType.Instant,
+                mana_cost = 0,
+                quantity = 1,
+                effect = function(game, card)
+                    local max_mana = game:add_max_mana(card.owner_id, 4)
+                    assert(max_mana == 14)
+                    assert(game:get_max_mana(card.owner_id) == 14)
+                    assert(game:get_mana(card.owner_id) == 5)
+                end,
+            }
+            "#,
+            script_input(
+                player.clone(),
+                vec![],
+                HashMap::from([(player.clone(), script_player(50))]),
+            ),
+        )
+        .unwrap();
+
+        assert_eq!(
+            output.mana.get(&player),
+            Some(&ScriptManaState {
+                current: 5,
+                max: 14
+            })
+        );
+    }
+
+    #[test]
+    fn reducing_max_mana_clamps_current_mana() {
+        let player = PlayerId(Arc::from("P1"));
+        let output = run_power_card_script(
+            r#"
+            return {
+                type = PowerCardType.Instant,
+                mana_cost = 0,
+                quantity = 1,
+                effect = function(game, card)
+                    game:set_mana(card.owner_id, 9)
+                    local max_mana = game:add_max_mana(card.owner_id, -7)
+                    assert(max_mana == 3)
+                    assert(game:get_mana(card.owner_id) == 3)
+                end,
+            }
+            "#,
+            script_input(
+                player.clone(),
+                vec![],
+                HashMap::from([(player.clone(), script_player(50))]),
+            ),
+        )
+        .unwrap();
+
+        assert_eq!(
+            output.mana.get(&player),
+            Some(&ScriptManaState { current: 3, max: 3 })
         );
     }
 

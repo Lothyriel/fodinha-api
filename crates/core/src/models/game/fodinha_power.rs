@@ -3674,6 +3674,71 @@ return {
     }
 
     #[test]
+    fn max_mana_change_is_persisted_and_replayed_from_power_card_event() {
+        let [player1, player2] = test_players();
+        let players = [player1.clone(), player2];
+        let card_id = card_id("expand_mana");
+        let registry = registry_with_power_card_definitions(vec![PowerCardDefinitionInput {
+            id: card_id.clone(),
+            version: 1,
+            name: "Expand Mana".to_string(),
+            description: "Increases maximum mana.".to_string(),
+            mana_cost: 0,
+            quantity: 1,
+            card_type: PowerCardType::Instant,
+            image_url: None,
+            script: r#"
+                return {
+                    type = PowerCardType.Instant,
+                    mana_cost = 0,
+                    quantity = 1,
+                    effect = function(game, card)
+                        game:add_max_mana(card.owner_id, 4)
+                    end,
+                }
+            "#
+            .to_string(),
+            source: "test/expand_mana.lua".to_string(),
+        }]);
+        let mut game =
+            Game::new_with_seed(&players, test_settings(), 42, registry.clone()).unwrap();
+        set_power_phase(&mut game, &players);
+        game.power_decks.insert(
+            player1.clone(),
+            vec![
+                registry
+                    .power_card_definition(&test_deck_id(), &card_id)
+                    .unwrap()
+                    .unwrap()
+                    .to_card(),
+            ],
+        );
+        game.mana
+            .insert(player1.clone(), PlayerMana { current: 3, max: 5 });
+
+        let event = game
+            .validate_power_card(&player1, &card_id, vec![])
+            .unwrap();
+        let MatchEvent::PowerCardPlayed { effects, .. } = &event else {
+            panic!("expected power card event");
+        };
+        assert_eq!(
+            effects.mana.get(&player1),
+            Some(&PlayerMana { current: 3, max: 9 })
+        );
+
+        let document = mongodb::bson::to_document(&event).unwrap();
+        let replay_event: MatchEvent = mongodb::bson::from_document(document).unwrap();
+        let mut replayed = game.clone();
+
+        game.apply_match_event(event);
+        replayed.apply_match_event(replay_event);
+
+        assert_eq!(game.mana[&player1], PlayerMana { current: 3, max: 9 });
+        assert_eq!(replayed.mana[&player1], game.mana[&player1]);
+    }
+
+    #[test]
     fn power_card_script_can_reduce_mana_cost_before_deduction() {
         let [player1, player2] = test_players();
         let players = [player1.clone(), player2];
