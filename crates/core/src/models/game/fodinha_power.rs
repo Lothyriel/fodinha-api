@@ -48,6 +48,7 @@ pub struct Game {
     registry: PowerCardRegistry,
     power_deck_id: DeckId,
     player_mercenaries: HashMap<PlayerId, MercenaryId>,
+    player_mercenary_versions: HashMap<PlayerId, i64>,
     power_seed: i64,
     draw_seed: i64,
     next_power_shuffle_sequence: i64,
@@ -426,6 +427,7 @@ pub struct PowerDeckDefinitionInput {
 #[derive(Debug, Clone)]
 pub struct MercenaryDefinitionInput {
     pub id: MercenaryId,
+    pub version: i64,
     pub name: String,
     pub base_life: usize,
     pub initial_mana: usize,
@@ -547,6 +549,7 @@ impl PowerDeckDefinition {
 #[derive(Debug, Clone)]
 struct MercenaryDefinition {
     id: MercenaryId,
+    version: i64,
     base_life: usize,
     initial_mana: usize,
     passive_script: String,
@@ -566,6 +569,7 @@ impl MercenaryDefinition {
 
         Ok(Self {
             id: input.id,
+            version: input.version,
             base_life: passive_definition.base_life,
             initial_mana: passive_definition.initial_mana,
             passive_script: input.passive_script,
@@ -578,7 +582,7 @@ impl MercenaryDefinition {
 pub struct PowerCardRegistry {
     card_definitions: Arc<HashMap<CardDefinitionRef, PowerCardDefinition>>,
     deck_definitions: Arc<HashMap<DeckId, PowerDeckDefinition>>,
-    mercenary_definitions: Arc<HashMap<MercenaryId, MercenaryDefinition>>,
+    mercenary_definitions: Arc<HashMap<(MercenaryId, i64), MercenaryDefinition>>,
 }
 
 impl PowerCardRegistry {
@@ -656,14 +660,15 @@ impl PowerCardRegistry {
         for definition in definitions {
             let definition = MercenaryDefinition::from_input(definition)?;
 
-            if loaded.contains_key(&definition.id) {
+            let key = (definition.id.clone(), definition.version);
+            if loaded.contains_key(&key) {
                 return Err(PowerCardDefinitionError::DuplicateId {
                     id: definition.id.to_string(),
                     path: definition.passive_source,
                 });
             }
 
-            loaded.insert(definition.id.clone(), definition);
+            loaded.insert(key, definition);
         }
 
         *Arc::make_mut(&mut self.mercenary_definitions) = loaded;
@@ -677,13 +682,24 @@ impl PowerCardRegistry {
     ) -> Result<(), PowerCardDefinitionError> {
         let definition = MercenaryDefinition::from_input(definition)?;
 
-        Arc::make_mut(&mut self.mercenary_definitions).insert(definition.id.clone(), definition);
+        Arc::make_mut(&mut self.mercenary_definitions)
+            .insert((definition.id.clone(), definition.version), definition);
 
         Ok(())
     }
 
-    fn mercenary_definition(&self, id: &MercenaryId) -> Option<MercenaryDefinition> {
-        self.mercenary_definitions.get(id).cloned()
+    fn mercenary_definition(&self, id: &MercenaryId, version: i64) -> Option<MercenaryDefinition> {
+        self.mercenary_definitions
+            .get(&(id.clone(), version))
+            .cloned()
+    }
+
+    fn mercenary_version(&self, id: &MercenaryId) -> Option<i64> {
+        self.mercenary_definitions
+            .keys()
+            .filter(|(definition_id, _)| definition_id == id)
+            .map(|(_, version)| *version)
+            .max()
     }
 
     fn power_deck_definition(
@@ -917,11 +933,19 @@ impl Game {
                 seed,
                 initial_mana,
                 draw_seed,
+                player_mercenary_versions,
                 passive_effects,
                 ..
             } => {
-                let mut game =
-                    Self::from_started(players, settings, seed, initial_mana, draw_seed, registry)?;
+                let mut game = Self::from_started(
+                    players,
+                    settings,
+                    seed,
+                    initial_mana,
+                    draw_seed,
+                    player_mercenary_versions,
+                    registry,
+                )?;
                 game.apply_effects(&passive_effects);
 
                 Ok(game)
@@ -960,13 +984,21 @@ impl Game {
         draw_seed: i64,
         registry: &PowerCardRegistry,
     ) -> Result<MatchEvent, GameError> {
-        let initial_mana = Self::initial_mana(players, &settings.player_mercenaries, registry)?;
+        let player_mercenary_versions =
+            Self::mercenary_versions(&settings.player_mercenaries, registry)?;
+        let initial_mana = Self::initial_mana(
+            players,
+            &settings.player_mercenaries,
+            &player_mercenary_versions,
+            registry,
+        )?;
         let game = Self::from_started(
             players,
             settings.clone(),
             seed,
             initial_mana.clone(),
             draw_seed,
+            player_mercenary_versions.clone(),
             registry.clone(),
         )?;
         let mut preview = game.clone();
@@ -979,13 +1011,6 @@ impl Game {
                 .passive_effects(PassiveGameEvent::SetStarted)
                 .map_err(|error| GameError::PowerScript(error.to_string()))?,
         );
-
-        let player_mercenary_versions = settings
-            .player_mercenaries
-            .keys()
-            .cloned()
-            .map(|player_id| (player_id, 1))
-            .collect();
 
         Ok(MatchEvent::GameStarted {
             settings,
@@ -1004,6 +1029,7 @@ impl Game {
         seed: i64,
         initial_mana: IndexMap<PlayerId, PlayerMana>,
         draw_seed: i64,
+        player_mercenary_versions: HashMap<PlayerId, i64>,
         registry: PowerCardRegistry,
     ) -> Result<Self, GameError> {
         let classic = fodinha_core::Game::from_started_with_rules(
@@ -1054,6 +1080,7 @@ impl Game {
             registry,
             power_deck_id: settings.power_deck_id,
             player_mercenaries: settings.player_mercenaries,
+            player_mercenary_versions,
             power_seed: seed,
             draw_seed,
             next_power_shuffle_sequence: power_set.shuffle.sequence.wrapping_add(1),
@@ -1931,7 +1958,11 @@ impl Game {
             let Some(mercenary_id) = preview.player_mercenaries.get(&player_id) else {
                 continue;
             };
-            let Some(definition) = self.registry.mercenary_definition(mercenary_id) else {
+            let Some(version) = self.player_mercenary_versions.get(&player_id) else {
+                continue;
+            };
+            let Some(definition) = self.registry.mercenary_definition(mercenary_id, *version)
+            else {
                 continue;
             };
             let output = super::power_lua::run_passive_script(
@@ -2459,6 +2490,7 @@ impl Game {
     fn initial_mana(
         players: &[PlayerId],
         player_mercenaries: &HashMap<PlayerId, MercenaryId>,
+        player_mercenary_versions: &HashMap<PlayerId, i64>,
         registry: &PowerCardRegistry,
     ) -> Result<IndexMap<PlayerId, PlayerMana>, PowerCardDefinitionError> {
         players
@@ -2466,8 +2498,16 @@ impl Game {
             .map(|player_id| {
                 let mana = match player_mercenaries.get(player_id) {
                     Some(mercenary_id) => {
-                        let definition =
-                            registry.mercenary_definition(mercenary_id).ok_or_else(|| {
+                        let definition = registry
+                            .mercenary_definition(
+                                mercenary_id,
+                                *player_mercenary_versions.get(player_id).ok_or_else(|| {
+                                    PowerCardDefinitionError::MissingMercenaryDefinition {
+                                        mercenary_id: mercenary_id.to_string(),
+                                    }
+                                })?,
+                            )
+                            .ok_or_else(|| {
                                 PowerCardDefinitionError::MissingMercenaryDefinition {
                                     mercenary_id: mercenary_id.to_string(),
                                 }
@@ -2479,6 +2519,23 @@ impl Game {
                 };
 
                 Ok((player_id.clone(), mana))
+            })
+            .collect()
+    }
+
+    fn mercenary_versions(
+        player_mercenaries: &HashMap<PlayerId, MercenaryId>,
+        registry: &PowerCardRegistry,
+    ) -> Result<HashMap<PlayerId, i64>, PowerCardDefinitionError> {
+        player_mercenaries
+            .iter()
+            .map(|(player_id, mercenary_id)| {
+                let version = registry.mercenary_version(mercenary_id).ok_or_else(|| {
+                    PowerCardDefinitionError::MissingMercenaryDefinition {
+                        mercenary_id: mercenary_id.to_string(),
+                    }
+                })?;
+                Ok((player_id.clone(), version))
             })
             .collect()
     }
@@ -2509,7 +2566,14 @@ impl Game {
                 let base_lifes = match self.player_mercenaries.get(player_id) {
                     Some(mercenary_id) => {
                         self.registry
-                            .mercenary_definition(mercenary_id)
+                            .mercenary_definition(
+                                mercenary_id,
+                                *self.player_mercenary_versions.get(player_id).ok_or_else(
+                                    || PowerCardDefinitionError::MissingMercenaryDefinition {
+                                        mercenary_id: mercenary_id.to_string(),
+                                    },
+                                )?,
+                            )
                             .ok_or_else(|| PowerCardDefinitionError::MissingMercenaryDefinition {
                                 mercenary_id: mercenary_id.to_string(),
                             })?
@@ -2816,6 +2880,7 @@ return {
         registry
             .replace_mercenary_definitions(vec![MercenaryDefinitionInput {
                 id: mercenary_id("artemis"),
+                version: 1,
                 name: "Artemis".to_string(),
                 base_life: 50,
                 initial_mana: 2,
@@ -2885,6 +2950,7 @@ return {
         registry
             .replace_mercenary_definitions(vec![MercenaryDefinitionInput {
                 id: mercenary_id("artemis"),
+                version: 1,
                 name: "Artemis".to_string(),
                 base_life: 50,
                 initial_mana: 2,
@@ -3308,6 +3374,7 @@ return {
         registry
             .replace_mercenary_definitions(vec![MercenaryDefinitionInput {
                 id: mercenary_id("gambler"),
+                version: 1,
                 name: "Gambler".to_string(),
                 base_life: 50,
                 initial_mana: 2,

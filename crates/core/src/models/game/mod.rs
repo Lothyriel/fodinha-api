@@ -377,6 +377,7 @@ impl Game {
                 seed,
                 initial_mana,
                 draw_seed,
+                player_mercenary_versions,
                 passive_effects,
                 ..
             }) => {
@@ -386,6 +387,7 @@ impl Game {
                     seed,
                     initial_mana,
                     draw_seed,
+                    player_mercenary_versions,
                     power_card_registry,
                 )?;
                 let (passive_mana, passive_power_decks) =

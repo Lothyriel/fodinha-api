@@ -1,4 +1,5 @@
 use chrono::Utc;
+use sha2::{Digest, Sha256};
 
 use crate::{
     infra::UserClaims,
@@ -91,7 +92,7 @@ impl MercenariesService {
         let mut definitions = Vec::with_capacity(mercenaries.len());
 
         for mercenary in mercenaries {
-            let script_object_key = mercenary_passive_script_object_key(&mercenary.mercenary_id);
+            let script_object_key = mercenary.script_object_key.clone();
             let script = self.storage.get_bytes(&script_object_key).await?;
             let script = String::from_utf8(script)
                 .map_err(|error| MercenaryError::Script(error.to_string()))?;
@@ -136,23 +137,22 @@ impl MercenariesService {
             .ok_or_else(|| MercenaryError::Invalid("passive lua script is required".to_string()))?;
         let script = String::from_utf8(passive_script)
             .map_err(|error| MercenaryError::Script(error.to_string()))?;
-        let banner_object_key = mercenary_banner_object_key(&normalized.mercenary_id);
-        let icon_object_key = mercenary_icon_object_key(&normalized.mercenary_id);
-        let script_object_key = mercenary_passive_script_object_key(&normalized.mercenary_id);
-
+        let banner_object_key = mercenary_asset_object_key(&banner, "png");
+        let icon_object_key = mercenary_asset_object_key(&icon, "png");
+        let script_object_key = mercenary_asset_object_key(script.as_bytes(), "lua");
         power_lua::validate_mercenary_passive_script_execution(&script, &script_object_key)
             .map_err(|error| MercenaryError::Script(error.to_string()))?;
 
         tokio::try_join!(
-            self.storage.put(
+            self.storage.put_if_absent(
                 &script_object_key,
                 script.clone().into_bytes(),
                 SCRIPT_OBJECT_CONTENT_TYPE,
             ),
             self.storage
-                .put(&banner_object_key, banner, IMAGE_OBJECT_CONTENT_TYPE),
+                .put_if_absent(&banner_object_key, banner, IMAGE_OBJECT_CONTENT_TYPE),
             self.storage
-                .put(&icon_object_key, icon, IMAGE_OBJECT_CONTENT_TYPE),
+                .put_if_absent(&icon_object_key, icon, IMAGE_OBJECT_CONTENT_TYPE),
         )?;
 
         let mercenary = MercenaryDto::new(NewMercenary {
@@ -165,6 +165,9 @@ impl MercenariesService {
             creator_id,
             icon_content_type: Some(IMAGE_OBJECT_CONTENT_TYPE.to_string()),
             banner_content_type: Some(IMAGE_OBJECT_CONTENT_TYPE.to_string()),
+            banner_object_key,
+            icon_object_key,
+            script_object_key,
         });
 
         self.mercenaries.insert(mercenary.clone()).await?;
@@ -196,56 +199,64 @@ impl MercenariesService {
             .ok_or_else(|| MercenaryError::Invalid("mercenary not found".to_string()))?;
         let previous_version = mercenary.version;
         let normalized = normalize_input(input)?;
-        let banner_object_key = mercenary_banner_object_key(&mercenary_id);
-        let icon_object_key = mercenary_icon_object_key(&mercenary_id);
-        let script_object_key = mercenary_passive_script_object_key(&mercenary_id);
+        let next_version = previous_version + 1;
+        let previous_banner_object_key = mercenary.banner_object_key.clone();
+        let previous_icon_object_key = mercenary.icon_object_key.clone();
+        let previous_script_object_key = mercenary.script_object_key.clone();
 
         let script = match normalized.passive_script {
             Some(script) => String::from_utf8(script)
                 .map_err(|error| MercenaryError::Script(error.to_string()))?,
             None => {
-                let script = self.storage.get_bytes(&script_object_key).await?;
+                let script = self.storage.get_bytes(&previous_script_object_key).await?;
 
                 String::from_utf8(script)
                     .map_err(|error| MercenaryError::Script(error.to_string()))?
             }
         };
+        let script_object_key = mercenary_asset_object_key(script.as_bytes(), "lua");
 
         power_lua::validate_mercenary_passive_script_execution(&script, &script_object_key)
             .map_err(|error| MercenaryError::Script(error.to_string()))?;
 
-        if let Some(banner) = normalized.banner {
+        let banner = if let Some(banner) = normalized.banner {
             if banner.is_empty() {
                 return Err(MercenaryError::Invalid(
                     "banner image is required".to_string(),
                 ));
             }
 
-            self.storage
-                .put(&banner_object_key, banner, IMAGE_OBJECT_CONTENT_TYPE)
-                .await?;
-        }
+            banner
+        } else {
+            self.storage.get_bytes(&previous_banner_object_key).await?
+        };
+        let banner_object_key = mercenary_asset_object_key(&banner, "png");
 
-        if let Some(icon) = normalized.icon {
+        let icon = if let Some(icon) = normalized.icon {
             if icon.is_empty() {
                 return Err(MercenaryError::Invalid(
                     "icon image is required".to_string(),
                 ));
             }
 
-            self.storage
-                .put(&icon_object_key, icon, IMAGE_OBJECT_CONTENT_TYPE)
-                .await?;
             mercenary.icon_content_type = Some(IMAGE_OBJECT_CONTENT_TYPE.to_string());
-        }
+            icon
+        } else {
+            self.storage.get_bytes(&previous_icon_object_key).await?
+        };
+        let icon_object_key = mercenary_asset_object_key(&icon, "png");
 
-        self.storage
-            .put(
+        tokio::try_join!(
+            self.storage.put_if_absent(
                 &script_object_key,
                 script.clone().into_bytes(),
-                SCRIPT_OBJECT_CONTENT_TYPE,
-            )
-            .await?;
+                SCRIPT_OBJECT_CONTENT_TYPE
+            ),
+            self.storage
+                .put_if_absent(&banner_object_key, banner, IMAGE_OBJECT_CONTENT_TYPE),
+            self.storage
+                .put_if_absent(&icon_object_key, icon, IMAGE_OBJECT_CONTENT_TYPE),
+        )?;
 
         mercenary.name = normalized.name;
         mercenary.subtitle = normalized.subtitle;
@@ -254,7 +265,10 @@ impl MercenariesService {
         mercenary.temper = normalized.temper;
         mercenary.banner_content_type = Some(IMAGE_OBJECT_CONTENT_TYPE.to_string());
         mercenary.updated_at = Utc::now().timestamp();
-        mercenary.version = previous_version + 1;
+        mercenary.version = next_version;
+        mercenary.banner_object_key = banner_object_key;
+        mercenary.icon_object_key = icon_object_key;
+        mercenary.script_object_key = script_object_key;
 
         self.mercenaries.insert(mercenary.clone()).await?;
         self.mercenaries
@@ -274,7 +288,7 @@ impl MercenariesService {
         let mut responses = Vec::with_capacity(mercenaries.len());
 
         for mercenary in mercenaries {
-            let script_object_key = mercenary_passive_script_object_key(&mercenary.mercenary_id);
+            let script_object_key = mercenary.script_object_key.clone();
             let script = self.storage.get_bytes(&script_object_key).await?;
             let script = String::from_utf8(script)
                 .map_err(|error| MercenaryError::Script(error.to_string()))?;
@@ -290,9 +304,9 @@ impl MercenariesService {
         mercenary: MercenaryDto,
         script: String,
     ) -> Result<MercenaryResponse, MercenaryError> {
-        let banner_object_key = mercenary_banner_object_key(&mercenary.mercenary_id);
-        let icon_object_key = mercenary_icon_object_key(&mercenary.mercenary_id);
-        let script_object_key = mercenary_passive_script_object_key(&mercenary.mercenary_id);
+        let banner_object_key = mercenary.banner_object_key.clone();
+        let icon_object_key = mercenary.icon_object_key.clone();
+        let script_object_key = mercenary.script_object_key.clone();
         let passive_definition =
             power_lua::parse_mercenary_passive_definition(&script, &script_object_key)
                 .map_err(|error| MercenaryError::Script(error.to_string()))?;
@@ -334,13 +348,14 @@ fn mercenary_definition_input(
     mercenary: &MercenaryDto,
     script: String,
 ) -> Result<fodinha_power::MercenaryDefinitionInput, MercenaryError> {
-    let script_object_key = mercenary_passive_script_object_key(&mercenary.mercenary_id);
+    let script_object_key = mercenary.script_object_key.clone();
     let passive_definition =
         power_lua::parse_mercenary_passive_definition(&script, &script_object_key)
             .map_err(|error| MercenaryError::Script(error.to_string()))?;
 
     Ok(fodinha_power::MercenaryDefinitionInput {
         id: mercenary.mercenary_id.clone(),
+        version: mercenary.version,
         name: mercenary.name.clone(),
         base_life: passive_definition.base_life,
         initial_mana: passive_definition.initial_mana,
@@ -394,42 +409,19 @@ fn validate_mercenary_id(mercenary_id: &MercenaryId) -> Result<(), MercenaryErro
     Ok(())
 }
 
-fn mercenary_banner_object_key(mercenary_id: &MercenaryId) -> String {
-    format!("mercenaries/{}/banner.png", mercenary_id.as_str())
-}
-
-fn mercenary_icon_object_key(mercenary_id: &MercenaryId) -> String {
-    format!("mercenaries/{}/icon.png", mercenary_id.as_str())
-}
-
-fn mercenary_passive_script_object_key(mercenary_id: &MercenaryId) -> String {
-    format!("mercenaries/{}/passive.lua", mercenary_id.as_str())
+fn mercenary_asset_object_key(bytes: &[u8], extension: &str) -> String {
+    let digest = Sha256::digest(bytes);
+    format!("mercenary-assets/{digest:x}.{extension}")
 }
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
-    use super::{
-        mercenary_banner_object_key, mercenary_icon_object_key, mercenary_passive_script_object_key,
-    };
-    use crate::models::id::MercenaryId;
-
+    use super::mercenary_asset_object_key;
     #[test]
     fn mercenary_object_keys_are_derived_from_id() {
-        let id = MercenaryId(Arc::from("mercenary-1"));
-
         assert_eq!(
-            mercenary_banner_object_key(&id),
-            "mercenaries/mercenary-1/banner.png"
-        );
-        assert_eq!(
-            mercenary_icon_object_key(&id),
-            "mercenaries/mercenary-1/icon.png"
-        );
-        assert_eq!(
-            mercenary_passive_script_object_key(&id),
-            "mercenaries/mercenary-1/passive.lua"
+            mercenary_asset_object_key(b"asset", "png"),
+            mercenary_asset_object_key(b"asset", "png")
         );
     }
 }

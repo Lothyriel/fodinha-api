@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use chrono::Utc;
+use sha2::{Digest, Sha256};
 
 use crate::{
     infra::UserClaims,
@@ -188,7 +189,7 @@ impl CardDefinitionsService {
         let mut definitions = Vec::new();
 
         for card in cards {
-            let script_object_key = card_script_object_key(&card.card_id, card.version);
+            let script_object_key = card.script_object_key.clone();
             let script = self.storage.get_bytes(&script_object_key).await?;
             let script = String::from_utf8(script)
                 .map_err(|error| CardDefinitionError::Script(error.to_string()))?;
@@ -281,11 +282,13 @@ impl CardDefinitionsService {
             ));
         }
 
-        let script = String::from_utf8(input.script)
+        let image = input.image;
+        let script_bytes = input.script;
+        let image_object_key = card_asset_object_key(&image, "png");
+        let script_object_key = card_asset_object_key(&script_bytes, "lua");
+        let script = String::from_utf8(script_bytes)
             .map_err(|error| CardDefinitionError::Script(error.to_string()))?;
         let card_id = gen_cardid();
-        let image_object_key = card_image_object_key(&card_id, 1);
-        let script_object_key = card_script_object_key(&card_id, 1);
 
         let script_definition =
             power_lua::parse_power_card_script_definition(&script, &script_object_key)
@@ -307,13 +310,13 @@ impl CardDefinitionsService {
         };
 
         tokio::try_join!(
-            self.storage.put(
+            self.storage.put_if_absent(
                 &script_object_key,
                 script.clone().into_bytes(),
                 SCRIPT_OBJECT_CONTENT_TYPE,
             ),
             self.storage
-                .put(&image_object_key, input.image, IMAGE_OBJECT_CONTENT_TYPE),
+                .put_if_absent(&image_object_key, image, IMAGE_OBJECT_CONTENT_TYPE),
         )?;
 
         let card = CardDefinitionDto::new(NewCardDefinition {
@@ -326,6 +329,8 @@ impl CardDefinitionsService {
             card_type: script_definition.card_type,
             creator_id: creator_id.clone(),
             image_content_type: Some(IMAGE_OBJECT_CONTENT_TYPE.to_string()),
+            image_object_key: image_object_key.clone(),
+            script_object_key: script_object_key.clone(),
         });
 
         self.cards.insert(card.clone()).await?;
@@ -353,8 +358,8 @@ impl CardDefinitionsService {
         }
 
         let asset_id = gen_cardid();
-        let image_object_key = card_image_object_key(&asset_id, 1);
-        let script_object_key = card_script_object_key(&asset_id, 1);
+        let image_object_key = card_asset_object_key(&input.image, "png");
+        let script_object_key = card_asset_object_key(&input.script, "lua");
         let script = String::from_utf8(input.script)
             .map_err(|error| CardDefinitionError::Script(error.to_string()))?;
 
@@ -362,13 +367,13 @@ impl CardDefinitionsService {
             .map_err(|error| CardDefinitionError::Script(error.to_string()))?;
 
         tokio::try_join!(
-            self.storage.put(
+            self.storage.put_if_absent(
                 &script_object_key,
                 script.into_bytes(),
                 SCRIPT_OBJECT_CONTENT_TYPE,
             ),
             self.storage
-                .put(&image_object_key, input.image, IMAGE_OBJECT_CONTENT_TYPE),
+                .put_if_absent(&image_object_key, input.image, IMAGE_OBJECT_CONTENT_TYPE),
         )?;
 
         self.cards
@@ -377,6 +382,8 @@ impl CardDefinitionsService {
                 creator_id,
                 status: CardDefinitionAssetStatus::Pending,
                 created_at: Utc::now().timestamp(),
+                image_object_key: image_object_key.clone(),
+                script_object_key: script_object_key.clone(),
             })
             .await?;
 
@@ -422,8 +429,8 @@ impl CardDefinitionsService {
         }
 
         let card_id = input.asset_id;
-        let image_object_key = card_image_object_key(&card_id, 1);
-        let script_object_key = card_script_object_key(&card_id, 1);
+        let image_object_key = asset.image_object_key.clone();
+        let script_object_key = asset.script_object_key.clone();
         let script = self.storage.get_bytes(&script_object_key).await?;
         let script = String::from_utf8(script)
             .map_err(|error| CardDefinitionError::Script(error.to_string()))?;
@@ -457,6 +464,8 @@ impl CardDefinitionsService {
             card_type: script_definition.card_type,
             creator_id: creator_id.clone(),
             image_content_type: Some(IMAGE_OBJECT_CONTENT_TYPE.to_string()),
+            image_object_key: image_object_key.clone(),
+            script_object_key: script_object_key.clone(),
         });
 
         self.cards.insert(card.clone()).await?;
@@ -472,12 +481,7 @@ impl CardDefinitionsService {
         let mut deleted = 0;
 
         for asset in assets {
-            let image_object_key = card_image_object_key(&asset.asset_id, 1);
-            let script_object_key = card_script_object_key(&asset.asset_id, 1);
-            tokio::try_join!(
-                self.storage.delete(&image_object_key),
-                self.storage.delete(&script_object_key),
-            )?;
+            // Content-addressed assets may be shared by other cards.
             self.cards.delete_asset(&asset.asset_id).await?;
             deleted += 1;
         }
@@ -525,10 +529,8 @@ impl CardDefinitionsService {
         }
 
         let next_version = previous_version + 1;
-        let previous_image_object_key = card_image_object_key(&card_id, previous_version);
-        let previous_script_object_key = card_script_object_key(&card_id, previous_version);
-        let image_object_key = card_image_object_key(&card_id, next_version);
-        let script_object_key = card_script_object_key(&card_id, next_version);
+        let previous_image_object_key = card.image_object_key.clone();
+        let previous_script_object_key = card.script_object_key.clone();
         let script = match input.script {
             Some(script) => {
                 if script.is_empty() {
@@ -548,12 +550,6 @@ impl CardDefinitionsService {
             }
         };
 
-        let script_definition =
-            power_lua::parse_power_card_script_definition(&script, &script_object_key)
-                .map_err(|error| CardDefinitionError::Script(error.to_string()))?;
-        power_lua::validate_power_card_script_execution(&script, &script_object_key)
-            .map_err(|error| CardDefinitionError::Script(error.to_string()))?;
-
         let image = match input.image {
             Some(image) => {
                 if image.is_empty() {
@@ -565,15 +561,23 @@ impl CardDefinitionsService {
             }
             None => self.storage.get_bytes(&previous_image_object_key).await?,
         };
+        let image_object_key = card_asset_object_key(&image, "png");
+        let script_object_key = card_asset_object_key(script.as_bytes(), "lua");
+
+        let script_definition =
+            power_lua::parse_power_card_script_definition(&script, &script_object_key)
+                .map_err(|error| CardDefinitionError::Script(error.to_string()))?;
+        power_lua::validate_power_card_script_execution(&script, &script_object_key)
+            .map_err(|error| CardDefinitionError::Script(error.to_string()))?;
 
         tokio::try_join!(
-            self.storage.put(
+            self.storage.put_if_absent(
                 &script_object_key,
                 script.clone().into_bytes(),
                 SCRIPT_OBJECT_CONTENT_TYPE,
             ),
             self.storage
-                .put(&image_object_key, image, IMAGE_OBJECT_CONTENT_TYPE,),
+                .put_if_absent(&image_object_key, image, IMAGE_OBJECT_CONTENT_TYPE,),
         )?;
 
         card.kind = kind;
@@ -583,6 +587,8 @@ impl CardDefinitionsService {
         card.mana_cost = script_definition.mana_cost;
         card.card_type = script_definition.card_type;
         card.image_content_type = Some(IMAGE_OBJECT_CONTENT_TYPE.to_string());
+        card.image_object_key = image_object_key.clone();
+        card.script_object_key = script_object_key.clone();
         card.updated_at = Utc::now().timestamp();
         card.version = next_version;
 
@@ -875,7 +881,7 @@ impl CardDefinitionsService {
         let mut responses = Vec::with_capacity(cards.len());
 
         for card in cards {
-            let script_object_key = card_script_object_key(&card.card_id, card.version);
+            let script_object_key = card.script_object_key.clone();
             let script = self.storage.get_bytes(&script_object_key).await?;
             let script = String::from_utf8(script)
                 .map_err(|error| CardDefinitionError::Script(error.to_string()))?;
@@ -891,8 +897,8 @@ impl CardDefinitionsService {
         card: CardDefinitionDto,
         script: String,
     ) -> Result<CardDefinitionResponse, CardDefinitionError> {
-        let image_object_key = card_image_object_key(&card.card_id, card.version);
-        let script_object_key = card_script_object_key(&card.card_id, card.version);
+        let image_object_key = card.image_object_key.clone();
+        let script_object_key = card.script_object_key.clone();
         let script_definition =
             power_lua::parse_power_card_script_definition(&script, &script_object_key)
                 .map_err(|error| CardDefinitionError::Script(error.to_string()))?;
@@ -970,8 +976,8 @@ impl CardDefinitionsService {
         card: &CardDefinitionDto,
         script: String,
     ) -> Result<PowerCardDefinitionInput, CardDefinitionError> {
-        let image_object_key = card_image_object_key(&card.card_id, card.version);
-        let script_object_key = card_script_object_key(&card.card_id, card.version);
+        let image_object_key = card.image_object_key.clone();
+        let script_object_key = card.script_object_key.clone();
         let script_definition =
             power_lua::parse_power_card_script_definition(&script, &script_object_key)
                 .map_err(|error| CardDefinitionError::Script(error.to_string()))?;
@@ -1018,50 +1024,24 @@ fn ensure_single_version_per_card(
     Ok(())
 }
 
-fn card_image_object_key(card_id: &CardId, version: i64) -> String {
-    format!(
-        "card-definitions/{}/versions/{version}/card.png",
-        card_id.as_str()
-    )
-}
-
-fn card_script_object_key(card_id: &CardId, version: i64) -> String {
-    format!(
-        "card-definitions/{}/versions/{version}/effect.lua",
-        card_id.as_str()
-    )
+fn card_asset_object_key(bytes: &[u8], extension: &str) -> String {
+    let digest = Sha256::digest(bytes);
+    format!("card-assets/{digest:x}.{extension}")
 }
 
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
 
-    use super::{
-        CardDefinitionError, card_image_object_key, card_script_object_key,
-        ensure_single_version_per_card,
-    };
+    use super::{CardDefinitionError, card_asset_object_key, ensure_single_version_per_card};
     use crate::models::id::{CardDefinitionRef, CardId};
 
     #[test]
     fn card_object_keys_are_derived_from_id() {
-        let id = CardId(Arc::from("card-1"));
-
-        assert_eq!(
-            card_image_object_key(&id, 1),
-            "card-definitions/card-1/versions/1/card.png"
-        );
-        assert_eq!(
-            card_script_object_key(&id, 1),
-            "card-definitions/card-1/versions/1/effect.lua"
-        );
-        assert_eq!(
-            card_image_object_key(&id, 2),
-            "card-definitions/card-1/versions/2/card.png"
-        );
-        assert_eq!(
-            card_script_object_key(&id, 2),
-            "card-definitions/card-1/versions/2/effect.lua"
-        );
+        let key = card_asset_object_key(b"image", "png");
+        assert!(key.starts_with("card-assets/"));
+        assert!(key.ends_with(".png"));
+        assert_eq!(key, card_asset_object_key(b"image", "png"));
     }
 
     #[test]

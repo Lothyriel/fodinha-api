@@ -132,7 +132,6 @@ impl MercenariesRepository {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct MercenaryDto {
     pub mercenary_id: MercenaryId,
-    #[serde(default = "default_version")]
     pub version: i64,
     pub name: String,
     pub subtitle: String,
@@ -144,13 +143,12 @@ pub struct MercenaryDto {
     pub icon_content_type: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub banner_content_type: Option<String>,
+    pub banner_object_key: String,
+    pub icon_object_key: String,
+    pub script_object_key: String,
     pub active: bool,
     pub created_at: i64,
     pub updated_at: i64,
-}
-
-fn default_version() -> i64 {
-    1
 }
 
 impl MercenaryDto {
@@ -168,6 +166,9 @@ impl MercenaryDto {
             creator_id: input.creator_id,
             icon_content_type: input.icon_content_type,
             banner_content_type: input.banner_content_type,
+            banner_object_key: input.banner_object_key,
+            icon_object_key: input.icon_object_key,
+            script_object_key: input.script_object_key,
             active: true,
             created_at: now,
             updated_at: now,
@@ -185,6 +186,9 @@ pub struct NewMercenary {
     pub creator_id: PlayerId,
     pub icon_content_type: Option<String>,
     pub banner_content_type: Option<String>,
+    pub banner_object_key: String,
+    pub icon_object_key: String,
+    pub script_object_key: String,
 }
 
 #[cfg(test)]
@@ -205,6 +209,9 @@ mod tests {
             creator_id: PlayerId(Arc::from("creator")),
             icon_content_type: Some("image/png".to_string()),
             banner_content_type: Some("image/png".to_string()),
+            banner_object_key: "mercenary-assets/banner.png".to_string(),
+            icon_object_key: "mercenary-assets/icon.png".to_string(),
+            script_object_key: "mercenary-assets/script.lua".to_string(),
         })
     }
 
@@ -219,28 +226,11 @@ mod tests {
     }
 
     #[test]
-    fn legacy_object_keys_are_ignored_and_not_rewritten() {
+    fn legacy_mercenaries_without_versions_are_rejected() {
         let mut value = serde_json::to_value(mercenary()).unwrap();
         let object = value.as_object_mut().unwrap();
-        object.insert(
-            "banner_object_key".to_string(),
-            serde_json::json!("legacy/banner.png"),
-        );
-        object.insert(
-            "icon_object_key".to_string(),
-            serde_json::json!("legacy/icon.png"),
-        );
-        object.insert(
-            "passive_script_object_key".to_string(),
-            serde_json::json!("legacy/passive.lua"),
-        );
+        object.remove("version");
 
-        let decoded: MercenaryDto = serde_json::from_value(value).unwrap();
-        let rewritten = serde_json::to_value(decoded).unwrap();
-        let rewritten = rewritten.as_object().unwrap();
-
-        assert!(!rewritten.contains_key("banner_object_key"));
-        assert!(!rewritten.contains_key("icon_object_key"));
-        assert!(!rewritten.contains_key("passive_script_object_key"));
+        assert!(serde_json::from_value::<MercenaryDto>(value).is_err());
     }
 }

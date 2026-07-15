@@ -98,6 +98,27 @@ impl ObjectStorage {
         Ok(())
     }
 
+    pub async fn put_if_absent(
+        &self,
+        key: &str,
+        bytes: Vec<u8>,
+        content_type: &str,
+    ) -> Result<(), ObjectStorageError> {
+        if self
+            .client
+            .head_object()
+            .bucket(&self.bucket)
+            .key(key)
+            .send()
+            .await
+            .is_ok()
+        {
+            return Ok(());
+        }
+
+        self.put(key, bytes, content_type).await
+    }
+
     pub async fn get_bytes(&self, key: &str) -> Result<Vec<u8>, ObjectStorageError> {
         let object = self
             .client

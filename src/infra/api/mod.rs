@@ -603,6 +603,7 @@ return {
                 (0..8)
                     .map(|idx| fodinha_power::MercenaryDefinitionInput {
                         id: MercenaryId(format!("test_mercenary_{idx}").into()),
+                        version: 1,
                         name: format!("Test Mercenary {idx}"),
                         base_life: 50,
                         initial_mana: 2,

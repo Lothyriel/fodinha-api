@@ -230,6 +230,8 @@ pub struct CardDefinitionAssetDto {
     pub creator_id: PlayerId,
     pub status: CardDefinitionAssetStatus,
     pub created_at: i64,
+    pub image_object_key: String,
+    pub script_object_key: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -281,6 +283,8 @@ pub struct CardDefinitionDto {
     pub creator_id: PlayerId,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub image_content_type: Option<String>,
+    pub image_object_key: String,
+    pub script_object_key: String,
     pub active: bool,
     pub created_at: i64,
     pub updated_at: i64,
@@ -301,6 +305,8 @@ impl CardDefinitionDto {
             card_type: input.card_type,
             creator_id: input.creator_id,
             image_content_type: input.image_content_type,
+            image_object_key: input.image_object_key,
+            script_object_key: input.script_object_key,
             active: true,
             created_at: now,
             updated_at: now,
@@ -322,6 +328,8 @@ pub struct NewCardDefinition {
     pub card_type: PowerCardType,
     pub creator_id: PlayerId,
     pub image_content_type: Option<String>,
+    pub image_object_key: String,
+    pub script_object_key: String,
 }
 
 #[cfg(test)]
@@ -348,6 +356,8 @@ mod tests {
             card_type: PowerCardType::Instant,
             creator_id: PlayerId(Arc::from("creator")),
             image_content_type: Some("image/png".to_string()),
+            image_object_key: "card-assets/image.png".to_string(),
+            script_object_key: "card-assets/script.lua".to_string(),
         })
     }
 
@@ -357,18 +367,20 @@ mod tests {
             creator_id: PlayerId(Arc::from("creator")),
             status: CardDefinitionAssetStatus::Pending,
             created_at: 1,
+            image_object_key: "card-assets/image.png".to_string(),
+            script_object_key: "card-assets/script.lua".to_string(),
         }
     }
 
     #[test]
-    fn card_and_asset_serialization_do_not_store_object_keys() {
+    fn card_and_asset_serialization_store_content_addressed_keys() {
         let card = serde_json::to_value(card()).unwrap();
         let asset = serde_json::to_value(asset()).unwrap();
 
-        assert!(!card.as_object().unwrap().contains_key("image_object_key"));
-        assert!(!card.as_object().unwrap().contains_key("script_object_key"));
-        assert!(!asset.as_object().unwrap().contains_key("image_object_key"));
-        assert!(!asset.as_object().unwrap().contains_key("script_object_key"));
+        assert!(card.as_object().unwrap().contains_key("image_object_key"));
+        assert!(card.as_object().unwrap().contains_key("script_object_key"));
+        assert!(asset.as_object().unwrap().contains_key("image_object_key"));
+        assert!(asset.as_object().unwrap().contains_key("script_object_key"));
     }
 
     #[test]
